@@ -3,17 +3,15 @@ package store
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"testing"
 	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain/model"
 )
 
-// 创作团队的用量按尝试加总事件自带的用量：run_ended 载荷里的合计不重复计；进程中断的尝试
-// 只到最后一条消息；崩溃后只做合规核对的尝试沿用任务的角色；租约过期的尝试不再算正在执行；
-// 别的书不混进来。
-func TestProjectAttemptsSumPersistedUsage(t *testing.T) {
+// 创作团队的用量取自尝试摘要：进程中断的尝试只到最后一次进展；崩溃后只做合规核对的尝试
+// 沿用任务的角色；租约过期的尝试不再算正在执行；没有 Agent 会话的任务与别的书不混进来。
+func TestProjectAttemptsReadAttemptSummaries(t *testing.T) {
 	s := openOperationStore(t)
 	ctx := context.Background()
 	start := operationTime()
@@ -41,31 +39,37 @@ func TestProjectAttemptsSumPersistedUsage(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("create other run: %v", err)
 	}
-	if _, err := s.CreateOperation(ctx, other); err != nil {
-		t.Fatalf("create other: %v", err)
-	}
-	seq := 0
-	event := func(operationID string, attempt int, kind, payload string, usage model.Usage, at time.Time) {
-		t.Helper()
-		seq++
-		if _, err := s.AppendOperationEvent(ctx, model.OperationEvent{
-			OperationID: operationID, StepID: kind, Attempt: attempt, IdempotencyKey: fmt.Sprint(kind, seq),
-			Kind: kind, Payload: json.RawMessage(payload), Usage: usage, CreatedAt: at,
-		}); err != nil {
-			t.Fatalf("append %s: %v", kind, err)
+	for _, operation := range []model.Operation{other, testOperation("external", 1, start)} {
+		if _, err := s.CreateOperation(ctx, operation); err != nil {
+			t.Fatalf("create %s: %v", operation.ID, err)
+		}
+		if _, err := s.ClaimOperationForExecutor(ctx, operation.ID, "worker", testExecutor, time.Minute, start); err != nil {
+			t.Fatalf("claim %s: %v", operation.ID, err)
 		}
 	}
-	none := model.Usage{}
-	event("plan", 1, "agent.run_started", `{"role":"architect","model":"old-model"}`, none, start)
-	event("plan", 1, "agent.message_committed", `{}`, model.Usage{Input: 100, Output: 10, CacheRead: 50, Cost: 0.1}, start.Add(20*time.Second))
-	event("plan", 1, "agent.message_committed", `{}`, model.Usage{Input: 100, Output: 10, CacheRead: 50, Cost: 0.1}, start.Add(40*time.Second))
-	event("plan", 1, "agent.run_ended", `{"usage":{"input_tokens":200}}`, none, start.Add(time.Minute))
-	event("plan", 1, "semantic.compliance_failed", `{"model":"judge"}`, model.Usage{Input: 7, Output: 1}, start.Add(61*time.Second))
-	event("plan", 2, "agent.run_started", `{"role":"architect","model":"new-model"}`, none, start.Add(3*time.Minute))
-	event("plan", 2, "agent.message_committed", `{}`, model.Usage{Input: 30, Output: 5, Cost: 0.03}, start.Add(4*time.Minute))
-	event("plan", 3, "semantic.compliance_checked", `{"model":"judge"}`, model.Usage{Input: 9, Output: 2}, start.Add(6*time.Minute+20*time.Second))
-	event("elsewhere", 1, "agent.run_started", `{"role":"writer","model":"other"}`, none, start)
-	event("elsewhere", 1, "agent.message_committed", `{}`, model.Usage{Input: 999}, start.Add(time.Minute))
+	bind := func(operationID string, attempt int, role, modelName string, at time.Time) {
+		t.Helper()
+		if err := s.RecordAgentBinding(ctx, operationID, attempt, model.AgentBinding{Role: role, Provider: "p", Model: modelName, Digest: "d"}, at); err != nil {
+			t.Fatalf("bind %s/%d: %v", operationID, attempt, err)
+		}
+	}
+	record := func(operationID string, attempt int, kind model.TranscriptKind, usage model.Usage, at time.Time) {
+		t.Helper()
+		if _, err := s.AppendTranscript(ctx, model.TranscriptEntry{
+			OperationID: operationID, Attempt: attempt, Kind: kind, Payload: json.RawMessage(`{}`), CreatedAt: at,
+		}, usage, 0); err != nil {
+			t.Fatalf("record %s/%d: %v", operationID, attempt, err)
+		}
+	}
+	bind("plan", 1, "architect", "old-model", start)
+	record("plan", 1, model.TranscriptMessage, model.Usage{Input: 100, Output: 10, CacheRead: 50, Cost: 0.1}, start.Add(20*time.Second))
+	record("plan", 1, model.TranscriptMessage, model.Usage{Input: 100, Output: 10, CacheRead: 50, Cost: 0.1}, start.Add(40*time.Second))
+	record("plan", 1, model.TranscriptJudgment, model.Usage{Input: 7, Output: 1}, start.Add(61*time.Second))
+	bind("plan", 2, "architect", "new-model", start.Add(3*time.Minute))
+	record("plan", 2, model.TranscriptMessage, model.Usage{Input: 30, Output: 5, Cost: 0.03}, start.Add(4*time.Minute))
+	record("plan", 3, model.TranscriptJudgment, model.Usage{Input: 9, Output: 2}, start.Add(6*time.Minute+20*time.Second))
+	bind("elsewhere", 1, "writer", "other", start)
+	record("elsewhere", 1, model.TranscriptMessage, model.Usage{Input: 999}, start.Add(time.Minute))
 
 	leased := start.Add(6*time.Minute + 30*time.Second) // 第 3 次尝试的租约到 start+7m
 	attempts, err := s.ProjectAttempts(ctx, "book-1", leased)
@@ -75,11 +79,11 @@ func TestProjectAttemptsSumPersistedUsage(t *testing.T) {
 	ended, crashed, judged := attempts[0], attempts[1], attempts[2]
 	if ended.Attempt != 1 || ended.Role != "architect" || ended.Model != "old-model" || ended.Live ||
 		ended.Usage != (model.Usage{Input: 207, Output: 21, CacheRead: 100, Cost: 0.2}) ||
-		!ended.StartedAt.Equal(start) || !ended.LastAt.Equal(start.Add(61*time.Second)) {
+		!ended.StartedAt.Equal(start) || !ended.ActiveAt.Equal(start.Add(61*time.Second)) {
 		t.Fatalf("ended attempt = %+v", ended)
 	}
 	if crashed.Attempt != 2 || crashed.Model != "new-model" || crashed.Live ||
-		crashed.Usage != (model.Usage{Input: 30, Output: 5, Cost: 0.03}) || !crashed.LastAt.Equal(start.Add(4*time.Minute)) {
+		crashed.Usage != (model.Usage{Input: 30, Output: 5, Cost: 0.03}) || !crashed.ActiveAt.Equal(start.Add(4*time.Minute)) {
 		t.Fatalf("crashed attempt = %+v", crashed)
 	}
 	if judged.Attempt != 3 || judged.Role != "architect" || judged.Model != "" || !judged.Live ||

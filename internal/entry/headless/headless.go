@@ -45,8 +45,8 @@ func commands() []Command {
 			Usage: "project create|show|export|import|delete|derived|revert|lock|unlock|approval|overlay|assets|directive add|retire|list|adjudication add|withdraw|list"},
 		{Name: "proposal", Summary: "提案：查看、通过、否决、裁决语义冲突", Storage: StorageFull, run: runProposal,
 			Usage: "proposal show|approve|reject|resolve"},
-		{Name: "operation", Summary: "任务：启动、重启、执行、查看、事件、暂停、恢复、取消、优先级、回收过期租约", Storage: StorageFull, run: runOperation,
-			Usage: "operation start|restart|run|show|events|pause|resume|cancel|priority|recover"},
+		{Name: "operation", Summary: "任务：启动、重启、执行、查看、执行记录、暂停、恢复、取消、优先级、回收过期租约与对话记录", Storage: StorageFull, run: runOperation,
+			Usage: "operation start|restart|run|show|attempts|transcript|pause|resume|cancel|priority|recover|prune"},
 		{Name: "prompt", Summary: "提示词：查看、来源、对比、检查、重新编译", Storage: StorageFull, run: runPrompt,
 			Usage: "prompt show|sources|diff|lint|reload"},
 		{Name: "pack", Summary: "Pack：安装、导出、评测", Storage: StorageFull, run: runPack,
@@ -58,7 +58,7 @@ func commands() []Command {
 		{Name: "model", Summary: "模型绑定：查看、列出、切换连接与模型、思考强度；按角色可覆盖", Storage: StorageFull, run: runModel,
 			Usage: "model [list|use [--role R] [--connection C] <模型|编号>|use --role R --inherit|effort [--role R] <档位|inherit>]"},
 		{Name: "diag", Summary: "诊断：查看环境或作品、运行、任务状态；导出可分享报告", Storage: StorageReadOnly, run: runDiag,
-			Usage: "diag [--project ID] [--run ID] [--operation ID] [--after ID] [--event-after N]\n" +
+			Usage: "diag [--project ID] [--run ID] [--operation ID] [--after ID] [--transcript-after N]\n" +
 				"diag export [--project ID] [--run ID] [--operation ID] --file diagnostics.json"},
 		{Name: "help", Summary: "查看全部无交互动作", Storage: StorageNone, run: runHelp},
 	}

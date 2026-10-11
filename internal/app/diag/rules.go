@@ -3,14 +3,14 @@ package diag
 import "fmt"
 
 // Counts refer to the entire selected scope, not only the visible task page.
-func findings(failed, expired, unknown, missing int) []Finding {
+func findings(failed, expired, unknown int) []Finding {
 	result := []Finding{}
 	for _, entry := range []struct {
 		code  string
 		count int
 	}{
 		{"execution.failed", failed}, {"execution.lease_expired", expired},
-		{"execution.result_unknown", unknown}, {"observation.end_missing", missing},
+		{"execution.result_unknown", unknown},
 	} {
 		if entry.count > 0 {
 			result = append(result, finding(entry.code, entry.count))
@@ -38,10 +38,7 @@ func finding(code string, count int) Finding {
 	case "execution.repeated_unknown_result":
 		f.Certainty = "signal"
 		f.Observed = fmt.Sprintf("观察范围内出现 %d 次外部结果未知", count)
-		f.Suggestion = "比较执行器与事件；重复出现是调查信号，不代表具有同一根因。"
-	case "observation.end_missing":
-		f.Observed = fmt.Sprintf("%d 个已结束的 LLM 任务缺少当前 attempt 的结束摘要", count)
-		f.Suggestion = "该部分用量与结束原因覆盖不完整；不能把缺失记录计为零。"
+		f.Suggestion = "比较执行器与尝试记录；重复出现是调查信号，不代表具有同一根因。"
 	case "execution.tool_error":
 		f.Observed = fmt.Sprintf("所选范围记录了 %d 次工具错误", count)
 		f.Suggestion = "证据按任务与 attempt 聚合；工具错误可能已在后续自纠，最终结果以任务状态为准。"

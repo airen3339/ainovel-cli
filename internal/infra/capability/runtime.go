@@ -28,7 +28,7 @@ var (
 type Runtime struct {
 	bindings  atomic.Pointer[models.Bindings]
 	store     runtimeStore
-	changes   *change.Engine // 只做工具边界的只读结构校验；提交仍由 Operation Engine 经 change 完成
+	validator proposalValidator
 	prompts   *prompt.Registry
 	workspace *workspace.Service
 	now       func() time.Time
@@ -51,19 +51,27 @@ func (r *Runtime) ActivityHub() *activity.Hub {
 	return hub
 }
 
+// proposalValidator 是工具边界对变更机制的全部需要：提交前当场校验。提交只由
+// Operation Engine 经 change 完成，Runtime 拿不到提交入口。
+type proposalValidator interface {
+	Validate(context.Context, model.Proposal) error
+}
+
 type runtimeStore interface {
 	GetDocument(context.Context, model.AuthorityTarget, model.DocumentRef, model.Revision) (model.DocumentVersion, error)
 	ListDocuments(context.Context, model.AuthorityTarget, model.DocumentKind, model.Revision) ([]model.DocumentVersion, error)
 	GetWorkspaceArtifact(context.Context, string, string) (model.WorkspaceArtifact, error)
 	ListWorkspaceArtifacts(context.Context, string) ([]model.WorkspaceArtifact, error)
 	PutWorkspaceArtifact(context.Context, model.WorkspaceArtifact, *int64, int) (model.WorkspaceArtifact, error)
-	AppendOperationEvent(context.Context, model.OperationEvent) (model.OperationEvent, error)
-	ListOperationEvents(context.Context, string) ([]model.OperationEvent, error)
+	RecordAgentBinding(context.Context, string, int, model.AgentBinding, time.Time) error
+	AppendTranscript(context.Context, model.TranscriptEntry, model.Usage, int) (model.TranscriptEntry, error)
+	ListTranscript(context.Context, string) ([]model.TranscriptEntry, error)
+	ListOperationAttempts(context.Context, string) ([]model.OperationAttempt, error)
 }
 
 func NewRuntime(authorityStore *store.Store) *Runtime {
 	return &Runtime{
-		store: authorityStore, changes: change.New(authorityStore),
+		store: authorityStore, validator: change.New(authorityStore),
 		prompts:   prompt.NewRegistry(authorityStore),
 		workspace: workspace.New(authorityStore),
 		now:       func() time.Time { return time.Now().UTC() },

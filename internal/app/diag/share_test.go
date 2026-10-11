@@ -21,8 +21,12 @@ func TestShareExcludesPrivateFieldsAndPreservesAssociation(t *testing.T) {
 		Metrics:    Metrics{States: map[model.OperationState]int{model.OperationState(secret): 1}},
 		Operations: []Operation{{ID: secret, RunID: secret, Kind: model.OperationKind(secret), State: "failed", Error: secret, Executor: secret, ConfigDigest: secret, FailureCode: model.FailureCode(secret), CreatedAt: now, UpdatedAt: now}},
 		Findings:   []Finding{{Code: "execution.failed", Observed: secret, Suggestion: secret, Severity: secret, Certainty: secret, OperationID: secret, Count: 1}, {Code: secret}},
-		Coverage:   []Coverage{{"events", "partial", secret}, {secret, secret, secret}},
-		Events:     []Event{{OperationID: secret, Sequence: 1, Kind: "agent.message_committed", Text: secret, CreatedAt: now}, {Kind: secret, Text: secret}},
+		Coverage:   []Coverage{{"attempts", "partial", secret}, {secret, secret, secret}},
+		Attempts: []model.OperationAttempt{{
+			OperationID: secret, Attempt: 1, Worker: secret, Outcome: model.OperationFailed, Error: secret, FailureCode: model.FailureCode(secret),
+			Agent: model.AgentBinding{Role: secret, Provider: secret, Model: secret, Thinking: secret, Digest: secret}, StartedAt: now, ActiveAt: now,
+		}, {OperationID: secret, Outcome: model.OperationState(secret)}},
+		Transcript: []TranscriptEntry{{Sequence: 1, Attempt: 1, Kind: model.TranscriptMessage, Text: secret}},
 	}
 	s := Share(r)
 	raw, err := json.Marshal(s)
@@ -32,10 +36,13 @@ func TestShareExcludesPrivateFieldsAndPreservesAssociation(t *testing.T) {
 	if strings.Contains(string(raw), secret) || strings.Contains(string(raw), "PRIVATE") {
 		t.Fatalf("private data leaked: %s", raw)
 	}
-	if s.Events[0].Operation != s.Operations[0].ID || s.Findings[0].Operation != s.Operations[0].ID {
+	if s.Attempts[0].Operation != s.Operations[0].ID || s.Findings[0].Operation != s.Operations[0].ID {
 		t.Fatal("task association was lost")
 	}
-	if s.Omitted != 3 || s.BuildVersion != "unknown" || s.Metrics.States["unknown"] != 1 {
+	if s.Attempts[0].Outcome != "failed" || s.Attempts[0].FailureCode != "unknown" || s.Attempts[1].Outcome != "unknown" {
+		t.Fatalf("attempt vocabulary not closed: %+v", s.Attempts)
+	}
+	if s.Omitted != 2 || s.BuildVersion != "unknown" || s.Metrics.States["unknown"] != 1 {
 		t.Fatalf("unknown fields not accounted for: %+v", s)
 	}
 }
@@ -67,11 +74,11 @@ func TestSharePublicationRefusesOverwriteAndCancelledWrite(t *testing.T) {
 }
 
 func TestRulesDoNotInferFailureFromWaitingOrRetries(t *testing.T) {
-	if f := findings(0, 0, 0, 0); len(f) != 0 {
+	if f := findings(0, 0, 0); len(f) != 0 {
 		t.Fatalf("normal scope flagged: %v", f)
 	}
-	f := findings(1, 1, 1, 1)
-	if len(f) != 4 {
+	f := findings(1, 1, 1)
+	if len(f) != 3 {
 		t.Fatalf("findings=%v", f)
 	}
 	for _, finding := range f {
@@ -79,21 +86,18 @@ func TestRulesDoNotInferFailureFromWaitingOrRetries(t *testing.T) {
 			t.Fatal(finding)
 		}
 	}
-	if f := findings(0, 0, 2, 0); f[1].Certainty != "signal" {
+	if f := findings(0, 0, 2); f[1].Certainty != "signal" {
 		t.Fatal("repeat signal claimed root cause")
 	}
 }
 
 func TestShareReportsOmittedWindow(t *testing.T) {
-	r := Report{Metrics: Metrics{Operations: 1000, Events: 5000}, Operations: make([]Operation, 50), Events: make([]Event, 200), Findings: []Finding{{Code: "execution.failed", Count: 20, Evidence: make([]Evidence, 2)}}}
-	for i := range r.Events {
-		r.Events[i].Kind = "agent.message_committed"
-	}
+	r := Report{Metrics: Metrics{Operations: 1000, Attempts: 5000}, Operations: make([]Operation, 50), Attempts: make([]model.OperationAttempt, 200), Findings: []Finding{{Code: "execution.failed", Count: 20, Evidence: make([]Evidence, 2)}}}
 	for i := range r.Findings[0].Evidence {
 		r.Findings[0].Evidence[i].Source = "operation.state"
 	}
 	s := Share(r)
-	if s.OmittedEvents != 4800 || s.OmittedTaskDetails != 950 || s.OmittedEvidenceReferences != 18 {
+	if s.OmittedAttempts != 4800 || s.OmittedTaskDetails != 950 || s.OmittedEvidenceReferences != 18 {
 		t.Fatalf("window omissions lost: %+v", s)
 	}
 }
@@ -104,7 +108,7 @@ func TestEnvironmentAndInvalidScopes(t *testing.T) {
 	if err != nil || r.Summary.State != "environment" || r.Header.Shareable {
 		t.Fatalf("environment: %+v %v", r, err)
 	}
-	for _, req := range []Request{{RunID: "run"}, {OperationID: "task"}, {ProjectID: "book"}, {EventAfter: 1}, {EventAfter: -1}} {
+	for _, req := range []Request{{RunID: "run"}, {OperationID: "task"}, {ProjectID: "book"}, {TranscriptAfter: 1}, {TranscriptAfter: -1}} {
 		if _, err := q.Inspect(context.Background(), req); err == nil {
 			t.Fatalf("invalid/unavailable scope accepted: %+v", req)
 		}

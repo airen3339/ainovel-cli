@@ -96,22 +96,10 @@ func (r *Runtime) Execute(ctx context.Context, operation model.Operation) (model
 	if err != nil {
 		return model.OperationOutcome{}, err
 	}
-	// 每次尝试记下实际使用的模型：快照不再冻结模型配置，历史由这条事件解释（D57）。
-	startPayload, err := json.Marshal(struct {
-		Role         string `json:"role"`
-		Provider     string `json:"provider"`
-		Model        string `json:"model"`
-		Thinking     string `json:"thinking,omitempty"`
-		ConfigDigest string `json:"config_digest"`
-	}{Role: worker.ModelRole, Provider: binding.Provider, Model: binding.Model, Thinking: binding.Thinking, ConfigDigest: binding.Digest})
-	if err != nil {
-		return model.OperationOutcome{}, fmt.Errorf("encode agent run start: %w", err)
-	}
-	if _, err := r.store.AppendOperationEvent(ctx, model.OperationEvent{
-		OperationID: operation.ID, StepID: "agent.start", Attempt: operation.Attempt,
-		IdempotencyKey: fmt.Sprintf("agent-start:%d", operation.Attempt),
-		Kind:           "agent.run_started", Payload: startPayload, CreatedAt: r.now(),
-	}); err != nil {
+	// 每次尝试记下实际使用的模型：快照不冻结模型配置，历史由尝试摘要解释（D57）。
+	if err := r.store.RecordAgentBinding(ctx, operation.ID, operation.Attempt, model.AgentBinding{
+		Role: worker.ModelRole, Provider: binding.Provider, Model: binding.Model, Thinking: binding.Thinking, Digest: binding.Digest,
+	}, r.now()); err != nil {
 		return model.OperationOutcome{}, err
 	}
 	workspaceArtifacts, err := r.store.ListWorkspaceArtifacts(ctx, operation.ID)
@@ -138,7 +126,6 @@ func (r *Runtime) Execute(ctx context.Context, operation model.Operation) (model
 	executionCtx, stopExecution := context.WithCancelCause(ctx)
 	defer stopExecution(nil)
 	stream := newLiveStream(task) // 随本次执行生灭：流式工具调用的身份与参数流的提取状态
-	messageIndex := 0
 	var end agentcore.RunEnd
 	config := agentcore.Config{
 		Model:      binding.Routed(cacheKey, ""),
@@ -147,19 +134,18 @@ func (r *Runtime) Execute(ctx context.Context, operation model.Operation) (model
 		Middleware: []agentcore.ToolMiddleware{submissionGuard(stopExecution)},
 		Cache:      &litellm.CacheControl{},
 		// 每条进入会话的消息先落盘：落盘失败即停止本次执行，提交结果因此先于收尾持久化。
+		// 用量与工具报错在这里从消息取出，随同一次写入并入尝试摘要（D72）。
 		Emit: func(event agentcore.Event) error {
 			switch e := event.(type) {
 			case agentcore.MessageEnd:
-				messageIndex++
 				payload, err := json.Marshal(e.Message)
 				if err != nil {
 					return fmt.Errorf("encode agent message: %w", err)
 				}
-				if _, err := r.store.AppendOperationEvent(ctx, model.OperationEvent{
-					OperationID: operation.ID, StepID: "agent.message", Attempt: operation.Attempt,
-					IdempotencyKey: fmt.Sprintf("agent-message:%d:%d", operation.Attempt, messageIndex),
-					Kind:           "agent.message_committed", Payload: payload, Usage: eventUsage(e.Message.Usage), CreatedAt: e.Message.Time,
-				}); err != nil {
+				if _, err := r.store.AppendTranscript(ctx, model.TranscriptEntry{
+					OperationID: operation.ID, Attempt: operation.Attempt,
+					Kind: model.TranscriptMessage, Payload: payload, CreatedAt: e.Message.Time,
+				}, messageUsage(e.Message.Usage), toolErrors(e.Message)); err != nil {
 					return err
 				}
 			case agentcore.RunEnd:
@@ -180,27 +166,6 @@ func (r *Runtime) Execute(ctx context.Context, operation model.Operation) (model
 		},
 	}
 	_, executionErr := agentcore.Run(executionCtx, config, recoveredMessages, agentcore.UserText(promptText))
-	var errorText string
-	if executionErr != nil {
-		errorText = executionErr.Error()
-	}
-	endPayload, err := json.Marshal(struct {
-		Reason      agentcore.EndReason `json:"reason"`
-		Turns       int                 `json:"turns"`
-		ToolCalls   int                 `json:"tool_calls"`
-		FailedCalls int                 `json:"failed_calls"`
-		Error       string              `json:"error,omitempty"`
-	}{Reason: end.Reason, Turns: end.Turns, ToolCalls: end.ToolCalls, FailedCalls: end.FailedCalls, Error: errorText})
-	if err != nil {
-		return model.OperationOutcome{}, fmt.Errorf("encode agent run summary: %w", err)
-	}
-	if _, err := r.store.AppendOperationEvent(ctx, model.OperationEvent{
-		OperationID: operation.ID, StepID: "agent.end", Attempt: operation.Attempt,
-		IdempotencyKey: fmt.Sprintf("agent-end:%d", operation.Attempt),
-		Kind:           "agent.run_ended", Payload: endPayload, CreatedAt: r.now(),
-	}); err != nil {
-		return model.OperationOutcome{}, err
-	}
 	if executionErr != nil {
 		return model.OperationOutcome{}, fmt.Errorf("capability agent failed: %w", executionErr)
 	}
@@ -265,8 +230,8 @@ func resumedProgress(messages, artifacts int) string {
 	return "接着上次的进度继续：已恢复 " + strings.Join(parts, "、")
 }
 
-// eventUsage 是记在事件上的模型用量；用户消息、工具结果没有用量，为零。
-func eventUsage(usage *agentcore.Usage) model.Usage {
+// messageUsage 是一条消息花掉的模型用量；用户消息、工具结果没有用量，为零。
+func messageUsage(usage *agentcore.Usage) model.Usage {
 	if usage == nil {
 		return model.Usage{}
 	}
@@ -275,6 +240,17 @@ func eventUsage(usage *agentcore.Usage) model.Usage {
 		spent.Cost = usage.Cost.Total
 	}
 	return spent
+}
+
+// toolErrors 数一条消息里报错的工具结果，随记录并入尝试摘要；诊断只读这个计数（D59、D72）。
+func toolErrors(message agentcore.Message) int {
+	count := 0
+	for _, block := range message.Blocks {
+		if result, ok := block.(litellm.ToolResultBlock); ok && result.IsError {
+			count++
+		}
+	}
+	return count
 }
 
 func taskActivityScope(task model.TaskInput) activity.Scope {
@@ -447,45 +423,36 @@ func endedWithout(end agentcore.RunEnd, cause error) error {
 	return fmt.Errorf("agent ended with %s after %d turns: %w", end.Reason, end.Turns, cause)
 }
 
-// restoreMessages 把之前尝试已提交的对话导回本次会话，并取出最近一次失败原因。
+// restoreMessages 把之前尝试的对话导回本次会话，并取出最近一次执行失败的原因（D56）。
+// 租约回收判的失败只说明执行者失联，模型无从修正，不带回。
 func (r *Runtime) restoreMessages(ctx context.Context, operation model.Operation) ([]agentcore.Message, string, error) {
 	if operation.Attempt <= 1 {
 		return nil, "", nil
 	}
-	events, err := r.store.ListOperationEvents(ctx, operation.ID)
+	attempts, err := r.store.ListOperationAttempts(ctx, operation.ID)
 	if err != nil {
 		return nil, "", err
 	}
-	messages := make([]agentcore.Message, 0)
 	var lastFailure string
-	for _, event := range events {
-		if event.Attempt >= operation.Attempt {
+	for _, attempt := range attempts {
+		if attempt.Attempt < operation.Attempt && attempt.Outcome == model.OperationFailed && !attempt.LeaseExpired {
+			lastFailure = attempt.Error
+		}
+	}
+	entries, err := r.store.ListTranscript(ctx, operation.ID)
+	if err != nil {
+		return nil, "", err
+	}
+	messages := make([]agentcore.Message, 0, len(entries))
+	for _, entry := range entries {
+		if entry.Attempt >= operation.Attempt || entry.Kind != model.TranscriptMessage {
 			continue
 		}
-		switch event.Kind {
-		case "agent.message_committed":
-			var message agentcore.Message
-			if err := json.Unmarshal(event.Payload, &message); err != nil {
-				return nil, "", fmt.Errorf("restore agent message at event %d: %w", event.Sequence, err)
-			}
-			// 失败或中止的回合可以一个字都没流出来（agentcore 照样记下它，组请求时跳过）；
-			// 其余没有 blocks 的是旧版本写下的，宁可报错也不带进会话。
-			if len(message.Blocks) == 0 && message.Stop != agentcore.StopError && message.Stop != agentcore.StopAborted {
-				return nil, "", fmt.Errorf("restore agent message at event %d: no content blocks (written by an older version; restart the task): %w", event.Sequence, model.ErrInvalid)
-			}
-			messages = append(messages, message)
-		case "operation.transitioned":
-			var transition struct {
-				To      model.OperationState `json:"to"`
-				Message string               `json:"message"`
-			}
-			if err := json.Unmarshal(event.Payload, &transition); err != nil {
-				return nil, "", fmt.Errorf("restore operation transition at event %d: %w", event.Sequence, err)
-			}
-			if transition.To == model.OperationFailed && transition.Message != "" {
-				lastFailure = transition.Message
-			}
+		var message agentcore.Message
+		if err := json.Unmarshal(entry.Payload, &message); err != nil {
+			return nil, "", fmt.Errorf("restore transcript entry %d: %w", entry.Sequence, err)
 		}
+		messages = append(messages, message)
 	}
 	return messages, lastFailure, nil
 }

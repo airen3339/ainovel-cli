@@ -320,19 +320,56 @@ type WorkspaceArtifact struct {
 	UpdatedAt   time.Time `json:"updated_at"`
 }
 
-type OperationEvent struct {
-	OperationID    string          `json:"operation_id"`
-	Sequence       int64           `json:"sequence"`
-	StepID         string          `json:"step_id"`
-	Attempt        int             `json:"attempt"`
-	IdempotencyKey string          `json:"idempotency_key"`
-	Kind           string          `json:"kind"`
-	Payload        json.RawMessage `json:"payload"`
-	// Usage 是这条事件自身花掉的模型用量：一条模型消息、一次单独的判断；其余事件为零。
-	// 用量按事件落列，汇总不必解析载荷。
-	Usage     Usage     `json:"usage,omitzero"`
-	CreatedAt time.Time `json:"created_at"`
+// OperationAttempt 是一次执行尝试的摘要（D72）：领取时建立，任务离开 running 时在同一
+// 事务里收尾。失败预算、用量、实际模型与工具报错都以它为准，与任务同寿；对话记录可以
+// 回收，摘要不受影响。
+type OperationAttempt struct {
+	OperationID string `json:"operation_id"`
+	Attempt     int    `json:"attempt"`
+	Worker      string `json:"worker"`
+	// Agent 是这次尝试里 Agent 会话实际用的模型（D57）；没有会话的尝试为零值。
+	Agent      AgentBinding `json:"agent,omitzero"`
+	Usage      Usage        `json:"usage,omitzero"`
+	ToolErrors int          `json:"tool_errors,omitempty"`
+	// Outcome 是尝试结束时任务进入的状态，进行中为空。LeaseExpired 表示由租约回收收尾：
+	// 执行者已失联，Error 是回收的说明。
+	Outcome      OperationState `json:"outcome,omitempty"`
+	Error        string         `json:"error,omitempty"`
+	FailureCode  FailureCode    `json:"failure_code,omitempty"`
+	LeaseExpired bool           `json:"lease_expired,omitempty"`
+	StartedAt    time.Time      `json:"started_at"`
+	// ActiveAt 是最后一次有进展的时刻：领取、对话记录、收尾。租约回收不算进展。
+	ActiveAt time.Time `json:"active_at"`
 }
+
+// AgentBinding 是 Agent 会话实际用的角色与模型绑定（D57）：Thinking 记生效值，Digest 是
+// 模型配置摘要。
+type AgentBinding struct {
+	Role     string `json:"role"`
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	Thinking string `json:"thinking,omitempty"`
+	Digest   string `json:"digest"`
+}
+
+// TranscriptEntry 是一次尝试里与模型的一次往来（D72）：Agent 会话的一条消息，或会话之外
+// 的一次单独判断。它只服务续跑恢复与诊断，任务不会再执行后可以回收；用量与工具报错在
+// 写入时并入尝试摘要，不从这里读。
+type TranscriptEntry struct {
+	OperationID string          `json:"operation_id"`
+	Sequence    int64           `json:"sequence"`
+	Attempt     int             `json:"attempt"`
+	Kind        TranscriptKind  `json:"kind"`
+	Payload     json.RawMessage `json:"payload"`
+	CreatedAt   time.Time       `json:"created_at"`
+}
+
+type TranscriptKind string
+
+const (
+	TranscriptMessage  TranscriptKind = "message"
+	TranscriptJudgment TranscriptKind = "judgment"
+)
 
 // Usage 是模型调用的 token 与花费；Cost 只计有定价的部分。
 type Usage struct {

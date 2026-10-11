@@ -87,26 +87,13 @@ func TestExecuteUsesRoleBindingAndRecordsRunStart(t *testing.T) {
 			if got := sent.Thinking; sent.Model != "architect-model" || (tc.want == "") != (got == nil) || got != nil && got.Effort != tc.want {
 				t.Fatalf("request model = %q thinking = %+v, want %q", sent.Model, got, tc.want)
 			}
-			events, err := authorityStore.ListOperationEvents(ctx, operation.ID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var started struct {
-				Role         string `json:"role"`
-				Provider     string `json:"provider"`
-				Model        string `json:"model"`
-				ConfigDigest string `json:"config_digest"`
-				Thinking     string `json:"thinking"`
-			}
-			if len(events) < 2 || events[1].Kind != "agent.run_started" || json.Unmarshal(events[1].Payload, &started) != nil {
-				t.Fatalf("first agent event = %+v, want agent.run_started after the claim", events)
+			attempts, err := authorityStore.ListOperationAttempts(ctx, operation.ID)
+			if err != nil || len(attempts) != 1 {
+				t.Fatalf("attempts = %+v, %v", attempts, err)
 			}
 			bound, _ := runtime.bindingFor("architect")
-			if started.Role != "architect" || started.Model != "architect-model" || started.Provider != tc.provider || started.ConfigDigest != bound.Digest || started.Thinking != tc.want {
-				t.Fatalf("run_started payload = %+v", started)
-			}
-			if events[1].IdempotencyKey != "agent-start:1" || events[1].Attempt != 1 {
-				t.Fatalf("run_started keyed by attempt: %+v", events[1])
+			if got := attempts[0].Agent; got != (domainmodel.AgentBinding{Role: "architect", Provider: tc.provider, Model: "architect-model", Thinking: tc.want, Digest: bound.Digest}) {
+				t.Fatalf("attempt binding = %+v", got)
 			}
 		})
 	}

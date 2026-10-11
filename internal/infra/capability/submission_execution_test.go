@@ -42,19 +42,14 @@ func TestRuntimePersistsSubmissionFailureAndRetainsDraft(t *testing.T) {
 	if err != nil || artifact.Version != 1 {
 		t.Fatalf("draft lost: %+v %v", artifact, err)
 	}
-	events, err := s.ListOperationEvents(ctx, op.ID)
-	if err != nil {
-		t.Fatal(err)
+	// 三次被拒的提交都是工具报错，写入时计入尝试摘要（D59、D72）。
+	attempts, err := s.ListOperationAttempts(ctx, op.ID)
+	if err != nil || len(attempts) != 1 || attempts[0].ToolErrors != 3 {
+		t.Fatalf("tool errors were not counted: %+v %v", attempts, err)
 	}
-	for _, event := range events {
-		if event.Kind == "agent.run_ended" && strings.Contains(string(event.Payload), "提交受阻") {
-			return
-		}
-	}
-	t.Fatal("failure summary was not persisted")
 }
 
-// 模型没提交就想停：提醒它继续，而不是以"没有 Proposal"收场；每次回应的用量都计入收尾汇总。
+// 模型没提交就想停：提醒它继续，而不是以"没有 Proposal"收场；每次回应的用量都计入尝试摘要。
 func TestRuntimeRemindsToSubmitBeforeStopping(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -73,19 +68,10 @@ func TestRuntimeRemindsToSubmitBeforeStopping(t *testing.T) {
 	if len(requests) != 2 || !strings.Contains(requestText(requests[1].Messages[len(requests[1].Messages)-1]), "任务尚未形成 Proposal") {
 		t.Fatalf("the model was not reminded to submit: %d requests", len(requests))
 	}
-	events, err := s.ListOperationEvents(ctx, op.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// 提醒前后的两次回复都记下用量：落在各自的消息事件上，加起来是这次执行的全部。
-	var spent model.Usage
-	ended := false
-	for _, event := range events {
-		spent.Add(event.Usage)
-		ended = ended || event.Kind == "agent.run_ended"
-	}
-	if !ended || spent != (model.Usage{Input: 30, Output: 8}) {
-		t.Fatalf("ended = %v, usage = %+v", ended, spent)
+	// 提醒前后的两次回复都记下用量：随各自的消息并入尝试摘要，加起来是这次执行的全部。
+	attempts, err := s.ListOperationAttempts(ctx, op.ID)
+	if err != nil || len(attempts) != 1 || attempts[0].Usage != (model.Usage{Input: 30, Output: 8}) || attempts[0].ToolErrors != 0 {
+		t.Fatalf("attempts = %+v, %v", attempts, err)
 	}
 }
 
@@ -126,17 +112,15 @@ type failedResultStore struct {
 	cause error
 }
 
-func (s failedResultStore) AppendOperationEvent(ctx context.Context, event model.OperationEvent) (model.OperationEvent, error) {
-	if event.Kind == "agent.message_committed" {
-		var message agentcore.Message
-		if err := json.Unmarshal(event.Payload, &message); err != nil {
-			return model.OperationEvent{}, err
-		}
-		if isSubmitResult(message) {
-			return model.OperationEvent{}, s.cause
-		}
+func (s failedResultStore) AppendTranscript(ctx context.Context, entry model.TranscriptEntry, spent model.Usage, toolErrors int) (model.TranscriptEntry, error) {
+	var message agentcore.Message
+	if err := json.Unmarshal(entry.Payload, &message); err != nil {
+		return model.TranscriptEntry{}, err
 	}
-	return s.runtimeStore.AppendOperationEvent(ctx, event)
+	if isSubmitResult(message) {
+		return model.TranscriptEntry{}, s.cause
+	}
+	return s.runtimeStore.AppendTranscript(ctx, entry, spent, toolErrors)
 }
 
 func TestRuntimeSubmissionStopsOnlyAfterResultIsPersisted(t *testing.T) {
@@ -162,39 +146,20 @@ func TestRuntimeSubmissionStopsOnlyAfterResultIsPersisted(t *testing.T) {
 			if len(llm.Requests()) != 2 {
 				t.Fatalf("extra model calls: %d", len(llm.Requests()))
 			}
-			events, err := s.ListOperationEvents(ctx, op.ID)
+			transcript, err := s.ListTranscript(ctx, op.ID)
 			if err != nil {
 				t.Fatal(err)
 			}
-			var resultSaved, ended bool
-			for _, event := range events {
-				if event.Kind == "agent.message_committed" {
-					var message agentcore.Message
-					if err := json.Unmarshal(event.Payload, &message); err != nil {
-						t.Fatal(err)
-					}
-					resultSaved = resultSaved || isSubmitResult(message)
+			resultSaved := false
+			for _, entry := range transcript {
+				var message agentcore.Message
+				if err := json.Unmarshal(entry.Payload, &message); err != nil {
+					t.Fatal(err)
 				}
-				if event.Kind == "agent.run_ended" {
-					var end struct {
-						Reason agentcore.EndReason `json:"reason"`
-						Error  string              `json:"error"`
-					}
-					if err := json.Unmarshal(event.Payload, &end); err != nil {
-						t.Fatal(err)
-					}
-					want := agentcore.EndDone
-					if failCommit {
-						want = agentcore.EndError
-					}
-					if end.Reason != want || (end.Error != "") != failCommit {
-						t.Fatalf("wrong ending: %+v", end)
-					}
-					ended = true
-				}
+				resultSaved = resultSaved || isSubmitResult(message)
 			}
-			if !ended || resultSaved == failCommit {
-				t.Fatalf("persistence order: result=%t end=%t", resultSaved, ended)
+			if resultSaved == failCommit {
+				t.Fatalf("persistence order: result saved = %t", resultSaved)
 			}
 		})
 	}

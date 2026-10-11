@@ -7,8 +7,8 @@ import (
 	"github.com/voocel/ainovel-cli/internal/infra/store"
 )
 
-// TeamUsage 是创作团队在这本书上的累计用量与用时，从落盘的执行记录汇总：重启程序、
-// 换窗口看到的都一样。用时算到快照时刻：进行中的尝试计到此刻，其余计到最后一条记录。
+// TeamUsage 是创作团队在这本书上的累计用量与用时，从落盘的尝试摘要汇总：重启程序、
+// 换窗口看到的都一样。用时算到快照时刻：进行中的尝试计到此刻，其余计到最后一次进展。
 type TeamUsage struct {
 	Total  model.Usage          `json:"total"`
 	Worked time.Duration        `json:"worked"`
@@ -44,10 +44,10 @@ func teamUsage(attempts []store.AttemptUsage, now time.Time) TeamUsage {
 	return usage
 }
 
-// attemptTime 一次尝试的执行时长：正在执行的到此刻，其余到它最后一条执行记录（收尾、
-// 合规核对，或进程中断前的最后一条消息——中断的尝试租约一过期就不再算到此刻）。
+// attemptTime 一次尝试的执行时长：正在执行的到此刻，其余到它最后一次进展（收尾、合规
+// 核对，或进程中断前的最后一条消息——中断的尝试租约一过期就不再算到此刻）。
 func attemptTime(attempt store.AttemptUsage, now time.Time) time.Duration {
-	end := attempt.LastAt
+	end := attempt.ActiveAt
 	if attempt.Live {
 		end = now
 	}

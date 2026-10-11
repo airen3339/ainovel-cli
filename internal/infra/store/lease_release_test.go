@@ -45,8 +45,8 @@ func TestReleasedAttemptsDoNotCountTowardLeaseExpiryLimit(t *testing.T) {
 	}
 }
 
-// 失败次数来自事件日志：执行失败与过期判失败各计一次，释放与普通过期不计。
-func TestCountOperationFailuresFollowsTheEventLog(t *testing.T) {
+// 失败次数来自尝试摘要：执行失败与过期判失败各计一次，释放与普通过期不计。
+func TestCountOperationFailuresFollowsAttemptOutcomes(t *testing.T) {
 	s := openOperationStore(t)
 	ctx := context.Background()
 	now := operationTime()

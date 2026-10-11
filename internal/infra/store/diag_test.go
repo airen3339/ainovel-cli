@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain/model"
 )
@@ -15,6 +16,25 @@ import (
 func seedDiagProject(t *testing.T, s *Store) {
 	t.Helper()
 	if _, err := s.db.Exec(`INSERT INTO authority_streams(target_kind,target_id,current_revision) VALUES ('project','book-1',1)`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// claimForDiag 领取任务建立尝试摘要，按 records 依次写入对话记录（用量、工具报错）。
+func claimForDiag(t *testing.T, s *Store, id string) model.Operation {
+	t.Helper()
+	claimed, err := s.ClaimOperationForExecutor(context.Background(), id, "worker", testExecutor, time.Minute, operationTime())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return claimed
+}
+
+func transcribe(t *testing.T, s *Store, operationID string, attempt int, payload []byte, usage model.Usage, toolErrors int) {
+	t.Helper()
+	if _, err := s.AppendTranscript(context.Background(), model.TranscriptEntry{
+		OperationID: operationID, Attempt: attempt, Kind: model.TranscriptMessage, Payload: payload, CreatedAt: operationTime(),
+	}, usage, toolErrors); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -28,71 +48,67 @@ func TestDiagScopePaginationAndPayloadBudget(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	payload := []byte(strings.Repeat("sensitive", 20000))
+	claimForDiag(t, s, "op-000")
+	payload := []byte(`"` + strings.Repeat("sensitive", 20000) + `"`)
 	for i := 1; i <= 205; i++ {
-		_, err := s.db.Exec(`INSERT INTO operation_events(operation_id,sequence,step_id,attempt,idempotency_key,kind,payload,payload_digest,created_at_unix_ms) VALUES ('op-000',?,'',0,?,'agent.message_committed',?,'digest',?)`, i, fmt.Sprint(i), payload, i)
-		if err != nil {
-			t.Fatal(err)
-		}
+		transcribe(t, s, "op-000", 1, payload, model.Usage{}, 0)
 	}
 	snap, err := s.ReadDiagSnapshot(ctx, DiagRequest{ProjectID: "book-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snap.OperationCount != 55 || len(snap.Operations) != 50 || snap.NextOperationID != "op-049" || snap.EventCount != 205 || len(snap.Events) != 200 || !snap.EventsTruncated {
+	if snap.OperationCount != 55 || len(snap.Operations) != 50 || snap.NextOperationID != "op-049" ||
+		len(snap.Attempts) != 1 || snap.Attempts[0].OperationID != "op-000" || len(snap.Transcript) != 0 {
 		t.Fatalf("unexpected pagination: %+v", snap)
-	}
-	for _, event := range snap.Events {
-		if len(event.Payload) != 0 {
-			t.Fatal("run snapshot read private payload")
-		}
 	}
 	next, err := s.ReadDiagSnapshot(ctx, DiagRequest{ProjectID: "book-1", AfterOperationID: snap.NextOperationID})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(next.Operations) != 5 || next.NextOperationID != "" || next.OperationCount != 55 {
+	if len(next.Operations) != 5 || next.NextOperationID != "" || next.OperationCount != 55 || len(next.Attempts) != 0 {
 		t.Fatalf("unexpected final page: %+v", next)
 	}
 	selected, err := s.ReadDiagSnapshot(ctx, DiagRequest{ProjectID: "book-1", OperationID: "op-000"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if selected.OperationCount != 1 || selected.EventCount != 205 || len(selected.Events) != 100 || selected.NextEventSequence != 100 {
-		t.Fatalf("unexpected event page: %+v", selected)
+	if selected.OperationCount != 1 || len(selected.Transcript) != 100 || selected.NextTranscriptSequence != 100 || !selected.TranscriptTruncated {
+		t.Fatalf("unexpected transcript page: %+v", selected)
 	}
-	if len(selected.Events[0].Payload) != 65536 || !selected.Events[0].PayloadTruncated {
+	if len(selected.Transcript[0].Payload) != 65536 || !selected.Transcript[0].PayloadTruncated {
 		t.Fatal("payload budget was not applied")
 	}
-	end, err := s.ReadDiagSnapshot(ctx, DiagRequest{ProjectID: "book-1", OperationID: "op-000", AfterEventSequence: 200})
+	end, err := s.ReadDiagSnapshot(ctx, DiagRequest{ProjectID: "book-1", OperationID: "op-000", AfterTranscriptSequence: 200})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(end.Events) != 5 || end.NextEventSequence != 0 || end.EventsTruncated {
-		t.Fatal("incorrect final event page")
+	if len(end.Transcript) != 5 || end.NextTranscriptSequence != 0 || end.TranscriptTruncated {
+		t.Fatal("incorrect final transcript page")
 	}
-	for _, req := range []DiagRequest{{ProjectID: "book-1", RunID: "other", OperationID: "op-000"}, {ProjectID: "book-1", AfterOperationID: "other"}} {
+	shared, err := s.ReadDiagSnapshot(ctx, DiagRequest{ProjectID: "book-1", OperationID: "op-000", ForShare: true})
+	if err != nil || len(shared.Transcript) != 0 || len(shared.Attempts) != 1 {
+		t.Fatalf("share read transcript: %+v %v", shared, err)
+	}
+	for _, req := range []DiagRequest{{ProjectID: "book-1", RunID: "other", OperationID: "op-000"}, {ProjectID: "book-1", AfterOperationID: "other"}, {ProjectID: "book-1", AfterTranscriptSequence: 1}} {
 		if _, err = s.ReadDiagSnapshot(ctx, req); !errors.Is(err, model.ErrInvalid) {
 			t.Fatalf("scope accepted: %+v %v", req, err)
 		}
 	}
-	if _, err := s.db.Exec(`UPDATE operations SET state='failed' WHERE id='op-054'`); err != nil {
+	claimed := claimForDiag(t, s, "op-054")
+	if _, err := s.FailOperation(ctx, "op-054", claimed.Attempt, "", "boom", operationTime().Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := s.db.Exec(`INSERT INTO operation_events(operation_id,sequence,step_id,attempt,idempotency_key,kind,payload,payload_digest,created_at_unix_ms) VALUES ('op-054',1,'',0,'failure','operation.transitioned',x'7b7d','digest',0)`); err != nil {
-		t.Fatal(err)
-	}
-	prioritized, err := s.ReadDiagSnapshot(ctx, DiagRequest{ProjectID: "book-1"})
+	prioritized, err := s.ReadDiagSnapshot(ctx, DiagRequest{ProjectID: "book-1", ForShare: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(prioritized.Events) != 200 || prioritized.Events[0].OperationID != "op-054" {
-		t.Fatal("recent message stream evicted old failure evidence")
+	if prioritized.Operations[0].ID != "op-054" || prioritized.Attempts[0].OperationID != "op-054" || prioritized.Attempts[0].Outcome != model.OperationFailed {
+		t.Fatalf("share lost failure context: %+v", prioritized.Attempts)
 	}
 }
 
-// 用量按事件用量列全量加总：跨尝试相加（中断的尝试没有 run_ended 也算上），选定任务时只算
-// 这个任务；运行级快照的事件带各自的用量，不读载荷。
+// 用量取尝试摘要全量加总：跨尝试相加（中断的尝试也算上），选定任务时只算这个任务，各次
+// 尝试带各自的用量。
 func TestDiagSumsUsageAcrossAttempts(t *testing.T) {
 	s := openOperationStore(t)
 	seedDiagProject(t, s)
@@ -101,20 +117,16 @@ func TestDiagSumsUsageAcrossAttempts(t *testing.T) {
 		if _, err := s.CreateOperation(ctx, testOperation(id, 0, operationTime())); err != nil {
 			t.Fatal(err)
 		}
+		claimForDiag(t, s, id)
 	}
-	spend := func(operationID string, sequence, attempt int, kind string, usage model.Usage) {
-		t.Helper()
-		if _, err := s.db.Exec(`INSERT INTO operation_events(operation_id,sequence,step_id,attempt,idempotency_key,kind,input_tokens,output_tokens,cache_read_tokens,cost,payload,payload_digest,created_at_unix_ms)
-			VALUES (?,?,'',?,?,?,?,?,?,?,x'7b7d','digest',?)`,
-			operationID, sequence, attempt, fmt.Sprint(operationID, sequence), kind, usage.Input, usage.Output, usage.CacheRead, usage.Cost, sequence); err != nil {
-			t.Fatal(err)
-		}
+	transcribe(t, s, "op-a", 1, []byte(`{}`), model.Usage{Input: 100, Output: 10, CacheRead: 60, Cost: 0.1}, 0) // 第 1 次尝试中断
+	if _, err := s.RecoverExpiredOperations(ctx, operationTime().Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
 	}
-	spend("op-a", 1, 1, "agent.message_committed", model.Usage{Input: 100, Output: 10, CacheRead: 60, Cost: 0.1}) // 第 1 次尝试中断，没有 run_ended
-	spend("op-a", 2, 2, "agent.message_committed", model.Usage{Input: 50, Output: 5})
-	spend("op-a", 3, 2, "agent.run_ended", model.Usage{})
-	spend("op-a", 4, 2, "semantic.compliance_checked", model.Usage{Input: 7, Output: 1})
-	spend("op-b", 5, 1, "agent.message_committed", model.Usage{Input: 1000})
+	claimForDiag(t, s, "op-a")
+	transcribe(t, s, "op-a", 2, []byte(`{}`), model.Usage{Input: 50, Output: 5}, 0)
+	transcribe(t, s, "op-a", 2, []byte(`{}`), model.Usage{Input: 7, Output: 1}, 0)
+	transcribe(t, s, "op-b", 1, []byte(`{}`), model.Usage{Input: 1000}, 0)
 
 	run, err := s.ReadDiagSnapshot(ctx, DiagRequest{ProjectID: "book-1"})
 	if err != nil {
@@ -123,23 +135,23 @@ func TestDiagSumsUsageAcrossAttempts(t *testing.T) {
 	if run.Usage != (model.Usage{Input: 1157, Output: 16, CacheRead: 60, Cost: 0.1}) {
 		t.Fatalf("diag run usage = %+v", run.Usage)
 	}
-	for _, event := range run.Events {
-		if event.OperationID == "op-a" && event.Sequence == 4 && event.Usage != (model.Usage{Input: 7, Output: 1}) {
-			t.Fatalf("event usage = %+v", event.Usage)
-		}
-	}
 	task, err := s.ReadDiagSnapshot(ctx, DiagRequest{ProjectID: "book-1", OperationID: "op-a"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if task.Usage != (model.Usage{Input: 157, Output: 16, CacheRead: 60, Cost: 0.1}) || len(task.Events) != 4 || task.Events[0].Usage.Input != 100 {
-		t.Fatalf("task usage = %+v events = %+v", task.Usage, task.Events)
+	if task.Usage != (model.Usage{Input: 157, Output: 16, CacheRead: 60, Cost: 0.1}) || len(task.Attempts) != 2 {
+		t.Fatalf("task usage = %+v attempts = %+v", task.Usage, task.Attempts)
+	}
+	for _, attempt := range task.Attempts {
+		if attempt.Attempt == 1 && (!attempt.LeaseExpired || attempt.Usage.Input != 100) {
+			t.Fatalf("interrupted attempt = %+v", attempt)
+		}
 	}
 }
 
-// 工具报错必须在运行级就能统计出来：运行级不读载荷，统计只能走 SQL 谓词。
-// 回归的样子是这里归零而选中任务时才有数——那正是用户看不到错误的那个缺口。
-func TestDiagCountsToolErrorsWithoutReadingPayloads(t *testing.T) {
+// 工具报错在写入时计入尝试摘要，运行级全量统计、按尝试聚合，不读对话记录。回归的样子是
+// 这里归零而选中任务时才有数——那正是用户看不到错误的那个缺口。
+func TestDiagCountsToolErrorsFromAttemptSummaries(t *testing.T) {
 	s := openOperationStore(t)
 	seedDiagProject(t, s)
 	ctx := context.Background()
@@ -147,59 +159,36 @@ func TestDiagCountsToolErrorsWithoutReadingPayloads(t *testing.T) {
 		if _, err := s.CreateOperation(ctx, testOperation(id, 0, operationTime())); err != nil {
 			t.Fatal(err)
 		}
+		claimForDiag(t, s, id)
 	}
-	commit := func(operationID string, sequence int, attempt int, payload string) {
-		t.Helper()
-		if _, err := s.db.Exec(`INSERT INTO operation_events(operation_id,sequence,step_id,attempt,idempotency_key,kind,payload,payload_digest,created_at_unix_ms)
-			VALUES (?,?,'',?,?,'agent.message_committed',?,'digest',?)`,
-			operationID, sequence, attempt, fmt.Sprint(operationID, sequence), []byte(payload), sequence); err != nil {
-			t.Fatal(err)
-		}
+	transcribe(t, s, "op-a", 1, []byte(`{}`), model.Usage{}, 1)
+	transcribe(t, s, "op-a", 1, []byte(`{}`), model.Usage{}, 1)
+	if _, err := s.ConcludeOperation(ctx, "op-a", 1, model.OperationQueued, "released", operationTime()); err != nil {
+		t.Fatal(err)
 	}
-	const toolError = `{"role":"tool","metadata":{"is_error":true},"content":"workspace version conflict"}`
-	commit("op-a", 1, 1, toolError)
-	commit("op-a", 2, 1, toolError)
-	commit("op-a", 3, 2, toolError)                                           // 同一任务的另一次尝试单独成组
-	commit("op-a", 4, 2, `{"role":"tool","metadata":{"is_error":false}}`)     // 成功的工具结果不计
-	commit("op-a", 5, 2, `{"role":"assistant","metadata":{"is_error":true}}`) // 非工具消息不计
-	commit("op-a", 6, 2, `not json at all`)                                   // 非法载荷不能中断查询，也不能记为零
-	commit("op-b", 7, 1, toolError)
+	claimForDiag(t, s, "op-a")
+	transcribe(t, s, "op-a", 2, []byte(`{}`), model.Usage{}, 1) // 同一任务的另一次尝试单独成组
+	transcribe(t, s, "op-a", 2, []byte(`{}`), model.Usage{}, 0)
+	transcribe(t, s, "op-b", 1, []byte(`{}`), model.Usage{}, 1)
 
 	snap, err := s.ReadDiagSnapshot(ctx, DiagRequest{ProjectID: "book-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snap.ToolErrorCount != 4 {
+	if snap.ToolErrorCount != 4 || len(snap.Transcript) != 0 {
 		t.Fatalf("工具错误计数 = %d, want 4", snap.ToolErrorCount)
 	}
-	if snap.UnreadableMessages != 1 {
-		t.Fatalf("无法解析的消息数 = %d, want 1", snap.UnreadableMessages)
-	}
-	for _, event := range snap.Events {
-		if len(event.Payload) != 0 {
-			t.Fatal("运行级快照为统计工具错误读取了载荷")
-		}
-	}
-	got := map[string]DiagToolError{}
+	got := map[string]int{}
 	for _, group := range snap.ToolErrors {
-		got[fmt.Sprintf("%s#%d", group.OperationID, group.Attempt)] = group
+		got[fmt.Sprintf("%s#%d", group.OperationID, group.Attempt)] = group.Count
 	}
-	want := map[string]struct {
-		count int
-		last  int64
-	}{
-		"op-a#1": {2, 2}, "op-a#2": {1, 3}, "op-b#1": {1, 7},
-	}
+	want := map[string]int{"op-a#1": 2, "op-a#2": 1, "op-b#1": 1}
 	if len(got) != len(want) {
-		t.Fatalf("聚合分组 = %+v, want %d 组", snap.ToolErrors, len(want))
+		t.Fatalf("聚合分组 = %+v, want %v", snap.ToolErrors, want)
 	}
-	for key, expected := range want {
-		group, ok := got[key]
-		if !ok {
-			t.Fatalf("缺少分组 %s；实际 %+v", key, snap.ToolErrors)
-		}
-		if group.Count != expected.count || group.LastSequence != expected.last {
-			t.Errorf("%s = 次数 %d 末条 %d, want %d / %d", key, group.Count, group.LastSequence, expected.count, expected.last)
+	for key, count := range want {
+		if got[key] != count {
+			t.Errorf("%s = %d, want %d", key, got[key], count)
 		}
 	}
 }
@@ -256,10 +245,6 @@ func TestDiagAggregatesCoverHiddenTasksAndCurrentAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.db.Exec(`INSERT INTO operation_events(operation_id,sequence,step_id,attempt,idempotency_key,kind,payload,payload_digest,created_at_unix_ms) VALUES ('op-054',1,'',1,'ended-1','agent.run_ended',x'7b7d','digest',1)`)
-	if err != nil {
-		t.Fatal(err)
-	}
 	_, err = s.db.Exec(`UPDATE operations SET state='running',attempt=1,lease_owner='owner',lease_until_unix_ms=1 WHERE id='op-053'`)
 	if err != nil {
 		t.Fatal(err)
@@ -268,15 +253,8 @@ func TestDiagAggregatesCoverHiddenTasksAndCurrentAttempt(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if snap.Counts[model.OperationFailed] != 1 || snap.AttemptCount != 3 || snap.RetriedOperationCount != 1 || snap.MissingCompletionEventCount != 1 || snap.ExpiredLeaseCount != 1 || snap.ResultUnknownCount != 1 {
+	if snap.Counts[model.OperationFailed] != 1 || snap.AttemptCount != 3 || snap.RetriedOperationCount != 1 || snap.ExpiredLeaseCount != 1 || snap.ResultUnknownCount != 1 {
 		t.Fatalf("scope aggregate missed hidden tasks: %+v", snap)
-	}
-	selected, err := s.ReadDiagSnapshot(ctx, DiagRequest{ProjectID: "book-1", OperationID: "op-054"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if selected.Operations[0].HasCompletionEvent {
-		t.Fatal("previous attempt completion masked current missing observation")
 	}
 	_, err = s.db.Exec(`UPDATE creation_runs SET state='completed' WHERE id='run:book-1'`)
 	if err != nil {
@@ -323,7 +301,10 @@ func BenchmarkDiagSnapshot(b *testing.B) {
 				if _, err = tx.Exec(`INSERT INTO operations(id,content_digest,kind,target_kind,target_id,priority,state,attempt,execution_snapshot,input,executor,run_id,created_at_unix_ms,updated_at_unix_ms) VALUES (?,'digest','write_chapter','project','book',0,'succeeded',1,?,?,'llm.agent@1','run',1,1)`, id, []byte(`{"config_digest":"profile"}`), payload); err != nil {
 					b.Fatal(err)
 				}
-				if _, err = tx.Exec(`INSERT INTO operation_events(operation_id,sequence,step_id,attempt,idempotency_key,kind,payload,payload_digest,created_at_unix_ms) VALUES (?,1,'',1,'message','agent.message_committed',?,'digest',1)`, id, payload); err != nil {
+				if _, err = tx.Exec(`INSERT INTO operation_attempts(operation_id,attempt,worker,outcome,started_at_unix_ms,active_at_unix_ms) VALUES (?,1,'worker','succeeded',1,1)`, id); err != nil {
+					b.Fatal(err)
+				}
+				if _, err = tx.Exec(`INSERT INTO operation_transcripts(operation_id,sequence,attempt,kind,payload,created_at_unix_ms) VALUES (?,1,1,'message',?,1)`, id, payload); err != nil {
 					b.Fatal(err)
 				}
 			}
@@ -337,13 +318,8 @@ func BenchmarkDiagSnapshot(b *testing.B) {
 				if err != nil {
 					b.Fatal(err)
 				}
-				if snap.OperationCount != count || len(snap.Operations) != 50 || len(snap.Events) != 200 {
+				if snap.OperationCount != count || len(snap.Operations) != 50 || len(snap.Attempts) != 50 || len(snap.Transcript) != 0 {
 					b.Fatal("unbounded diagnostic projection")
-				}
-				for _, event := range snap.Events {
-					if len(event.Payload) != 0 {
-						b.Fatal("summary fetched content")
-					}
 				}
 			}
 		})

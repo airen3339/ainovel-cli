@@ -167,7 +167,7 @@ func (c Compiled) record(createdAt time.Time) (model.ExecutionProfileRecord, err
 }
 
 // ExecutorIdentity 是 LLM 执行族的身份（D45）：agent 循环的族与版本。模型不在
-// 身份里——它是运行时绑定（D57），每次尝试以 agent.run_started 记录实际使用的模型。
+// 身份里——它是运行时绑定（D57），每次尝试在尝试摘要里记下实际使用的模型。
 const ExecutorIdentity = "llm.agent@1"
 
 func validSlot(slot Slot) bool {

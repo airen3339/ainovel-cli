@@ -36,16 +36,19 @@ func TestDiagnosticsReadOnlyLocalDetailsAndShare(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for i, event := range []struct {
-		kind, payload string
-		usage         model.Usage
+	for i, entry := range []struct {
+		kind       model.TranscriptKind
+		payload    string
+		usage      model.Usage
+		toolErrors int
 	}{
-		{"agent.message_committed", `{"role":"assistant","content":[{"type":"text","text":"PRIVATE_SENTINEL"}]}`, model.Usage{Input: 12, Output: 3}},
-		{"agent.message_committed", `{"role":"tool","metadata":{"is_error":true},"content":[{"type":"text","text":"PRIVATE_SENTINEL"}]}`, model.Usage{}},
-		{"agent.run_ended", `{"error":"PRIVATE_SENTINEL"}`, model.Usage{}},
+		{model.TranscriptMessage, `{"role":"assistant","blocks":[{"type":"text","text":"PRIVATE_SENTINEL"}]}`, model.Usage{Input: 12, Output: 3}, 0},
+		{model.TranscriptMessage, `{"role":"tool","blocks":[{"type":"tool_result","tool_use_id":"call-1","content":[{"type":"text","text":"PRIVATE_SENTINEL"}],"is_error":true}]}`, model.Usage{}, 1},
+		{model.TranscriptJudgment, `{"provider":"p","model":"m","error":"PRIVATE_SENTINEL"}`, model.Usage{}, 0},
 	} {
-		key := fmt.Sprint(event.kind, i)
-		if _, err := s.AppendOperationEvent(ctx, model.OperationEvent{OperationID: op.ID, Attempt: claimed.Attempt, StepID: event.kind, IdempotencyKey: key, Kind: event.kind, Payload: []byte(event.payload), Usage: event.usage, CreatedAt: now.Add(time.Duration(i) * time.Millisecond)}); err != nil {
+		if _, err := s.AppendTranscript(ctx, model.TranscriptEntry{
+			OperationID: op.ID, Attempt: claimed.Attempt, Kind: entry.kind, Payload: []byte(entry.payload), CreatedAt: now.Add(time.Duration(i) * time.Millisecond),
+		}, entry.usage, entry.toolErrors); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -60,24 +63,20 @@ func TestDiagnosticsReadOnlyLocalDetailsAndShare(t *testing.T) {
 	if summary.Metrics.Operations != 1 || len(summary.Findings) != 0 || summary.Metrics.Usage != (model.Usage{Input: 12, Output: 3}) {
 		t.Fatalf("summary false failure: %+v", summary)
 	}
-	for _, event := range summary.Events {
-		if event.Text != "" {
-			t.Fatal("summary loaded message bodies")
-		}
+	if len(summary.Transcript) != 0 || len(summary.Attempts) != 1 || summary.Attempts[0].Error != "" {
+		t.Fatalf("summary loaded private details: %+v", summary)
 	}
 	request.OperationID = op.ID
 	detail, err := api.Diag.Inspect(ctx, request)
 	if err != nil {
 		t.Fatal(err)
 	}
-	foundTool, foundUsage := false, false
+	foundTool := false
 	for _, finding := range detail.Findings {
 		foundTool = foundTool || finding.Code == "execution.tool_error"
 	}
-	for _, event := range detail.Events {
-		foundUsage = foundUsage || event.Usage == (model.Usage{Input: 12, Output: 3})
-	}
-	if !foundTool || !foundUsage || detail.Metrics.States[model.OperationSucceeded] != 1 {
+	if !foundTool || len(detail.Transcript) != 3 || len(detail.Attempts) != 1 || detail.Attempts[0].ToolErrors != 1 ||
+		detail.Attempts[0].Usage != (model.Usage{Input: 12, Output: 3}) || detail.Metrics.States[model.OperationSucceeded] != 1 {
 		t.Fatalf("self-corrected details lost: %+v", detail)
 	}
 	path := filepath.Join(t.TempDir(), "diagnostics.json")
@@ -107,15 +106,15 @@ func TestDiagnosticsReadOnlyLocalDetailsAndShare(t *testing.T) {
 	if err != nil || final.Revision != project.Revision {
 		t.Fatal("diagnostic changed project")
 	}
-	// A last event page still omits earlier events, despite having no next cursor.
-	last, err := api.Diag.Inspect(ctx, diag.Request{ProjectID: project.ID, OperationID: op.ID, EventAfter: 3})
+	// A last transcript page still omits earlier entries, despite having no next cursor.
+	last, err := api.Diag.Inspect(ctx, diag.Request{ProjectID: project.ID, OperationID: op.ID, TranscriptAfter: 2})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if last.NextEventSequence != 0 || last.Metrics.Events <= len(last.Events) {
+	if last.NextTranscriptSequence != 0 || len(last.Transcript) != 1 {
 		t.Fatal("fixture is not a partial final page")
 	}
-	assertDiagCoverage(t, last, "events", "truncated")
+	assertDiagCoverage(t, last, "transcript", "truncated")
 	assertDiagCoverage(t, last, "statistics", "complete")
 
 	// The failing task is beyond both the first UI page and the share budget.
@@ -202,10 +201,8 @@ func TestDiagnosticsRaiseToolErrorsOnlyWhenRepeated(t *testing.T) {
 			t.Fatal(err)
 		}
 		for i := 0; i < toolErrors; i++ {
-			key := fmt.Sprintf("tool-%d", i)
-			if _, err := s.AppendOperationEvent(ctx, model.OperationEvent{OperationID: id, Attempt: claimed.Attempt,
-				StepID: key, IdempotencyKey: key, Kind: "agent.message_committed", CreatedAt: now,
-				Payload: []byte(`{"role":"tool","metadata":{"is_error":true},"content":"workspace version conflict"}`)}); err != nil {
+			if _, err := s.AppendTranscript(ctx, model.TranscriptEntry{OperationID: id, Attempt: claimed.Attempt, Kind: model.TranscriptMessage, CreatedAt: now,
+				Payload: []byte(`{"role":"tool","blocks":[{"type":"tool_result","tool_use_id":"call","is_error":true}]}`)}, model.Usage{}, 1); err != nil {
 				t.Fatal(err)
 			}
 		}

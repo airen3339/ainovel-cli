@@ -483,7 +483,7 @@ approval_policy   启动时刻的审批策略（追溯记录与最低约束）
 
 快照不区分执行族的字段形状：Execution Profile（Worker、核心协议、Prompt 与工具摘要、来源清单）是 LLM 族的配置记录，按内容寻址、同摘要天然幂等，不再对快照自身取摘要。`bootstrap` 通过 `app/task.ExecutorSet` 静态装配 LLM 与 external 两族，按任务族创建、按冻结身份运行；跨执行器领取仍保持全局优先级。领取按 `executor` 相等过滤，执行前核对身份；引擎与推导器都不认识 Prompt Registry。运行中 Prompt、Pack 或 Profile 发生变化，不回头改写当前 Operation 的执行环境。系统把它标记为仍可继续、需要用户重启或已经 stale；不得把新旧配置混入同一次结果。用户希望新配置立即作用于当前任务时，产品执行“取消/保留旧工作区 → 基于新快照重启”的显式操作。
 
-模型绑定（连接、模型、思考强度）不在快照与 Execution Profile 里（D57）：它是 Runtime 的运行时属性，随时可换。队列中的任务在每次 attempt 开始时取当时的绑定；在途 attempt 保持自己的绑定跑完（不迁移配置热修改在途请求），要立刻换只需暂停再继续。每次 attempt 追加 `agent.run_started` 事件记录实际角色、provider、模型、生效思考强度与模型配置摘要，历史由事件解释而不是由快照冻结。
+模型绑定（连接、模型、思考强度）不在快照与 Execution Profile 里（D57）：它是 Runtime 的运行时属性，随时可换。队列中的任务在每次 attempt 开始时取当时的绑定；在途 attempt 保持自己的绑定跑完（不迁移配置热修改在途请求），要立刻换只需暂停再继续。每次 attempt 在尝试摘要里记下实际角色、provider、模型、生效思考强度与模型配置摘要（D72），历史由尝试摘要解释而不是由快照冻结。
 
 但权限与审批不属于执行环境：提交裁决始终取快照与最新已批准 Revision 中更严格的一方（§5.5），`approval_policy_snapshot` 作追溯记录与最低约束，用户新加的锁对在途任务的后续提交立即可见。
 
@@ -491,11 +491,11 @@ approval_policy   启动时刻的审批策略（追溯记录与最低约束）
 
 每个可产生副作用的步骤使用 `(operation_id, step_id, attempt)` 和幂等键记录。重试可以重复模型计算，但不能重复提交 Proposal、ChangeSet 或派生数据写入；超过重试策略后显式失败，不降级成模板结果或跳过校验。
 
-执行归属是运行不变量（D42）：每次领取递增 attempt，attempt 就是执行实例的围栏令牌。过期或被接替的实例不得再写工作区、不得改变任务状态、不得提交正式内容。归属检查必须与受保护写入原子化：工作区写入、状态收尾与执行侧提交各自在同一事务（或等价的原子条件）内校验当前 attempt；检查与写入分成两步，取消就会落在缝隙里。普通派生缓存（摘要、索引、上下文包）不要求执行围栏，但必须版本隔离：来源 Revision 明确，旧结果不得覆盖新结果或被当作当前结果。派生产出被采纳为任务结果、审批依据或完成证据（如审阅裁定）时，仍须校验执行归属与证据有效性：落盘走执行侧围栏，且只有其 Operation 以当前执行成功收尾后才算证据；旧执行的结果可留作诊断，不得未经检查影响当前运行。幂等解决的是重复执行，替代不了归属检查。取消与提交的顺序也是确定的：用户取消先完成，之后的收尾与提交被拒绝；提交先完成，取消不追溯删除已提交内容，只结束任务。这条规则面向单机多进程，不引入分布式协调。进程退出（界面退出、终止信号）时在途执行收到取消：执行器停手，引擎用脱离取消的短上下文把任务放回 `queued` 并释放租约（记 `operation.transitioned` 事件；不算失败、不计重开预算），下次进入接着对话与工作区续跑；崩溃仍由租约到期回收，同一任务过期次数达到上限（`MaxLeaseExpiries`）才判失败，attempt 只作围栏不作计数。
+执行归属是运行不变量（D42）：每次领取递增 attempt，attempt 就是执行实例的围栏令牌。过期或被接替的实例不得再写工作区、不得改变任务状态、不得提交正式内容。归属检查必须与受保护写入原子化：工作区写入、状态收尾与执行侧提交各自在同一事务（或等价的原子条件）内校验当前 attempt；检查与写入分成两步，取消就会落在缝隙里。普通派生缓存（摘要、索引、上下文包）不要求执行围栏，但必须版本隔离：来源 Revision 明确，旧结果不得覆盖新结果或被当作当前结果。派生产出被采纳为任务结果、审批依据或完成证据（如审阅裁定）时，仍须校验执行归属与证据有效性：落盘走执行侧围栏，且只有其 Operation 以当前执行成功收尾后才算证据；旧执行的结果可留作诊断，不得未经检查影响当前运行。幂等解决的是重复执行，替代不了归属检查。取消与提交的顺序也是确定的：用户取消先完成，之后的收尾与提交被拒绝；提交先完成，取消不追溯删除已提交内容，只结束任务。这条规则面向单机多进程，不引入分布式协调。进程退出（界面退出、终止信号）时在途执行收到取消：执行器停手，引擎用脱离取消的短上下文把任务放回 `queued` 并释放租约（这次尝试以 `queued` 收尾；不算失败、不计重开预算），下次进入接着对话与工作区续跑；崩溃仍由租约到期回收，同一任务过期次数达到上限（`MaxLeaseExpiries`）才判失败，attempt 只作围栏不作计数。
 
 外部异步任务（D46）不加新状态：执行器在租约内先把请求记录（`external.request` 工作区工件：Operation、attempt、RequestID、提交时间，以及目标/执行器/输入/来源快照/配置身份）落盘，再向外部服务提交；崩溃或租约过期后的下一次执行按记录里的 RequestID 查询而不是重提；服务不认识该请求时以同一 ID 重提；服务不支持恢复或查询超时时以失败码 `result_unknown` 失败，不自动重试。用户动作零新 API：对账 = Resume（failed → queued，仍按 ID 查询）；重提 = Restart（后继继承请求记录；身份相同才先恢复一次，输入、来源快照或配置不同则使用新 ID；仍未知时按用户明确决定换新 ID 重提）。失败码随下一次状态变化清空。
 
-一次 LLM 调用只有一个重试策略拥有者，禁止 provider、agent loop 和 Operation 三层叠加重试。网络/限流等可重试错误由统一分类器决定退避；Schema、工具前置条件和领域冲突属于可诊断失败，返回 Agent 或用户修正，不伪装成网络重试。每次尝试都写入 Operation 事件，用户能看到实际等待和失败原因。
+一次 LLM 调用只有一个重试策略拥有者，禁止 provider、agent loop 和 Operation 三层叠加重试。网络/限流等可重试错误由统一分类器决定退避；Schema、工具前置条件和领域冲突属于可诊断失败，返回 Agent 或用户修正，不伪装成网络重试。每次尝试都有持久的尝试摘要（D72），用户能看到实际等待和失败原因。
 
 基线：全部已落入 Operation Workspace 的有效中间结果都可以保留；是否基于它继续由用户显式决定。
 
@@ -672,7 +672,7 @@ creator_profile_revision
 project_overlay_revision
 ```
 
-模型配置不在其中（D57）：Execution Profile 只回答“说什么、用哪些工具、按哪版协议”，“谁来说”由每次 attempt 的 `agent.run_started` 记录。
+模型配置不在其中（D57）：Execution Profile 只回答“说什么、用哪些工具、按哪版协议”，“谁来说”由每次 attempt 的尝试摘要记录（D72）。
 
 缓存纪律：
 
@@ -682,7 +682,7 @@ project_overlay_revision
 4. `prompt_cache_key` 至少区分 Project、Worker Profile、Execution Profile Digest 和 Session 血统（Operation 加模型绑定摘要：换模型或思考强度即换 Session，不与旧前缀混用）；具体 provider 字段继续由 agentcore/litellm 能力门控。
 5. Pack 或 Prompt 的主动修改允许发生一次计划内缓存失效，但正常章节推进不能因为状态变化反复破坏前缀。
 
-Execution Profile 记录实际 Prompt 来源与工具 Schema Digest，每次 attempt 的 `agent.run_started` 记录角色、provider、模型、生效思考强度与模型配置摘要，消息事件带 cache usage，使“这一章为什么这样写”“是谁写的”和“为什么缓存失效”都能追溯。
+Execution Profile 记录实际 Prompt 来源与工具 Schema Digest，每次 attempt 的尝试摘要记录角色、provider、模型、生效思考强度、模型配置摘要与累计用量（含 cache usage），使“这一章为什么这样写”“是谁写的”和“为什么缓存失效”都能追溯。
 
 ## 8. Creator Profile
 
@@ -1005,7 +1005,7 @@ Runtime 直接运行单次 `agentcore.Run`：串行工具执行，每条消息�
 
 真实实证暴露的缺口：第 2 章的 Agent 会话结束后在收尾被拒，Run 立即转 `failed`；Run 是终态，协调器里已有的 Resume/后继机制永远走不到，用户续跑只能新建 Run 从头重写，草稿与对话全部作废。执行失败是会话级事件，不是整轮创作的失败。
 
-协调器对 `failed` 的 Operation 在预算内（常量 `autoReopenBudget = 3`，最多自动重开 3 次；次数按事件日志里的失败次数计，即 `Tasks.Failures`，不按 attempt——attempt 是执行围栏，进程退出释放的执行不算失败）不落盘任何 Run 状态，下一轮由 `ensureChainedOperation` 现有的 Resume（恢复对话与工作区）或后继（被否决候选）路径重开；capability 在重开的会话提示里注入上一次失败原因（取自 `operation.transitioned` 事件），模型先修正再继续。预算用尽转入 `waiting_user`，说明次数与最近原因，草稿保留；用户续跑等于再授予一次尝试，仍失败则再次停下。
+协调器对 `failed` 的 Operation 在预算内（常量 `autoReopenBudget = 3`，最多自动重开 3 次；次数按以失败收尾的尝试计，即 `Tasks.Failures`（D72 前取自事件日志），不按 attempt——attempt 是执行围栏，进程退出释放的执行不算失败）不落盘任何 Run 状态，下一轮由 `ensureChainedOperation` 现有的 Resume（恢复对话与工作区）或后继（被否决候选）路径重开；capability 在重开的会话提示里注入上一次失败原因（取自尝试摘要，D72），模型先修正再继续。预算用尽转入 `waiting_user`，说明次数与最近原因，草稿保留；用户续跑等于再授予一次尝试，仍失败则再次停下。
 
 它与 provider 的调用级重试不叠加（§6.2）：调用级重试处理单次调用，重开处理已结束的会话。预算先为协调器常量，不进 RunStrategy 与预设摘要，出现真实调节需求再按 §14 提升为字段。`fail` 决策与卡死判定仍转 `failed`；不新增任务状态与 schema。
 
@@ -1017,7 +1017,7 @@ Runtime 直接运行单次 `agentcore.Run`：串行工具执行，每条消息�
 
 - LLM 族执行器身份是常量 `llm.agent@1`；Execution Profile 不含模型配置摘要，只剩 Prompt / 工具 / 协议。“说什么”与“谁来说”分离。
 - Runtime 常驻、可重绑定（`Bind`）；未绑定时不领取 LLM 任务、拒绝快速创作，任务照常入队。队列中的任务在每次 attempt 开始时取当前绑定；在途 attempt 保持原绑定跑完，要立刻换：暂停再继续。
-- 每次 attempt 追加 `agent.run_started`（角色、provider、模型、生效思考强度、模型配置摘要），历史由事件解释。例外：语义合规检查由 Operation Engine 在 Execute 之后单独调用，只能用调用时刻的默认绑定，其事件载荷记 Provider 与模型、用量记在事件的用量列，可追溯。
+- 每次 attempt 追加 `agent.run_started`（角色、provider、模型、生效思考强度、模型配置摘要），历史由事件解释。例外：语义合规检查由 Operation Engine 在 Execute 之后单独调用，只能用调用时刻的默认绑定，其事件载荷记 Provider 与模型、用量记在事件的用量列，可追溯。（D72 起绑定记在尝试摘要上，合规判断的模型与结论记在对话记录里，用量并入所在尝试。）
 - 思考强度是意图：存配置、切模型不抹掉；执行时按该模型能力解析生效值（不支持则自动），事件记生效值。同一模型缓存键混入绑定摘要，换绑定即换 Session。
 - 角色映射是 worker profile 的 `ModelRole`（architect / writer / editor）；未配的角色跟随默认。配置文件顶层 `provider / model / thinking` 加 `roles{role:{provider, model, thinking}}`；环境变量（含 `AINOVEL_THINKING`）在启动时仍优先于文件。
 - 切换入口：`app/binding.Service`（工作台 `/model [角色]` 面板与 headless `model` 命令共用），先保存文件再重绑，任一失败状态不变。
@@ -1036,6 +1036,8 @@ Runtime 直接运行单次 `agentcore.Run`：串行工具执行，每条消息�
 实证发现：一轮 5 章的运行里模型撞了 28 次工具报错（其中一章一次尝试内连撞 8 次 `workspace version conflict`），而 `diag --project` 的 findings 只有 1 条失败任务，工具报错一条不报。根因有两层：运行级快照为省预算与避免正文进投影，事件载荷一律不读（`payload=NULL`），而工具报错的标记写在载荷里，于是运行级恒为零；另一层是 `TestDiagnosticsReadOnlyLocalDetailsAndShare` 刻意断言"单次自纠的成功任务不得在运行级报成问题"——避免误报的意图本身成立。
 
 决定：**报错标记的判定下推到 SQL 谓词，运行级在不读载荷的前提下全量统计**（`json_valid` 守卫必须排在 `json_extract` 之前：SQLite 只在 WHERE 与 CASE 条件里按序短路，非法载荷否则中断整条查询；无法解析的消息单独计数并落到 coverage，不记为零）。可见性与告警分离：**总数常驻 `Metrics.ToolErrors`，任何范围都看得见；`execution.tool_error` 只在同一次 attempt 内重复报错时才立发现**（沿用 D 系列既有的 `execution.repeated_unknown_result` 惯例——重复才是信号），选定任务时照旧给全部细节。证据按 `(任务, attempt)` 聚合，只带坐标不带正文，分享导出因此也能携带该计数。
+
+后续：D72 起工具报错在写入时由 capability 从类型化消息数出、计入尝试摘要，SQL 谓词与"无法解析的消息"计数随之撤销——按载荷形状判定在 agentcore 换了消息格式后已静默归零。
 
 配套（非协议）：`workspace_replace_block` 的冲突错误改为可自纠的文案，给出当前版本而不是只说"冲突"。全量写入工具的 `expected_version` 随后被 D60 整体移除——补说明只是缓解，根因是那个参数本就不该存在。
 
@@ -1476,3 +1478,34 @@ v0 由 AI 定篇幅：指南针加滚动续卷，模型宣布完结，确定性�
 **边界**：用户在卷或故事弧行提的要求覆盖其中已写章节，这些窗口照常重审。这是要求本身的语义，作用范围在输入框旁可见，不在此列。
 
 **守护**：`TestRejectingExtensionPlanKeepsWrittenReviews`：已审第 1–3 章后否决扩写方案，理由作用域为 `from_chapter:4`；续跑只多一次规划、零次审阅，重新规划的任务输入带着理由。变异验证：作用域改回全书，续跑多出一次审阅，用例失败。
+
+### D72：执行记录按生命周期分层——尝试摘要与对话记录（2026-10-11）
+
+**实证**：
+- `operation_events` 一张表混着三种寿命的数据：状态变化流水、每次尝试的统计（模型、用量、起止）、Agent 对话原文。15 章的书里事件载荷 8 MB，正文全部版本 226 KB，载荷约为正文的 35 倍；按比例推到 500 章约 270 MB。
+- 事实藏在载荷里，读取方各自解析：失败预算、租约过期次数、角色与模型靠 SQL 里的 `json_extract`；工具报错由诊断在 SQL 里按消息形状判定，`app/task` 另有一份按 agentcore 序列化形状解码的提取。
+- 后果已经发生：agentcore 的消息格式从 `metadata.is_error` 换成 `blocks[].is_error` 后，D59 的运行级工具报错统计恒为零（本机库实测：谓词命中 0 条，实际 10 条）。测试夹具按旧形状手写，一直通过。
+- 对话记录回收不了：一删，用量统计、失败预算与诊断都跟着丢。
+
+**决定**：执行记录按生命周期分两张表，事实在写入时落到有类型的列，读取方不解析载荷。
+1. **尝试摘要 `operation_attempts`**：每次领取一行，与任务同寿。记执行者；Agent 会话实际绑定（角色、provider、模型、生效思考强度、配置摘要，D57）；累计用量与工具报错数；结局（离开 running 时任务进入的状态、原因、失败码、是否由租约回收收尾）；开始时刻与最后进展时刻。
+   - 领取在同一事务里建立摘要；任务离开 running 的每条路径（收尾、失败、用户暂停或取消、进程退出释放、租约回收）都在同一事务里收尾。不变量：running 任务的当前 attempt 恰有一条未收尾的摘要。
+   - 租约回收说明执行者失联，不推进最后进展时刻：中断尝试的用时停在失联前。
+2. **对话记录 `operation_transcripts`**：Agent 会话的消息，以及会话之外的单次判断（语义合规），只服务续跑恢复与诊断。
+   - 追加时在同一事务里把这条记录的用量与工具报错并入尝试摘要。工具报错由 capability 从 agentcore 的类型化消息（`ToolResultBlock.IsError`）数出，不按 JSON 形状猜。
+   - 不做执行围栏：被接替的执行花掉的用量也是真实开销，只记在它自己的尝试上。
+   - 回收只由用户显式触发（`operation prune`，同 D47"GC 只显式触发"），只回收成功、取消、失效这些不会再执行的任务；尝试摘要保留，用量、失败预算与诊断统计不受影响。
+3. **读取方只读摘要的列**：D56 失败预算数以 `failed` 收尾的尝试；租约过期上限数由租约回收收尾的尝试；续跑带回的失败原因取最近一次非租约回收的失败尝试；创作团队直接读摘要，角色取同一任务的 Agent 绑定；诊断的用量、工具报错（D59）与最近进展都来自摘要。
+4. **没有读取方的记录不再写**：领取、优先级变化、工作区写入与播种、Agent 会话结束摘要。它们要么是任务行、工作区行的当前值，要么已并入摘要（会话未提交就结束的原因在失败原因里）。没有生产调用方的 `OperationToolIssues` 一并删除。
+5. **诊断报告改版（FormatVersion 3）**：事件流退出报告，换成所列任务的尝试摘要；选定任务时，本地按序号分页读对话记录（`--transcript-after`）。`observation.end_missing` 撤销：结局由存储层在事务里写定，不再有"缺结束摘要"的状态。分享报告里的尝试只带封闭词表与别名。
+6. `schemaVersion` 7 → 8，按 D38 不迁移。
+
+**守护**：
+- `TestOperationQueueWorkspaceAndAttempt`、`TestExpiredLeaseIsExplicitlyRecovered`：领取建摘要、收尾写结局；租约回收不推进最后进展。
+- `TestTranscriptAccountsIntoAttemptAndPrunesWithTerminalOperations`：用量与工具报错随记录并入摘要；回收只动终态任务，摘要与失败计数保留。
+- `TestCountOperationFailuresFollowsAttemptOutcomes`：释放与普通过期不计失败，过期判失败计一次。
+- `TestRuntimePersistsSubmissionFailureAndRetainsDraft`：三次被拒的真实提交在摘要里计 3 次工具报错。它走真实的 agentcore 消息，消息形状再变会在这里失败。
+- `TestRestoreKeepsFailedTurnsAndExecutionFailures`：续跑只带回会话消息，判断不带回，租约回收的失败不当作失败原因。
+- `TestProjectAttemptsReadAttemptSummaries`、`TestDiagCountsToolErrorsFromAttemptSummaries`、`TestDiagnosticsRaiseToolErrorsOnlyWhenRepeated`。
+
+**效果**：长历史诊断快照（1000 个任务，每个 3 次尝试、约 200 条记录）单次读取从约 1.8 秒降到约 10 毫秒（本机单次采样）。

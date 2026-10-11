@@ -7,8 +7,8 @@ import (
 
 // schemaVersion 是当前唯一支持的库结构版本。v1 没有历史数据，结构演进直接改
 // schema 并升版本号；不保留迁移阶梯，版本不符即拒绝打开。存储的 JSON 载荷格式变化同样
-// 升版本（v7：事件带模型用量列）。
-const schemaVersion = 7
+// 升版本（v8：执行记录拆成尝试摘要与对话记录，D72）。
+const schemaVersion = 8
 
 // unsupportedSchema 说明库结构版本不符以及怎样重新开始：v1 不迁移旧库（D38），旧库改名
 // 保留备查，程序在原位置新建空库。
@@ -161,28 +161,42 @@ var schema = []string{
 		PRIMARY KEY (operation_id, artifact_key),
 		FOREIGN KEY (operation_id) REFERENCES operations (id)
 	) STRICT`,
-	`CREATE TABLE operation_events (
+	// 执行尝试摘要（D72）：领取时建立，任务离开 running 时同一事务收尾；与任务同寿。
+	// 失败预算、用量、实际模型与工具报错只读这张表，不解析对话记录。
+	`CREATE TABLE operation_attempts (
 		operation_id TEXT NOT NULL,
-		sequence INTEGER NOT NULL CHECK (sequence > 0),
-		step_id TEXT NOT NULL,
-		attempt INTEGER NOT NULL CHECK (attempt >= 0),
-		idempotency_key TEXT NOT NULL,
-		kind TEXT NOT NULL,
+		attempt INTEGER NOT NULL CHECK (attempt > 0),
+		worker TEXT NOT NULL,
+		agent_role TEXT NOT NULL DEFAULT '',
+		agent_provider TEXT NOT NULL DEFAULT '',
+		agent_model TEXT NOT NULL DEFAULT '',
+		agent_thinking TEXT NOT NULL DEFAULT '',
+		agent_digest TEXT NOT NULL DEFAULT '',
 		input_tokens INTEGER NOT NULL DEFAULT 0,
 		output_tokens INTEGER NOT NULL DEFAULT 0,
 		cache_read_tokens INTEGER NOT NULL DEFAULT 0,
 		cost REAL NOT NULL DEFAULT 0,
-		payload BLOB NOT NULL,
-		payload_digest TEXT NOT NULL,
-		created_at_unix_ms INTEGER NOT NULL,
-		PRIMARY KEY (operation_id, sequence),
-		UNIQUE (operation_id, idempotency_key),
+		tool_errors INTEGER NOT NULL DEFAULT 0,
+		outcome TEXT NOT NULL DEFAULT '',
+		error TEXT NOT NULL DEFAULT '',
+		failure_code TEXT NOT NULL DEFAULT '',
+		lease_expired INTEGER NOT NULL DEFAULT 0 CHECK (lease_expired IN (0, 1)),
+		started_at_unix_ms INTEGER NOT NULL,
+		active_at_unix_ms INTEGER NOT NULL,
+		PRIMARY KEY (operation_id, attempt),
 		FOREIGN KEY (operation_id) REFERENCES operations (id)
 	) STRICT`,
-	// 创作团队按尝试汇总用量与起止只读这个覆盖索引，不读事件载荷（消息载荷动辄几十 KB）。
-	`CREATE INDEX operation_events_usage ON operation_events (
-		operation_id, attempt, kind, created_at_unix_ms, input_tokens, output_tokens, cache_read_tokens, cost
-	)`,
+	// 对话记录（D72）：续跑恢复与诊断的原始材料，任务不会再执行后可回收。
+	`CREATE TABLE operation_transcripts (
+		operation_id TEXT NOT NULL,
+		sequence INTEGER NOT NULL CHECK (sequence > 0),
+		attempt INTEGER NOT NULL,
+		kind TEXT NOT NULL CHECK (kind IN ('message', 'judgment')),
+		payload BLOB NOT NULL,
+		created_at_unix_ms INTEGER NOT NULL,
+		PRIMARY KEY (operation_id, sequence),
+		FOREIGN KEY (operation_id, attempt) REFERENCES operation_attempts (operation_id, attempt)
+	) STRICT`,
 	// 工件元数据（D47）：内容按摘要寻址落在对象目录，行只记归属与身份。
 	`CREATE TABLE artifacts (
 		id TEXT PRIMARY KEY,

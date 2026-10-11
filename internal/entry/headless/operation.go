@@ -15,7 +15,7 @@ import (
 
 func runOperation(ctx context.Context, api *bootstrap.App, args []string, stdout, stderr io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("operation 需要 start、restart、run、show、events、pause、resume、cancel、priority 或 recover 子命令")
+		return fmt.Errorf("operation 需要 start、restart、run、show、attempts、transcript、pause、resume、cancel、priority、recover 或 prune 子命令")
 	}
 	verb, rest := args[0], args[1:]
 	switch verb {
@@ -27,14 +27,17 @@ func runOperation(ctx context.Context, api *bootstrap.App, args []string, stdout
 		return runOperationRun(ctx, api, rest, stdout, stderr)
 	case "show":
 		return runOperationShow(ctx, api, rest, stdout, stderr)
-	case "events":
-		return runOperationEvents(ctx, api, rest, stdout, stderr)
+	case "attempts", "transcript":
+		return runOperationRecords(ctx, api, verb, rest, stdout, stderr)
 	case "pause", "resume", "cancel":
 		return runOperationTransition(ctx, api, verb, rest, stdout, stderr)
 	case "priority":
 		return runOperationPriority(ctx, api, rest, stdout, stderr)
 	case "recover":
 		return runOperationRecover(ctx, api, rest, stdout, stderr)
+	case "prune":
+		removed, err := api.Tasks.PruneTranscripts(ctx)
+		return writeResult(stdout, map[string]int{"removed": removed}, err)
 	default:
 		return fmt.Errorf("未知 operation 子命令 %q", verb)
 	}
@@ -153,17 +156,23 @@ func runOperationShow(ctx context.Context, api *bootstrap.App, args []string, st
 	return writeResult(stdout, operation, err)
 }
 
-func runOperationEvents(ctx context.Context, api *bootstrap.App, args []string, stdout, stderr io.Writer) error {
-	flags := newFlags("operation events", stderr)
+// runOperationRecords 输出任务的执行记录（D72）：attempts 是各次尝试的摘要，transcript
+// 是尚未回收的对话记录。
+func runOperationRecords(ctx context.Context, api *bootstrap.App, verb string, args []string, stdout, stderr io.Writer) error {
+	flags := newFlags("operation "+verb, stderr)
 	id := flags.String("id", "", "Operation ID")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
 	if *id == "" {
-		return fmt.Errorf("operation events 需要 --id")
+		return fmt.Errorf("operation %s 需要 --id", verb)
 	}
-	events, err := api.Tasks.OperationEvents(ctx, *id)
-	return writeResult(stdout, events, err)
+	if verb == "attempts" {
+		attempts, err := api.Tasks.OperationAttempts(ctx, *id)
+		return writeResult(stdout, attempts, err)
+	}
+	transcript, err := api.Tasks.OperationTranscript(ctx, *id)
+	return writeResult(stdout, transcript, err)
 }
 
 // runOperationTransition 处理 pause / resume / cancel 三个只带 --id 的状态迁移。

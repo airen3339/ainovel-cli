@@ -13,35 +13,36 @@ import (
 
 type DiagRequest struct {
 	ProjectID, RunID, OperationID, AfterOperationID string
-	AfterEventSequence                              int64
+	AfterTranscriptSequence                         int64
 	ForShare                                        bool
 }
 type DiagSnapshot struct {
-	ProjectID                   string
-	Revision                    model.Revision
-	SchemaVersion               int
-	CapturedAt                  time.Time
-	Run                         *DiagRun
-	Counts                      map[model.OperationState]int
-	AttemptCount                int
-	OperationCount              int
-	EventCount                  int
-	ExpiredLeaseCount           int
-	ResultUnknownCount          int
-	MissingCompletionEventCount int
-	ToolErrorCount              int
-	ToolErrors                  []DiagToolError
-	ToolErrorsTruncated         bool
-	UnreadableMessages          int
-	Usage                       model.Usage // 所选范围全部尝试的用量，按事件用量列加总
-	RetriedOperationCount       int
-	RunEventBoundary            int64
-	LastEventAt                 *time.Time
-	Operations                  []DiagOperation
-	Events                      []DiagEvent
-	NextOperationID             string
-	NextEventSequence           int64
-	EventsTruncated             bool
+	ProjectID             string
+	Revision              model.Revision
+	SchemaVersion         int
+	CapturedAt            time.Time
+	Run                   *DiagRun
+	Counts                map[model.OperationState]int
+	AttemptCount          int
+	OperationCount        int
+	ExpiredLeaseCount     int
+	ResultUnknownCount    int
+	ToolErrorCount        int
+	ToolErrors            []DiagToolError
+	ToolErrorsTruncated   bool
+	Usage                 model.Usage // 所选范围全部尝试的用量，按尝试摘要加总
+	RetriedOperationCount int
+	RunEventBoundary      int64
+	LastActivityAt        *time.Time
+	Operations            []DiagOperation
+	// Attempts 是所列任务的尝试摘要，最近有进展的在前，最多 diagAttemptLimit 条。
+	Attempts          []model.OperationAttempt
+	AttemptsTruncated bool
+	// Transcript 只在本地选定单个任务时读取，按序号分页。
+	Transcript             []DiagTranscriptEntry
+	NextOperationID        string
+	NextTranscriptSequence int64
+	TranscriptTruncated    bool
 }
 type DiagRun struct {
 	ID, ProjectID        string
@@ -59,35 +60,36 @@ type DiagOperation struct {
 	Error, Executor, ConfigDigest string
 	LeaseUntil                    *time.Time
 	CreatedAt, UpdatedAt          time.Time
-	EventCount                    int
-	EventBoundary                 int64
-	HasCompletionEvent            bool
 }
-type DiagEvent struct {
-	OperationID      string
-	Sequence         int64
-	Attempt          int
-	Kind             string
-	CreatedAt        time.Time
-	Usage            model.Usage
-	Payload          []byte
+
+// DiagTranscriptEntry 是一条对话记录的本地明细；载荷超过读取预算时只带前缀。
+type DiagTranscriptEntry struct {
+	model.TranscriptEntry
 	PayloadTruncated bool
 }
 
-// DiagToolError 把一次 attempt 内的工具报错聚合成一个坐标：报错标记在消息载荷里，
-// 但统计只走 SQL 谓词，载荷不进投影，因此运行级诊断也能给出结论。
+// DiagToolError 是一次报过工具错误的尝试：计数取自尝试摘要，不读对话记录。
 type DiagToolError struct {
-	OperationID  string
-	Attempt      int
-	LastSequence int64
-	Count        int
+	OperationID string
+	Attempt     int
+	Count       int
 }
 
+const (
+	diagOperationPage   = 50
+	diagShareOperations = 200
+	diagAttemptLimit    = 200
+	diagToolErrorGroups = 200
+	diagTranscriptPage  = 100
+	diagPayloadBudget   = 65536
+)
+
 // ReadDiagSnapshot reads bounded details and scope-wide aggregates from a single
-// SQLite snapshot. No project documents or operation inputs enter this projection.
+// SQLite snapshot. No project documents or operation inputs enter this projection;
+// transcripts are read only for a single selected operation.
 func (s *Store) ReadDiagSnapshot(ctx context.Context, req DiagRequest) (DiagSnapshot, error) {
 	out := DiagSnapshot{ProjectID: req.ProjectID, CapturedAt: time.Now().UTC(), Counts: map[model.OperationState]int{}}
-	if strings.TrimSpace(req.ProjectID) == "" || req.AfterEventSequence < 0 || (req.AfterEventSequence != 0 && req.OperationID == "") || (req.AfterOperationID != "" && req.OperationID != "") {
+	if strings.TrimSpace(req.ProjectID) == "" || req.AfterTranscriptSequence < 0 || (req.AfterTranscriptSequence != 0 && req.OperationID == "") || (req.AfterOperationID != "" && req.OperationID != "") {
 		return out, model.ErrInvalid
 	}
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
@@ -158,69 +160,110 @@ func (s *Store) ReadDiagSnapshot(ctx context.Context, req DiagRequest) (DiagSnap
 		scope += ` AND o.id=?`
 		args = append(args, req.OperationID)
 	}
-	rows, err := tx.QueryContext(ctx, `SELECT o.state,COUNT(*),COALESCE(SUM(o.attempt),0),COALESCE(SUM(o.attempt>1),0) FROM operations o WHERE `+scope+` GROUP BY o.state`, args...)
-	if err != nil {
+	if err = readDiagCounts(ctx, tx, scope, args, &out); err != nil {
 		return out, err
 	}
+	if err = readDiagAttemptAggregates(ctx, tx, scope, args, &out); err != nil {
+		return out, err
+	}
+	if lastRun.Valid && req.OperationID == "" && (out.LastActivityAt == nil || lastRun.Int64 > out.LastActivityAt.UnixMilli()) {
+		v := time.UnixMilli(lastRun.Int64).UTC()
+		out.LastActivityAt = &v
+	}
+	if err = readDiagOperations(ctx, tx, scope, args, req, &out); err != nil {
+		return out, err
+	}
+	if err = readDiagAttempts(ctx, tx, &out); err != nil {
+		return out, err
+	}
+	if req.OperationID != "" && !req.ForShare {
+		if err = readDiagTranscript(ctx, tx, req, &out); err != nil {
+			return out, err
+		}
+	}
+	return out, tx.Commit()
+}
+
+func readDiagCounts(ctx context.Context, tx *sql.Tx, scope string, args []any, out *DiagSnapshot) error {
+	rows, err := tx.QueryContext(ctx, `SELECT o.state,COUNT(*),COALESCE(SUM(o.attempt),0),COALESCE(SUM(o.attempt>1),0) FROM operations o WHERE `+scope+` GROUP BY o.state`, args...)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
 	for rows.Next() {
 		var state model.OperationState
 		var count, attempts, retries int
 		if err = rows.Scan(&state, &count, &attempts, &retries); err != nil {
-			rows.Close()
-			return out, err
+			return err
 		}
 		switch state {
 		case model.OperationQueued, model.OperationRunning, model.OperationPaused, model.OperationAwaitingApproval, model.OperationSucceeded, model.OperationFailed, model.OperationCancelled, model.OperationStale:
 		default:
-			rows.Close()
-			return out, fmt.Errorf("invalid stored operation state %q", state)
+			return fmt.Errorf("invalid stored operation state %q", state)
 		}
 		out.Counts[state] = count
 		out.OperationCount += count
 		out.AttemptCount += attempts
 		out.RetriedOperationCount += retries
 	}
-	err = rows.Err()
-	rows.Close()
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	return tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(o.state='running' AND o.lease_until_unix_ms<=?),0),COALESCE(SUM(o.failure_code='result_unknown'),0) FROM operations o WHERE `+scope,
+		append([]any{out.CapturedAt.UnixMilli()}, args...)...).Scan(&out.ExpiredLeaseCount, &out.ResultUnknownCount)
+}
+
+// readDiagAttemptAggregates 汇总所选范围全部尝试的用量、工具报错与最近进展，并按尝试列出
+// 报过工具错误的坐标：全量统计，不受明细窗口影响。
+func readDiagAttemptAggregates(ctx context.Context, tx *sql.Tx, scope string, args []any, out *DiagSnapshot) error {
+	from := ` FROM operation_attempts a JOIN operations o ON o.id=a.operation_id WHERE ` + scope
+	var lastActive sql.NullInt64
+	err := tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(a.input_tokens),0),COALESCE(SUM(a.output_tokens),0),COALESCE(SUM(a.cache_read_tokens),0),COALESCE(SUM(a.cost),0),
+		COALESCE(SUM(a.tool_errors),0),MAX(a.active_at_unix_ms)`+from, args...).
+		Scan(&out.Usage.Input, &out.Usage.Output, &out.Usage.CacheRead, &out.Usage.Cost, &out.ToolErrorCount, &lastActive)
 	if err != nil {
-		return out, err
+		return err
 	}
-	aggregateArgs := append([]any{out.CapturedAt.UnixMilli()}, args...)
-	err = tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(o.state='running' AND o.lease_until_unix_ms<=?),0),COALESCE(SUM(o.failure_code='result_unknown'),0),COALESCE(SUM(o.executor LIKE 'llm.agent@%' AND o.attempt>0 AND o.state IN ('succeeded','failed','cancelled','stale') AND (SELECT sequence FROM operation_events e WHERE e.operation_id=o.id AND e.attempt=o.attempt AND e.kind='agent.run_ended' ORDER BY sequence DESC LIMIT 1) IS NULL),0) FROM operations o WHERE `+scope, aggregateArgs...).Scan(&out.ExpiredLeaseCount, &out.ResultUnknownCount, &out.MissingCompletionEventCount)
+	if lastActive.Valid {
+		v := time.UnixMilli(lastActive.Int64).UTC()
+		out.LastActivityAt = &v
+	}
+	if out.ToolErrorCount == 0 {
+		return nil
+	}
+	rows, err := tx.QueryContext(ctx, `SELECT a.operation_id,a.attempt,a.tool_errors`+from+` AND a.tool_errors>0
+		ORDER BY a.tool_errors DESC,a.operation_id,a.attempt LIMIT ?`, append(append([]any{}, args...), diagToolErrorGroups+1)...)
 	if err != nil {
-		return out, err
+		return err
 	}
-	var lastEvent sql.NullInt64
-	err = tx.QueryRowContext(ctx, `SELECT COALESCE(SUM((SELECT COUNT(*) FROM operation_events e WHERE e.operation_id=o.id)),0),MAX((SELECT created_at_unix_ms FROM operation_events e WHERE e.operation_id=o.id ORDER BY sequence DESC LIMIT 1)) FROM operations o WHERE `+scope, args...).Scan(&out.EventCount, &lastEvent)
-	if err != nil {
-		return out, err
+	defer rows.Close()
+	for rows.Next() {
+		var group DiagToolError
+		if err = rows.Scan(&group.OperationID, &group.Attempt, &group.Count); err != nil {
+			return err
+		}
+		out.ToolErrors = append(out.ToolErrors, group)
 	}
-	if err = readDiagToolErrors(ctx, tx, scope, args, &out); err != nil {
-		return out, err
+	if err = rows.Err(); err != nil {
+		return err
 	}
-	// 用量走事件用量列的覆盖索引，不读载荷；中断、恢复的尝试各记各的，直接相加。
-	err = tx.QueryRowContext(ctx, `SELECT COALESCE(SUM(e.input_tokens),0),COALESCE(SUM(e.output_tokens),0),COALESCE(SUM(e.cache_read_tokens),0),COALESCE(SUM(e.cost),0)
-		FROM operation_events e JOIN operations o ON o.id=e.operation_id WHERE `+scope, args...).
-		Scan(&out.Usage.Input, &out.Usage.Output, &out.Usage.CacheRead, &out.Usage.Cost)
-	if err != nil {
-		return out, err
+	if len(out.ToolErrors) > diagToolErrorGroups {
+		out.ToolErrors = out.ToolErrors[:diagToolErrorGroups]
+		out.ToolErrorsTruncated = true
 	}
-	if lastRun.Valid && (!lastEvent.Valid || lastRun.Int64 > lastEvent.Int64) && req.OperationID == "" {
-		lastEvent = lastRun
-	}
-	if lastEvent.Valid {
-		v := time.UnixMilli(lastEvent.Int64).UTC()
-		out.LastEventAt = &v
-	}
+	return nil
+}
+
+func readDiagOperations(ctx context.Context, tx *sql.Tx, scope string, args []any, req DiagRequest, out *DiagSnapshot) error {
 	pageScope := scope
 	pageArgs := append([]any{}, args...)
 	if req.AfterOperationID != "" {
 		var found int
-		if err = tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM operations o WHERE `+scope+` AND o.id=?`, append(append([]any{}, args...), req.AfterOperationID)...).Scan(&found); err != nil {
-			return out, err
+		if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM operations o WHERE `+scope+` AND o.id=?`, append(append([]any{}, args...), req.AfterOperationID)...).Scan(&found); err != nil {
+			return err
 		}
 		if found != 1 {
-			return out, fmt.Errorf("cursor does not belong to diagnostic scope: %w", model.ErrInvalid)
+			return fmt.Errorf("cursor does not belong to diagnostic scope: %w", model.ErrInvalid)
 		}
 		pageScope += ` AND o.id>?`
 		pageArgs = append(pageArgs, req.AfterOperationID)
@@ -229,27 +272,28 @@ func (s *Store) ReadDiagSnapshot(ctx context.Context, req DiagRequest) (DiagSnap
 	if req.OperationID != "" && !req.ForShare {
 		errorColumn = `o.error`
 	}
-	operationLimit, operationOrder := 50, `o.id`
+	limit, order := diagOperationPage, `o.id`
 	if req.ForShare {
-		operationLimit = 200
-		operationOrder = `CASE WHEN ` + diagAffectedTask + ` THEN 0 WHEN o.state='running' OR o.attempt>1 THEN 1 ELSE 2 END, o.updated_at_unix_ms DESC,o.id`
+		limit = diagShareOperations
+		order = `CASE WHEN ` + diagAffectedTask + ` THEN 0 WHEN o.state='running' OR o.attempt>1 THEN 1 ELSE 2 END, o.updated_at_unix_ms DESC,o.id`
 		pageArgs = append(pageArgs, out.CapturedAt.UnixMilli())
 	}
-	pageArgs = append(pageArgs, operationLimit+1)
-	rows, err = tx.QueryContext(ctx, `SELECT o.id,o.run_id,o.kind,o.state,o.attempt,o.failure_code,`+errorColumn+`,o.executor,COALESCE(json_extract(o.execution_snapshot,'$.config_digest'),''),o.lease_until_unix_ms,o.created_at_unix_ms,o.updated_at_unix_ms,(SELECT COUNT(*) FROM operation_events e WHERE e.operation_id=o.id),(SELECT COALESCE(MAX(sequence),0) FROM operation_events e WHERE e.operation_id=o.id),(SELECT sequence FROM operation_events e WHERE e.operation_id=o.id AND e.attempt=o.attempt AND e.kind='agent.run_ended' ORDER BY sequence DESC LIMIT 1) IS NOT NULL FROM operations o WHERE `+pageScope+` ORDER BY `+operationOrder+` LIMIT ?`, pageArgs...)
+	pageArgs = append(pageArgs, limit+1)
+	rows, err := tx.QueryContext(ctx, `SELECT o.id,o.run_id,o.kind,o.state,o.attempt,o.failure_code,`+errorColumn+`,o.executor,COALESCE(json_extract(o.execution_snapshot,'$.config_digest'),''),o.lease_until_unix_ms,o.created_at_unix_ms,o.updated_at_unix_ms
+		FROM operations o WHERE `+pageScope+` ORDER BY `+order+` LIMIT ?`, pageArgs...)
 	if err != nil {
-		return out, err
+		return err
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var op DiagOperation
 		var lease sql.NullInt64
-		if err = rows.Scan(&op.ID, &op.RunID, &op.Kind, &op.State, &op.Attempt, &op.FailureCode, &op.Error, &op.Executor, &op.ConfigDigest, &lease, &created, &updated, &op.EventCount, &op.EventBoundary, &op.HasCompletionEvent); err != nil {
-			rows.Close()
-			return out, err
+		var created, updated int64
+		if err = rows.Scan(&op.ID, &op.RunID, &op.Kind, &op.State, &op.Attempt, &op.FailureCode, &op.Error, &op.Executor, &op.ConfigDigest, &lease, &created, &updated); err != nil {
+			return err
 		}
 		if op.Executor == "" || op.ConfigDigest == "" {
-			rows.Close()
-			return out, fmt.Errorf("operation %q is missing execution identity: %w", op.ID, model.ErrInvalid)
+			return fmt.Errorf("operation %q is missing execution identity: %w", op.ID, model.ErrInvalid)
 		}
 		op.CreatedAt = time.UnixMilli(created).UTC()
 		op.UpdatedAt = time.UnixMilli(updated).UTC()
@@ -259,62 +303,80 @@ func (s *Store) ReadDiagSnapshot(ctx context.Context, req DiagRequest) (DiagSnap
 		}
 		out.Operations = append(out.Operations, op)
 	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return out, err
+	if err = rows.Err(); err != nil {
+		return err
 	}
-	if len(out.Operations) > operationLimit {
-		out.Operations = out.Operations[:operationLimit]
+	if len(out.Operations) > limit {
+		out.Operations = out.Operations[:limit]
 		if !req.ForShare {
-			out.NextOperationID = out.Operations[operationLimit-1].ID
+			out.NextOperationID = out.Operations[limit-1].ID
 		}
 	}
-	if req.ForShare || req.OperationID == "" {
-		out.Events, err = readDiagTails(ctx, tx, scope, args, out, req)
-		if err != nil {
-			return out, err
-		}
-		out.EventsTruncated = len(out.Events) < out.EventCount
-		return out, tx.Commit()
+	return nil
+}
+
+// readDiagAttempts 读所列任务的尝试摘要，最近有进展的在前。
+func readDiagAttempts(ctx context.Context, tx *sql.Tx, out *DiagSnapshot) error {
+	if len(out.Operations) == 0 {
+		return nil
 	}
-	limit := 100
-	eventArgs := append(append([]any{}, args...), req.AfterEventSequence)
-	eventSQL := `SELECT e.operation_id,e.sequence,e.attempt,e.kind,e.created_at_unix_ms,
-		e.input_tokens,e.output_tokens,e.cache_read_tokens,e.cost,substr(e.payload,1,65536),length(e.payload)>65536
-		FROM operation_events e JOIN operations o ON o.id=e.operation_id WHERE ` + scope + ` AND e.sequence>? ORDER BY e.sequence LIMIT ?`
-	eventArgs = append(eventArgs, limit+1)
-	rows, err = tx.QueryContext(ctx, eventSQL, eventArgs...)
+	args := make([]any, 0, len(out.Operations)+1)
+	for _, op := range out.Operations {
+		args = append(args, op.ID)
+	}
+	args = append(args, diagAttemptLimit+1)
+	rows, err := tx.QueryContext(ctx, `SELECT `+attemptColumns+` FROM operation_attempts
+		WHERE operation_id IN (?`+strings.Repeat(",?", len(out.Operations)-1)+`)
+		ORDER BY active_at_unix_ms DESC,operation_id,attempt DESC LIMIT ?`, args...)
 	if err != nil {
-		return out, err
+		return err
 	}
+	defer rows.Close()
 	for rows.Next() {
-		var event DiagEvent
-		if err = rows.Scan(&event.OperationID, &event.Sequence, &event.Attempt, &event.Kind, &created,
-			&event.Usage.Input, &event.Usage.Output, &event.Usage.CacheRead, &event.Usage.Cost, &event.Payload, &event.PayloadTruncated); err != nil {
-			rows.Close()
-			return out, err
+		attempt, err := scanAttempt(rows)
+		if err != nil {
+			return err
 		}
-		event.CreatedAt = time.UnixMilli(created).UTC()
-		out.Events = append(out.Events, event)
+		out.Attempts = append(out.Attempts, attempt)
 	}
-	err = rows.Err()
-	rows.Close()
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	if len(out.Attempts) > diagAttemptLimit {
+		out.Attempts = out.Attempts[:diagAttemptLimit]
+		out.AttemptsTruncated = true
+	}
+	return nil
+}
+
+func readDiagTranscript(ctx context.Context, tx *sql.Tx, req DiagRequest, out *DiagSnapshot) error {
+	rows, err := tx.QueryContext(ctx, `SELECT sequence,attempt,kind,substr(payload,1,?),length(payload)>?,created_at_unix_ms
+		FROM operation_transcripts WHERE operation_id=? AND sequence>? ORDER BY sequence LIMIT ?`,
+		diagPayloadBudget, diagPayloadBudget, req.OperationID, req.AfterTranscriptSequence, diagTranscriptPage+1)
 	if err != nil {
-		return out, err
+		return err
 	}
-	if len(out.Events) > limit {
-		out.Events = out.Events[:limit]
-		out.EventsTruncated = true
-		if req.OperationID != "" && !req.ForShare {
-			out.NextEventSequence = out.Events[limit-1].Sequence
+	defer rows.Close()
+	for rows.Next() {
+		entry := DiagTranscriptEntry{TranscriptEntry: model.TranscriptEntry{OperationID: req.OperationID}}
+		var created int64
+		if err = rows.Scan(&entry.Sequence, &entry.Attempt, &entry.Kind, &entry.Payload, &entry.PayloadTruncated, &created); err != nil {
+			return err
 		}
+		entry.CreatedAt = time.UnixMilli(created).UTC()
+		out.Transcript = append(out.Transcript, entry)
 	}
-	return out, tx.Commit()
+	if err = rows.Err(); err != nil {
+		return err
+	}
+	if len(out.Transcript) > diagTranscriptPage {
+		out.Transcript = out.Transcript[:diagTranscriptPage]
+		out.TranscriptTruncated = true
+		out.NextTranscriptSequence = out.Transcript[diagTranscriptPage-1].Sequence
+	}
+	return nil
 }
 
 // The parameter is the snapshot capture time. This is an observation predicate,
 // never a lifecycle transition or a recovery authorization.
-const diagAffectedTask = `(o.state='failed' OR o.failure_code='result_unknown' OR (o.state='running' AND o.lease_until_unix_ms<=?)
-	OR (o.executor LIKE 'llm.agent@%' AND o.attempt>0 AND o.state IN ('succeeded','cancelled','stale')
-	AND (SELECT sequence FROM operation_events ended WHERE ended.operation_id=o.id AND ended.attempt=o.attempt AND ended.kind='agent.run_ended' ORDER BY sequence DESC LIMIT 1) IS NULL))`
+const diagAffectedTask = `(o.state='failed' OR o.failure_code='result_unknown' OR (o.state='running' AND o.lease_until_unix_ms<=?))`

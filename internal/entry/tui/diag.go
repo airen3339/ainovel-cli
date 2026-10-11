@@ -95,7 +95,7 @@ func (m model) formatDiagnostics() {
 		fmt.Fprintf(&b, " · %s", r.Summary.Reason)
 	}
 	fmt.Fprintf(&b, "\n采集 %s · 运行 %s", r.Header.CapturedAt.Format("01-02 15:04:05"), r.Header.Scope.RunID)
-	fmt.Fprintf(&b, "\n任务 %d · 尝试 %d · 重试任务 %d · 事件 %d", r.Metrics.Operations, r.Metrics.Attempts, r.Metrics.RetriedOperations, r.Metrics.Events)
+	fmt.Fprintf(&b, "\n任务 %d · 尝试 %d · 重试任务 %d", r.Metrics.Operations, r.Metrics.Attempts, r.Metrics.RetriedOperations)
 	if r.Metrics.ToolErrors > 0 {
 		fmt.Fprintf(&b, " · 工具报错 %d", r.Metrics.ToolErrors) // 常驻计数：未立发现时也要看得见
 	}
@@ -103,8 +103,8 @@ func (m model) formatDiagnostics() {
 	if r.Metrics.Usage != (domainmodel.Usage{}) {
 		fmt.Fprintf(&b, "用量  %s\n", spendLine(r.Metrics.Usage))
 	}
-	if r.Summary.LastEventAt != nil {
-		fmt.Fprintf(&b, "最近事件  %s\n", r.Summary.LastEventAt.Format("01-02 15:04:05"))
+	if r.Summary.LastActivityAt != nil {
+		fmt.Fprintf(&b, "最近进展  %s\n", r.Summary.LastActivityAt.Format("01-02 15:04:05"))
 	}
 	b.WriteString("\n诊断发现\n")
 	if len(r.Findings) == 0 {
@@ -114,7 +114,7 @@ func (m model) formatDiagnostics() {
 		fmt.Fprintf(&b, "  [%s · %s] %s\n  %s\n  建议：%s\n", diagnosticLabel(f.Severity), diagnosticLabel(f.Certainty), f.Code, f.Observed, f.Suggestion)
 	}
 	if d.request.OperationID == "" {
-		fmt.Fprintf(&b, "\n任务 · 本页 %d 项（j/k 选择，Enter 查看事件）\n", len(r.Operations))
+		fmt.Fprintf(&b, "\n任务 · 本页 %d 项（j/k 选择，Enter 查看执行记录）\n", len(r.Operations))
 		// Keep row positions in wrapped viewport coordinates for mouse selection.
 		d.operationLines = nil
 		line := len(readingLines(b.String(), d.body.Width)) - 1
@@ -142,21 +142,22 @@ func (m model) formatDiagnostics() {
 				fmt.Fprintf(&b, "错误：%s\n", o.Error)
 			}
 		}
-		for _, e := range r.Events {
+		for _, a := range r.Attempts {
+			b.WriteString(diagnosticAttempt(a))
+		}
+		if len(r.Transcript) > 0 {
+			b.WriteString("\n对话记录\n")
+		}
+		for _, e := range r.Transcript {
 			fmt.Fprintf(&b, "\n#%d · 尝试 %d · %s · %s\n", e.Sequence, e.Attempt, e.Kind, e.CreatedAt.Format("01-02 15:04:05"))
-			if e.Text != "" {
-				b.WriteString(diagnosticEventText(e.Text))
-				b.WriteByte('\n')
-			}
+			b.WriteString(diagnosticTranscriptText(e.Text))
+			b.WriteByte('\n')
 			if e.PayloadTruncated {
-				b.WriteString("[此事件内容已截断，完整记录保留在本地数据库]\n")
-			}
-			if e.Usage != (domainmodel.Usage{}) {
-				fmt.Fprintf(&b, "用量 %s\n", spendLine(e.Usage))
+				b.WriteString("[此记录内容已截断，完整记录保留在本地数据库]\n")
 			}
 		}
-		if r.NextEventSequence != 0 {
-			b.WriteString("\n还有事件，按 n 下一页。\n")
+		if r.NextTranscriptSequence != 0 {
+			b.WriteString("\n还有对话记录，按 n 下一页。\n")
 		}
 	}
 	b.WriteString("\n观测覆盖\n")
@@ -205,7 +206,7 @@ func (m model) handleDiagnosticsKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Leaving invalidates the response even if the underlying read is still finishing.
 		if d.request.OperationID != "" && !d.busy {
 			d.request.OperationID = ""
-			d.request.EventAfter = 0
+			d.request.TranscriptAfter = 0
 			d.request.After = ""
 			return m, m.loadDiagnosticsCmd()
 		}
@@ -227,10 +228,10 @@ func (m model) handleDiagnosticsKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, textinput.Blink
 	case "n":
 		if d.request.OperationID != "" {
-			if d.report.NextEventSequence == 0 {
+			if d.report.NextTranscriptSequence == 0 {
 				return m, nil
 			}
-			d.request.EventAfter = d.report.NextEventSequence
+			d.request.TranscriptAfter = d.report.NextTranscriptSequence
 		} else {
 			if d.report.NextOperationID == "" {
 				return m, nil
@@ -240,7 +241,7 @@ func (m model) handleDiagnosticsKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.loadDiagnosticsCmd()
 	case "g":
 		d.request.After = ""
-		d.request.EventAfter = 0
+		d.request.TranscriptAfter = 0
 		return m, m.loadDiagnosticsCmd()
 	case "j", "k":
 		if d.request.OperationID == "" && len(d.report.Operations) > 0 {
@@ -256,7 +257,7 @@ func (m model) handleDiagnosticsKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if d.request.OperationID == "" && len(d.report.Operations) > 0 {
 			d.request.OperationID = d.report.Operations[d.cursor].ID
-			d.request.EventAfter = 0
+			d.request.TranscriptAfter = 0
 			d.request.After = ""
 			return m, m.loadDiagnosticsCmd()
 		}
@@ -306,7 +307,7 @@ func (m model) viewDiagnostics() string {
 	d := m.bench.diag
 	title := "运行诊断"
 	if d.request.OperationID != "" {
-		title += " · 任务事件"
+		title += " · 执行记录"
 	}
 	if d.busy {
 		title += " · 读取中…"
@@ -329,8 +330,35 @@ func (m model) viewDiagnostics() string {
 	return strings.Join(fitBlock(strings.Join(lines, "\n"), max(1, m.width), max(1, m.height)), "\n")
 }
 
+// diagnosticAttempt 是一次尝试的摘要：结局、实际模型、工具报错、用量与原因。
+func diagnosticAttempt(a domainmodel.OperationAttempt) string {
+	var b strings.Builder
+	outcome := "进行中"
+	if a.Outcome != "" {
+		outcome = string(a.Outcome)
+	}
+	if a.LeaseExpired {
+		outcome += "（租约回收）"
+	}
+	fmt.Fprintf(&b, "\n尝试 %d · %s · %s", a.Attempt, outcome, a.StartedAt.Format("01-02 15:04:05"))
+	if a.Agent.Model != "" {
+		fmt.Fprintf(&b, " · %s", a.Agent.Model)
+	}
+	if a.ToolErrors > 0 {
+		fmt.Fprintf(&b, " · 工具报错 %d", a.ToolErrors)
+	}
+	b.WriteByte('\n')
+	if a.Usage != (domainmodel.Usage{}) {
+		fmt.Fprintf(&b, "用量 %s\n", spendLine(a.Usage))
+	}
+	if a.Error != "" {
+		fmt.Fprintf(&b, "原因：%s\n", a.Error)
+	}
+	return b.String()
+}
+
 // Keep terminal layout bounded even when one persisted message contains a large payload.
-func diagnosticEventText(text string) string {
+func diagnosticTranscriptText(text string) string {
 	const limit = 2048
 	if len(text) <= limit {
 		return text
@@ -362,7 +390,7 @@ func diagnosticLabel(value string) string {
 		"statistics": "统计",
 		"error":      "错误", "warning": "注意", "info": "信息", "confirmed": "已确认", "signal": "调查线索", "unknown": "未知",
 		"complete": "完整", "partial": "部分覆盖", "truncated": "已截断", "not_collected": "未采集", "missing": "缺失", "unavailable": "不可用",
-		"database": "持久化事实", "operations": "任务", "events": "事件", "tool_errors": "工具错误", "usage": "用量", "models": "模型", "content_commits": "内容提交", "environment": "环境", "findings": "发现证据",
+		"database": "持久化事实", "operations": "任务", "attempts": "尝试", "transcript": "对话记录", "tool_errors": "工具错误", "usage": "用量", "models": "模型", "content_commits": "内容提交", "environment": "环境", "findings": "发现证据",
 	}
 	if label, ok := labels[value]; ok {
 		return label

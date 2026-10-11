@@ -3,7 +3,6 @@ package bootstrap_test
 import (
 	"context"
 	"errors"
-	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -269,57 +268,5 @@ func TestRunOperationsListsCreationOrder(t *testing.T) {
 		if operation.RunID != result.RunID {
 			t.Fatalf("operation %s belongs to run %s", operation.ID, operation.RunID)
 		}
-	}
-}
-
-// TestOperationToolIssuesExtractsSelfCorrectedErrors 守卫诊断补全（Codex 复审）：
-// 成功任务自纠过的工具报错要能从已持久化消息里确定性提取——role=tool 且
-// is_error 的消息配上 assistant 消息 tool_call 的 id→name 映射。
-func TestOperationToolIssuesExtractsSelfCorrectedErrors(t *testing.T) {
-	ctx := context.Background()
-	executor := &scriptedQuickExecutor{now: testTime()}
-	api := newQuickTestApp(t, executor)
-	result, err := api.Novels.QuickWrite(ctx, novelapp.QuickWriteCommand{
-		ProjectID: "issues-book", UserID: "user-1", Premise: "工具报错提取测试",
-		Chapters: 1, WorkerID: "quick-worker", LeaseDuration: time.Minute, CreatedAt: testTime(),
-	})
-	if err != nil || result.RunState != model.RunCompleted {
-		t.Fatalf("quick write = %#v, %v", result, err)
-	}
-	operations, err := api.Runs.RunOperations(ctx, result.RunID)
-	if err != nil || len(operations) == 0 {
-		t.Fatalf("run operations = %d, %v", len(operations), err)
-	}
-	operationID := operations[0].ID
-	appendCommitted := func(index int, payload string) {
-		t.Helper()
-		if _, err := api.store.AppendOperationEvent(ctx, model.OperationEvent{
-			OperationID: operationID, StepID: "agent.message", Attempt: 1,
-			IdempotencyKey: fmt.Sprintf("issues:%d", index),
-			Kind:           "agent.message_committed", Payload: []byte(payload), CreatedAt: testTime(),
-		}); err != nil {
-			t.Fatalf("append event %d: %v", index, err)
-		}
-	}
-	// 错误结果的 text 是 json.Marshal 过的字符串字面量（capability 落库形态）。
-	appendCommitted(0, `{"role":"assistant","content":[{"type":"tool_call","tool_call":{"id":"call-9","name":"workspace_put_chapter","args":{}}}]}`)
-	appendCommitted(1, `{"role":"tool","content":[{"type":"text","text":"\"expected_version 不匹配\""}],"metadata":{"tool_call_id":"call-9","is_error":true}}`)
-	appendCommitted(2, `{"role":"tool","content":[{"type":"text","text":"{\"ok\":true}"}],"metadata":{"tool_call_id":"call-9"}}`)
-	issues, err := api.Tasks.OperationToolIssues(ctx, operationID)
-	if err != nil {
-		t.Fatalf("tool issues: %v", err)
-	}
-	if len(issues) != 1 {
-		t.Fatalf("issues = %#v, want 1", issues)
-	}
-	// 外层引号已解掉，呈现原始错误文本。
-	if issues[0].Tool != "workspace_put_chapter" || issues[0].Err != "expected_version 不匹配" {
-		t.Fatalf("issue = %#v", issues[0])
-	}
-	// 形状漂移显式报错（Debug-First），不静默少报。
-	appendCommitted(3, `{"role":"tool","content":"形状不符","metadata":{"is_error":true}}`)
-	if _, err := api.Tasks.OperationToolIssues(ctx, operationID); err == nil ||
-		!strings.Contains(err.Error(), "decode committed message") {
-		t.Fatalf("shape drift must fail loud, got %v", err)
 	}
 }

@@ -80,17 +80,23 @@ func TestDiagnosticsPaginationDrillAndCoverage(t *testing.T) {
 		t.Fatal("task not selected")
 	}
 	report.Header.Scope.OperationID = "op-3"
-	report.Events = []diag.Event{{Sequence: 1, Text: "本地敏感事件", PayloadTruncated: true, Usage: domainmodel.Usage{Input: 3000, Output: 200}}}
-	report.NextEventSequence = 100
+	report.Attempts = []domainmodel.OperationAttempt{{
+		OperationID: "op-3", Attempt: 2, Outcome: domainmodel.OperationFailed, LeaseExpired: true, ToolErrors: 4, Error: "本地失败原因",
+		Agent: domainmodel.AgentBinding{Model: "writer-model"}, Usage: domainmodel.Usage{Input: 3000, Output: 200},
+	}}
+	report.Transcript = []diag.TranscriptEntry{{Sequence: 1, Attempt: 2, Kind: domainmodel.TranscriptMessage, Text: "本地敏感对话", PayloadTruncated: true}}
+	report.NextTranscriptSequence = 100
 	updated, _ = m.applyDiagnostics(diagnosticsMsg{gen: 1, epoch: m.bench.diag.epoch, report: report})
 	m = updated.(model)
-	if !strings.Contains(m.bench.diag.text, "已截断") || !strings.Contains(m.bench.diag.text, "用量 ↑3.0K ↓200") {
-		t.Fatalf("missing truncation coverage or event usage:\n%s", m.bench.diag.text)
+	for _, want := range []string{"尝试 2 · failed（租约回收）", "writer-model · 工具报错 4", "用量 ↑3.0K ↓200", "原因：本地失败原因", "本地敏感对话", "已截断"} {
+		if !strings.Contains(m.bench.diag.text, want) {
+			t.Fatalf("missing %q:\n%s", want, m.bench.diag.text)
+		}
 	}
 	updated, cmd = m.handleDiagnosticsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
 	m = updated.(model)
-	if cmd == nil || m.bench.diag.request.EventAfter != 100 {
-		t.Fatal("missing event pagination cursor")
+	if cmd == nil || m.bench.diag.request.TranscriptAfter != 100 {
+		t.Fatal("missing transcript pagination cursor")
 	}
 }
 
@@ -127,7 +133,7 @@ func TestDiagnosticsMouseAndShareInput(t *testing.T) {
 
 func TestDiagnosticEventDisplayBounded(t *testing.T) {
 	text := strings.Repeat("汉", 100000)
-	shown := diagnosticEventText(text)
+	shown := diagnosticTranscriptText(text)
 	if len(shown) > 2200 || !strings.Contains(shown, "2 KiB") {
 		t.Fatal("large event display is not bounded")
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"runtime"
-	"strings"
 	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain/model"
@@ -46,18 +45,18 @@ func (q *Query) Inspect(ctx context.Context, request Request) (Report, error) {
 func (q *Query) inspect(ctx context.Context, request Request, share bool) (Report, error) {
 	r := Report{
 		Header:   Header{FormatVersion: FormatVersion, RulesVersion: RulesVersion, BuildVersion: q.version, Platform: runtime.GOOS + "/" + runtime.GOARCH, CapturedAt: q.now(), Scope: request},
-		Findings: []Finding{}, Coverage: []Coverage{}, Operations: []Operation{}, Events: []Event{},
+		Findings: []Finding{}, Coverage: []Coverage{}, Operations: []Operation{}, Attempts: []model.OperationAttempt{},
 		Metrics: Metrics{States: map[model.OperationState]int{}},
 	}
 	r.Header.DatabaseIssue = q.databaseIssue
 	r.Header.Selection = "paged_details"
 	if share {
-		r.Header.Selection = "issue_context_and_stream_tails"
+		r.Header.Selection = "issue_context_and_attempts"
 	}
 	if err := ctx.Err(); err != nil {
 		return r, err
 	}
-	if request.EventAfter < 0 || (request.EventAfter != 0 && request.OperationID == "") || (request.After != "" && request.OperationID != "") {
+	if request.TranscriptAfter < 0 || (request.TranscriptAfter != 0 && request.OperationID == "") || (request.After != "" && request.OperationID != "") {
 		return r, fmt.Errorf("invalid diagnostic cursor: %w", model.ErrInvalid)
 	}
 	if request.ProjectID == "" {
@@ -79,13 +78,14 @@ func (q *Query) inspect(ctx context.Context, request Request, share bool) (Repor
 	}
 	if share {
 		// Validate first; a browsing cursor never selects the support evidence.
-		request.After, request.EventAfter = "", 0
+		request.After, request.TranscriptAfter = "", 0
 		r.Header.Scope = request
 	}
-	s, err := q.store.ReadDiagSnapshot(ctx, store.DiagRequest{ProjectID: request.ProjectID, RunID: request.RunID, OperationID: request.OperationID, AfterOperationID: request.After, AfterEventSequence: request.EventAfter, ForShare: share})
+	s, err := q.store.ReadDiagSnapshot(ctx, store.DiagRequest{ProjectID: request.ProjectID, RunID: request.RunID, OperationID: request.OperationID, AfterOperationID: request.After, AfterTranscriptSequence: request.TranscriptAfter, ForShare: share})
 	if err != nil {
 		return r, err
 	}
+	local := request.OperationID != "" && !share // 原始错误与对话记录只在本地选定任务后读取
 	r.Header.CapturedAt, r.Header.Revision, r.Header.SchemaVersion = s.CapturedAt, s.Revision, s.SchemaVersion
 	r.Header.RunEventBoundary = s.RunEventBoundary
 	r.Summary.State = "no_run"
@@ -94,12 +94,12 @@ func (q *Query) inspect(ctx context.Context, request Request, share bool) (Repor
 		r.Summary.State, r.Summary.Reason = string(s.Run.State), s.Run.StateReason
 		r.Summary.CreatedAt, r.Summary.UpdatedAt = &s.Run.CreatedAt, &s.Run.UpdatedAt
 	}
-	r.Summary.LastEventAt = s.LastEventAt
-	r.Metrics = Metrics{Operations: s.OperationCount, States: s.Counts, Attempts: s.AttemptCount, RetriedOperations: s.RetriedOperationCount, Events: s.EventCount, ToolErrors: s.ToolErrorCount, Usage: s.Usage}
-	r.Findings = findings(s.Counts[model.OperationFailed], s.ExpiredLeaseCount, s.ResultUnknownCount, s.MissingCompletionEventCount)
-	r.NextOperationID, r.NextEventSequence = s.NextOperationID, s.NextEventSequence
+	r.Summary.LastActivityAt = s.LastActivityAt
+	r.Metrics = Metrics{Operations: s.OperationCount, States: s.Counts, Attempts: s.AttemptCount, RetriedOperations: s.RetriedOperationCount, ToolErrors: s.ToolErrorCount, Usage: s.Usage}
+	r.Findings = findings(s.Counts[model.OperationFailed], s.ExpiredLeaseCount, s.ResultUnknownCount)
+	r.NextOperationID, r.NextTranscriptSequence = s.NextOperationID, s.NextTranscriptSequence
 	for _, op := range s.Operations {
-		r.Operations = append(r.Operations, Operation{ID: op.ID, RunID: op.RunID, Kind: op.Kind, State: op.State, Attempt: op.Attempt, FailureCode: op.FailureCode, Error: op.Error, Executor: op.Executor, ConfigDigest: op.ConfigDigest, LeaseUntil: op.LeaseUntil, CreatedAt: op.CreatedAt, UpdatedAt: op.UpdatedAt, EventCount: op.EventCount, EventBoundary: op.EventBoundary, HasCompletionEvent: op.HasCompletionEvent})
+		r.Operations = append(r.Operations, Operation{ID: op.ID, RunID: op.RunID, Kind: op.Kind, State: op.State, Attempt: op.Attempt, FailureCode: op.FailureCode, Error: op.Error, Executor: op.Executor, ConfigDigest: op.ConfigDigest, LeaseUntil: op.LeaseUntil, CreatedAt: op.CreatedAt, UpdatedAt: op.UpdatedAt})
 	}
 	for i := range r.Findings {
 		f := &r.Findings[i]
@@ -118,28 +118,26 @@ func (q *Query) inspect(ctx context.Context, request Request, share bool) (Repor
 				if op.FailureCode == model.FailureResultUnknown {
 					source = "operation.failure_code"
 				}
-			case "observation.end_missing":
-				if strings.HasPrefix(op.Executor, "llm.agent@") && !op.HasCompletionEvent && op.Attempt > 0 && (op.State == model.OperationSucceeded || op.State == model.OperationFailed || op.State == model.OperationCancelled || op.State == model.OperationStale) {
-					source = "operation.event_boundary"
-				}
 			}
 			if source != "" {
-				f.Evidence = append(f.Evidence, Evidence{source, op.ID, op.Attempt, op.EventBoundary})
+				f.Evidence = append(f.Evidence, Evidence{source, op.ID, op.Attempt})
 			}
 		}
 		if len(f.Evidence) < f.Count {
 			r.Coverage = append(r.Coverage, Coverage{"findings", "partial", fmt.Sprintf("%s：本页附 %d/%d 个任务的证据引用，其余任务需翻页查看。", f.Code, len(f.Evidence), f.Count)})
 		}
 	}
-	for _, event := range s.Events {
-		e := Event{OperationID: event.OperationID, Sequence: event.Sequence, Attempt: event.Attempt, Kind: event.Kind, CreatedAt: event.CreatedAt, PayloadTruncated: event.PayloadTruncated, Usage: event.Usage}
-		if request.OperationID != "" && !share {
-			e.Text = string(event.Payload)
+	for _, attempt := range s.Attempts {
+		if !local {
+			attempt.Error = ""
 		}
-		if event.PayloadTruncated {
-			r.Coverage = append(r.Coverage, Coverage{"events", "truncated", fmt.Sprintf("事件 #%d 的本地内容超过读取预算，仅展示前缀。", event.Sequence)})
+		r.Attempts = append(r.Attempts, attempt)
+	}
+	for _, entry := range s.Transcript {
+		r.Transcript = append(r.Transcript, TranscriptEntry{Sequence: entry.Sequence, Attempt: entry.Attempt, Kind: entry.Kind, CreatedAt: entry.CreatedAt, Text: string(entry.Payload), PayloadTruncated: entry.PayloadTruncated})
+		if entry.PayloadTruncated {
+			r.Coverage = append(r.Coverage, Coverage{"transcript", "truncated", fmt.Sprintf("对话记录 #%d 超过读取预算，仅展示前缀。", entry.Sequence)})
 		}
-		r.Events = append(r.Events, e)
 	}
 	// 总数常驻 Metrics，任何范围都看得见。但单次自纠不是问题——任务成功了还报警就是误报，
 	// 所以运行级只在同一次尝试里反复撞同一堵墙时才立发现（与 repeated_unknown_result 同理）；
@@ -152,12 +150,12 @@ func (q *Query) inspect(ctx context.Context, request Request, share bool) (Repor
 		f := finding("execution.tool_error", s.ToolErrorCount)
 		f.OperationID = request.OperationID
 		for _, group := range s.ToolErrors {
-			f.Evidence = append(f.Evidence, Evidence{"event.tool_error", group.OperationID, group.Attempt, group.LastSequence})
+			f.Evidence = append(f.Evidence, Evidence{"attempt.tool_errors", group.OperationID, group.Attempt})
 		}
 		r.Findings = append(r.Findings, f)
 	}
-	r.Coverage = append(r.Coverage, Coverage{"database", "complete", "运行、任务状态与事件截止序号来自同一次只读事务；每次翻页重新采集。"})
-	r.Coverage = append(r.Coverage, Coverage{"statistics", "complete", "任务状态、attempt 和事件计数覆盖所选整个运行或任务，不受明细窗口影响。"})
+	r.Coverage = append(r.Coverage, Coverage{"database", "complete", "运行、任务状态与尝试摘要来自同一次只读事务；每次翻页重新采集。"})
+	r.Coverage = append(r.Coverage, Coverage{"statistics", "complete", "任务状态、尝试、用量与工具报错覆盖所选整个运行或任务，不受明细窗口影响。"})
 	status := "complete"
 	if len(r.Operations) < r.Metrics.Operations {
 		status = "truncated"
@@ -168,27 +166,31 @@ func (q *Query) inspect(ctx context.Context, request Request, share bool) (Repor
 	}
 	r.Coverage = append(r.Coverage, Coverage{"operations", status, detail})
 	status = "complete"
-	if len(r.Events) < r.Metrics.Events {
+	if s.AttemptsTruncated {
 		status = "truncated"
 	}
-	detail = "任务事件按序号分页；时间不表示跨任务因果关系。"
-	if request.OperationID == "" || share {
-		detail = "为选定任务分配尾部事件窗口，合计最多 200 条；最近事件时间取各流末条记录，不对全历史按时间排序。"
+	r.Coverage = append(r.Coverage, Coverage{"attempts", status, "所列任务的尝试摘要，最近有进展的在前，最多 200 条。"})
+	switch {
+	case local && (s.TranscriptTruncated || request.TranscriptAfter > 0):
+		r.Coverage = append(r.Coverage, Coverage{"transcript", "truncated", "对话记录按序号分页，每页最多 100 条；本页之外的记录需翻页查看。"})
+	case local:
+		r.Coverage = append(r.Coverage, Coverage{"transcript", "complete", "已回收对话记录的任务只剩尝试摘要。"})
+	default:
+		r.Coverage = append(r.Coverage, Coverage{"transcript", "not_collected", "对话记录只在本地选定单个任务后读取。"})
 	}
-	r.Coverage = append(r.Coverage, Coverage{"events", status, detail})
-	toolStatus, toolDetail := "complete", "所选范围内的工具错误全量统计，按任务与 attempt 聚合；不受事件明细窗口影响。"
-	if s.UnreadableMessages > 0 {
-		toolStatus = "partial"
-		toolDetail = fmt.Sprintf("%d 条消息格式无法解析，未计入工具错误；不能把它们记为零。", s.UnreadableMessages)
-	}
+	toolStatus, toolDetail := "complete", "工具报错在写入时计入尝试摘要，所选范围全量统计，证据按任务与 attempt 聚合。"
 	if s.ToolErrorsTruncated {
 		toolStatus = "truncated"
 		toolDetail = fmt.Sprintf("工具错误总数完整，但只附前 %d 个任务 attempt 的证据引用。", len(s.ToolErrors))
 	}
+	models := Coverage{"models", "complete", "尝试摘要记下 Agent 会话实际用的模型；单次判断用的模型只在对话记录里。"}
+	if share {
+		models = Coverage{"models", "not_collected", "分享报告不含模型名称。"}
+	}
 	r.Coverage = append(r.Coverage,
 		Coverage{"tool_errors", toolStatus, toolDetail},
-		Coverage{"usage", "complete", "用量取模型消息与语义合规核对落盘时记下的用量，覆盖所选范围的全部尝试（含中断与恢复的）；花费只计有定价的模型。"},
-		Coverage{"models", "not_collected", "未采集实际模型；配置摘要仅表明执行配置是否相同。"},
-		Coverage{"content_commits", "not_collected", "未查询内容提交时间；最近事件时间不等于最后创作进展。"})
+		Coverage{"usage", "complete", "用量在模型消息与语义合规核对落盘时计入尝试摘要，覆盖所选范围的全部尝试（含中断与恢复的）；花费只计有定价的模型。"},
+		models,
+		Coverage{"content_commits", "not_collected", "未查询内容提交时间；最近进展时间不等于最后创作进展。"})
 	return r, nil
 }

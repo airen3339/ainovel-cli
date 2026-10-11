@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -79,17 +78,6 @@ func (s *Store) PutWorkspaceArtifact(ctx context.Context, artifact model.Workspa
 			artifact.OperationID, artifact.Key, current); err != nil {
 			return model.WorkspaceArtifact{}, fmt.Errorf("update workspace artifact: %w", err)
 		}
-	}
-	payload, err := json.Marshal(map[string]any{"key": artifact.Key, "version": artifact.Version, "digest": artifact.Digest})
-	if err != nil {
-		return model.WorkspaceArtifact{}, fmt.Errorf("encode workspace event: %w", err)
-	}
-	if _, err := appendEventTx(ctx, tx, model.OperationEvent{
-		OperationID: artifact.OperationID, StepID: "workspace", Attempt: attempt,
-		IdempotencyKey: fmt.Sprintf("workspace:%s:%d", artifact.Key, artifact.Version),
-		Kind:           "workspace.artifact_written", Payload: payload, CreatedAt: artifact.UpdatedAt,
-	}); err != nil {
-		return model.WorkspaceArtifact{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return model.WorkspaceArtifact{}, fmt.Errorf("commit workspace artifact: %w", err)
@@ -209,29 +197,13 @@ func copyWorkspaceArtifactsTx(ctx context.Context, tx *sql.Tx, fromOperationID, 
 		}
 		return fmt.Errorf("workspace copy target %q contains different artifacts: %w", toOperationID, model.ErrStateConflict)
 	}
-	result, err := tx.ExecContext(ctx, `
+	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO operation_artifacts (
 			operation_id, artifact_key, version, media_type, content, content_digest, updated_at_unix_ms
 		)
 		SELECT ?, artifact_key, version, media_type, content, content_digest, ?
-		FROM operation_artifacts WHERE operation_id = ?`, toOperationID, at.UnixMilli(), fromOperationID)
-	if err != nil {
+		FROM operation_artifacts WHERE operation_id = ?`, toOperationID, at.UnixMilli(), fromOperationID); err != nil {
 		return fmt.Errorf("copy workspace artifacts: %w", err)
-	}
-	count, err := result.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("inspect workspace copy: %w", err)
-	}
-	payload, err := json.Marshal(map[string]any{"source_operation_id": fromOperationID, "artifact_count": count})
-	if err != nil {
-		return fmt.Errorf("encode workspace copy event: %w", err)
-	}
-	if _, err := appendEventTx(ctx, tx, model.OperationEvent{
-		OperationID: toOperationID, StepID: "workspace.seed", Attempt: 0,
-		IdempotencyKey: "workspace-seed:" + fromOperationID,
-		Kind:           "workspace.seeded", Payload: payload, CreatedAt: at,
-	}); err != nil {
-		return err
 	}
 	return nil
 }

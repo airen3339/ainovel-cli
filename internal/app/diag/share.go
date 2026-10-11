@@ -30,9 +30,9 @@ type ShareReport struct {
 	Findings                  []ShareFinding   `json:"findings"`
 	Coverage                  []ShareCoverage  `json:"coverage"`
 	Operations                []ShareOperation `json:"operations"`
-	Events                    []ShareEvent     `json:"events"`
+	Attempts                  []ShareAttempt   `json:"attempts"`
 	Omitted                   int              `json:"omitted_items"`
-	OmittedEvents             int              `json:"omitted_events"`
+	OmittedAttempts           int              `json:"omitted_attempts"`
 	OmittedTaskDetails        int              `json:"omitted_task_details"`
 	OmittedEvidenceReferences int              `json:"omitted_evidence_references"`
 }
@@ -42,7 +42,6 @@ type ShareMetrics struct {
 	States            map[string]int `json:"states"`
 	Attempts          int            `json:"attempts"`
 	RetriedOperations int            `json:"retried_operations"`
-	Events            int            `json:"events"`
 	ToolErrors        int            `json:"tool_errors"`
 	Usage             model.Usage    `json:"usage,omitzero"`
 }
@@ -59,7 +58,6 @@ type ShareEvidence struct {
 	Source    string `json:"source"`
 	Operation string `json:"operation"`
 	Attempt   int    `json:"attempt"`
-	Sequence  int64  `json:"sequence,omitempty"`
 }
 type ShareCoverage struct {
 	Source string `json:"source"`
@@ -75,15 +73,19 @@ type ShareOperation struct {
 	Configuration   string `json:"configuration"`
 	CreatedOffsetMS int64  `json:"created_offset_ms"`
 	UpdatedOffsetMS int64  `json:"updated_offset_ms"`
-	EventBoundary   int64  `json:"event_boundary"`
 }
-type ShareEvent struct {
-	Operation string      `json:"operation"`
-	Sequence  int64       `json:"sequence"`
-	Attempt   int         `json:"attempt"`
-	Kind      string      `json:"kind"`
-	OffsetMS  int64       `json:"offset_ms"`
-	Usage     model.Usage `json:"usage,omitzero"`
+
+// ShareAttempt 是尝试摘要的封闭投影：不带错误原文、执行者与模型名称。
+type ShareAttempt struct {
+	Operation       string      `json:"operation"`
+	Attempt         int         `json:"attempt"`
+	Outcome         string      `json:"outcome,omitempty"`
+	FailureCode     string      `json:"failure_code,omitempty"`
+	LeaseExpired    bool        `json:"lease_expired,omitempty"`
+	ToolErrors      int         `json:"tool_errors,omitempty"`
+	Usage           model.Usage `json:"usage,omitzero"`
+	StartedOffsetMS int64       `json:"started_offset_ms"`
+	ActiveOffsetMS  int64       `json:"active_offset_ms"`
 }
 
 var buildPattern = regexp.MustCompile(`^v?[0-9]+\.[0-9]+\.[0-9]+$|^v1-dev$`)
@@ -113,16 +115,16 @@ func safeKind(value string) string {
 // Share reconstructs every string from a fixed vocabulary or a report-local alias.
 func Share(report Report) ShareReport {
 	s := ShareReport{FormatVersion: FormatVersion, RulesVersion: RulesVersion,
-		Selection:     allowed(report.Header.Selection, "paged_details", "issue_context_and_stream_tails", "environment"),
+		Selection:     allowed(report.Header.Selection, "paged_details", "issue_context_and_attempts", "environment"),
 		DatabaseIssue: databaseIssue(report.Header.DatabaseIssue),
 		BuildVersion:  safeBuild(report.Header.BuildVersion), Platform: runtime.GOOS + "/" + runtime.GOARCH,
 		SchemaVersion: report.Header.SchemaVersion, Shareable: true, State: safeState(report.Summary.State),
-		Metrics:  ShareMetrics{report.Metrics.Operations, map[string]int{}, report.Metrics.Attempts, report.Metrics.RetriedOperations, report.Metrics.Events, report.Metrics.ToolErrors, report.Metrics.Usage},
-		Findings: []ShareFinding{}, Coverage: []ShareCoverage{}, Operations: []ShareOperation{}, Events: []ShareEvent{}}
+		Metrics:  ShareMetrics{report.Metrics.Operations, map[string]int{}, report.Metrics.Attempts, report.Metrics.RetriedOperations, report.Metrics.ToolErrors, report.Metrics.Usage},
+		Findings: []ShareFinding{}, Coverage: []ShareCoverage{}, Operations: []ShareOperation{}, Attempts: []ShareAttempt{}}
 	if report.Header.Scope.ProjectID != "" {
 		s.Project = "book-1"
 	}
-	s.OmittedEvents = max(0, report.Metrics.Events-len(report.Events))
+	s.OmittedAttempts = max(0, report.Metrics.Attempts-len(report.Attempts))
 	s.OmittedTaskDetails = max(0, report.Metrics.Operations-len(report.Operations))
 	if report.Header.Scope.RunID != "" {
 		s.Run = "run-1"
@@ -148,8 +150,8 @@ func Share(report Report) ShareReport {
 	for _, op := range report.Operations {
 		s.Operations = append(s.Operations, ShareOperation{
 			ID: alias("task", op.ID), Kind: safeKind(string(op.Kind)), State: safeState(string(op.State)), Attempt: op.Attempt,
-			FailureCode: allowed(string(op.FailureCode), "", "result_unknown"), Executor: alias("executor", op.Executor), Configuration: alias("config", op.ConfigDigest),
-			CreatedOffsetMS: offset(op.CreatedAt, report.Header.CapturedAt), UpdatedOffsetMS: offset(op.UpdatedAt, report.Header.CapturedAt), EventBoundary: op.EventBoundary})
+			FailureCode: allowed(string(op.FailureCode), "", "result_unknown", "submission_blocked"), Executor: alias("executor", op.Executor), Configuration: alias("config", op.ConfigDigest),
+			CreatedOffsetMS: offset(op.CreatedAt, report.Header.CapturedAt), UpdatedOffsetMS: offset(op.UpdatedAt, report.Header.CapturedAt)})
 	}
 	for _, f := range report.Findings {
 		template := finding(f.Code, f.Count)
@@ -160,32 +162,34 @@ func Share(report Report) ShareReport {
 		shared := ShareFinding{Code: template.Code, Severity: template.Severity, Certainty: template.Certainty, Operation: alias("task", f.OperationID), Attempt: f.Attempt, Count: f.Count}
 		s.OmittedEvidenceReferences += max(0, f.Count-len(f.Evidence))
 		for _, e := range f.Evidence {
-			source := allowed(e.Source, "operation.state", "operation.lease", "operation.failure_code", "operation.event_boundary", "event.tool_error")
+			source := allowed(e.Source, "operation.state", "operation.lease", "operation.failure_code", "attempt.tool_errors")
 			if source == "unknown" {
 				s.Omitted++
 				s.OmittedEvidenceReferences++
 				continue
 			}
-			shared.Evidence = append(shared.Evidence, ShareEvidence{source, alias("task", e.OperationID), e.Attempt, e.Sequence})
+			shared.Evidence = append(shared.Evidence, ShareEvidence{source, alias("task", e.OperationID), e.Attempt})
 		}
 		s.Findings = append(s.Findings, shared)
 	}
 	for _, c := range report.Coverage {
-		source := allowed(c.Source, "database", "statistics", "operations", "events", "tool_errors", "usage", "environment", "content_commits", "models", "findings")
+		source := allowed(c.Source, "database", "statistics", "operations", "attempts", "transcript", "tool_errors", "usage", "environment", "content_commits", "models", "findings")
 		if source == "unknown" {
 			s.Omitted++
 			continue
 		}
 		s.Coverage = append(s.Coverage, ShareCoverage{source, allowed(c.Status, "complete", "partial", "unavailable", "not_collected", "truncated")})
 	}
-	for _, e := range report.Events {
-		kind := allowed(e.Kind, "agent.run_started", "agent.run_ended", "agent.message_committed", "operation.claimed", "operation.priority_changed", "operation.transitioned", "operation.lease_expired", "workspace.artifact_written", "workspace.seeded", "semantic.compliance_checked", "semantic.compliance_failed")
-		if kind == "unknown" || len(s.Events) == 200 {
-			s.Omitted++
-			s.OmittedEvents++
-			continue
+	for _, a := range report.Attempts {
+		outcome := ""
+		if a.Outcome != "" {
+			outcome = safeState(string(a.Outcome))
 		}
-		s.Events = append(s.Events, ShareEvent{alias("task", e.OperationID), e.Sequence, e.Attempt, kind, offset(e.CreatedAt, report.Header.CapturedAt), e.Usage})
+		s.Attempts = append(s.Attempts, ShareAttempt{
+			Operation: alias("task", a.OperationID), Attempt: a.Attempt, Outcome: outcome,
+			FailureCode: allowed(string(a.FailureCode), "", "result_unknown", "submission_blocked"), LeaseExpired: a.LeaseExpired,
+			ToolErrors: a.ToolErrors, Usage: a.Usage,
+			StartedOffsetMS: offset(a.StartedAt, report.Header.CapturedAt), ActiveOffsetMS: offset(a.ActiveAt, report.Header.CapturedAt)})
 	}
 	return s
 }

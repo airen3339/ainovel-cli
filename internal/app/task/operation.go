@@ -383,75 +383,15 @@ func (s *Manager) Operation(ctx context.Context, id string) (model.Operation, er
 	return s.store.GetOperation(ctx, id)
 }
 
-func (s *Manager) OperationEvents(ctx context.Context, id string) ([]model.OperationEvent, error) {
-	return s.store.ListOperationEvents(ctx, id)
+func (s *Manager) OperationAttempts(ctx context.Context, id string) ([]model.OperationAttempt, error) {
+	return s.store.ListOperationAttempts(ctx, id)
 }
 
-// ToolIssue 是一次工具报错的诊断摘要（可能已被模型自纠，任务本身未必失败）。
-type ToolIssue struct {
-	Tool string // 报错调用的工具名；消息里找不到对应调用时为空
-	Err  string // 工具返回的原始错误文本
+func (s *Manager) OperationTranscript(ctx context.Context, id string) ([]model.TranscriptEntry, error) {
+	return s.store.ListTranscript(ctx, id)
 }
 
-// OperationToolIssues 从已持久化的 agent 消息（agent.message_committed）里
-// 确定性提取工具报错：role=tool 且 metadata.is_error 的消息即报错结果，
-// 工具名经同批 assistant 消息的 tool_call（id→name）映射。成功任务自纠过的
-// 报错也在其中——诊断下钻不只覆盖最终失败（workbench §4）。
-func (s *Manager) OperationToolIssues(ctx context.Context, id string) ([]ToolIssue, error) {
-	events, err := s.store.ListOperationEvents(ctx, id)
-	if err != nil {
-		return nil, err
-	}
-	// 消息 JSON 形状即 capability 落库的 agentcore 消息序列化契约。
-	type committed struct {
-		Role    string `json:"role"`
-		Content []struct {
-			Text     string `json:"text"`
-			ToolCall *struct {
-				ID   string `json:"id"`
-				Name string `json:"name"`
-			} `json:"tool_call"`
-		} `json:"content"`
-		Metadata struct {
-			ToolCallID string `json:"tool_call_id"`
-			IsError    bool   `json:"is_error"`
-		} `json:"metadata"`
-	}
-	callNames := make(map[string]string)
-	var issues []ToolIssue
-	for _, event := range events {
-		if event.Kind != "agent.message_committed" {
-			continue
-		}
-		var message committed
-		if err := json.Unmarshal(event.Payload, &message); err != nil {
-			// 形状解不开=落库契约漂移，显式报错而非静默少报（Debug-First）。
-			return nil, fmt.Errorf("decode committed message #%d of operation %s: %w",
-				event.Sequence, id, err)
-		}
-		for _, block := range message.Content {
-			if block.ToolCall != nil {
-				callNames[block.ToolCall.ID] = block.ToolCall.Name
-			}
-		}
-		if message.Role != "tool" || !message.Metadata.IsError {
-			continue
-		}
-		var text strings.Builder
-		for _, block := range message.Content {
-			text.WriteString(block.Text)
-		}
-		// 工具错误结果是 json.Marshal 过的字符串字面量：解掉外层引号与转义，
-		// 诊断呈现原始错误文本。
-		raw := text.String()
-		var unquoted string
-		if json.Unmarshal([]byte(raw), &unquoted) == nil {
-			raw = unquoted
-		}
-		issues = append(issues, ToolIssue{
-			Tool: callNames[message.Metadata.ToolCallID],
-			Err:  raw,
-		})
-	}
-	return issues, nil
+// PruneTranscripts 回收不会再执行的任务的对话记录（D72），返回回收条数。
+func (s *Manager) PruneTranscripts(ctx context.Context) (int, error) {
+	return s.store.PruneTranscripts(ctx)
 }

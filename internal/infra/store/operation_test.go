@@ -12,7 +12,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain/model"
 )
 
-func TestOperationQueueWorkspaceAndEvents(t *testing.T) {
+func TestOperationQueueWorkspaceAndAttempt(t *testing.T) {
 	s := openOperationStore(t)
 	ctx := context.Background()
 	createdAt := operationTime()
@@ -91,17 +91,15 @@ func TestOperationQueueWorkspaceAndEvents(t *testing.T) {
 		t.Fatalf("terminal artifact error = %v, want model.ErrStateConflict", err)
 	}
 
-	events, err := s.ListOperationEvents(ctx, claimed.ID)
+	// 领取建立尝试摘要，离开 running 时同一事务收尾（D72）。
+	attempts, err := s.ListOperationAttempts(ctx, claimed.ID)
 	if err != nil {
-		t.Fatalf("list events: %v", err)
+		t.Fatalf("list attempts: %v", err)
 	}
-	if len(events) != 4 {
-		t.Fatalf("event count = %d, want 4: %#v", len(events), events)
-	}
-	for i, event := range events {
-		if event.Sequence != int64(i+1) {
-			t.Fatalf("event %d sequence = %d", i, event.Sequence)
-		}
+	if len(attempts) != 1 || attempts[0].Attempt != 1 || attempts[0].Worker != "worker-1" ||
+		attempts[0].Outcome != model.OperationSucceeded || attempts[0].LeaseExpired ||
+		!attempts[0].StartedAt.Equal(createdAt.Add(2*time.Second)) || !attempts[0].ActiveAt.Equal(createdAt.Add(6*time.Second)) {
+		t.Fatalf("attempts = %#v", attempts)
 	}
 }
 
@@ -141,9 +139,19 @@ func TestExpiredLeaseIsExplicitlyRecovered(t *testing.T) {
 	if claimed.ID != operation.ID || claimed.LeaseOwner != "worker-2" {
 		t.Fatalf("reclaimed = %#v", claimed)
 	}
+	// 租约回收收尾第一次尝试，但不算进展：用时停在失联前。
+	attempts, err := s.ListOperationAttempts(ctx, operation.ID)
+	if err != nil {
+		t.Fatalf("list attempts: %v", err)
+	}
+	if len(attempts) != 2 || attempts[0].Outcome != model.OperationQueued || !attempts[0].LeaseExpired ||
+		attempts[0].Error != stored.Error || !attempts[0].ActiveAt.Equal(now.Add(time.Second)) ||
+		attempts[1].Worker != "worker-2" || attempts[1].Outcome != "" {
+		t.Fatalf("attempts = %#v", attempts)
+	}
 }
 
-func TestCreateOperationAndEventAreIdempotent(t *testing.T) {
+func TestCreateOperationIsIdempotent(t *testing.T) {
 	s := openOperationStore(t)
 	ctx := context.Background()
 	now := operationTime()
@@ -164,25 +172,74 @@ func TestCreateOperationAndEventAreIdempotent(t *testing.T) {
 		t.Fatalf("changed operation error = %v, want model.ErrIdempotencyConflict", err)
 	}
 
-	payload := json.RawMessage(`{"status":"ok"}`)
-	event := model.OperationEvent{
-		OperationID: first.ID, StepID: "prepare", Attempt: 1, IdempotencyKey: "prepare:1",
-		Kind: "step.completed", Payload: payload, CreatedAt: now.Add(time.Second),
+}
+
+// 对话记录写入时把用量与工具报错并入尝试摘要；回收只动不会再执行的任务，摘要保留（D72）。
+func TestTranscriptAccountsIntoAttemptAndPrunesWithTerminalOperations(t *testing.T) {
+	s := openOperationStore(t)
+	ctx := context.Background()
+	now := operationTime()
+	for _, id := range []string{"done", "failing"} {
+		if _, err := s.CreateOperation(ctx, testOperation(id, 1, now)); err != nil {
+			t.Fatalf("create %s: %v", id, err)
+		}
+		if _, err := s.ClaimOperationForExecutor(ctx, id, "worker-1", testExecutor, time.Minute, now); err != nil {
+			t.Fatalf("claim %s: %v", id, err)
+		}
 	}
-	stored, err := s.AppendOperationEvent(ctx, event)
+	entry := func(id string, at time.Duration) model.TranscriptEntry {
+		return model.TranscriptEntry{OperationID: id, Attempt: 1, Kind: model.TranscriptMessage, Payload: json.RawMessage(`{"role":"assistant"}`), CreatedAt: now.Add(at)}
+	}
+	if _, err := s.AppendTranscript(ctx, entry("done", 20*time.Second), model.Usage{Input: 100, Output: 10, CacheRead: 40, Cost: 0.1}, 0); err != nil {
+		t.Fatalf("append first: %v", err)
+	}
+	second, err := s.AppendTranscript(ctx, entry("done", 10*time.Second), model.Usage{Input: 5}, 2)
+	if err != nil || second.Sequence != 2 {
+		t.Fatalf("append second = %#v, %v", second, err)
+	}
+	if _, err := s.AppendTranscript(ctx, entry("failing", time.Second), model.Usage{Input: 1}, 0); err != nil {
+		t.Fatalf("append failing: %v", err)
+	}
+	missing := entry("done", time.Second)
+	missing.Attempt = 2
+	if _, err := s.AppendTranscript(ctx, missing, model.Usage{}, 0); !errors.Is(err, model.ErrNotFound) {
+		t.Fatalf("unknown attempt error = %v, want model.ErrNotFound", err)
+	}
+	invalid := entry("done", time.Second)
+	invalid.Kind = "event"
+	if _, err := s.AppendTranscript(ctx, invalid, model.Usage{}, 0); !errors.Is(err, model.ErrInvalid) {
+		t.Fatalf("invalid kind error = %v, want model.ErrInvalid", err)
+	}
+	attempts, err := s.ListOperationAttempts(ctx, "done")
 	if err != nil {
-		t.Fatalf("append event: %v", err)
+		t.Fatal(err)
 	}
-	repeated, err := s.AppendOperationEvent(ctx, event)
-	if err != nil {
-		t.Fatalf("append event idempotently: %v", err)
+	if got := attempts[0]; got.Usage != (model.Usage{Input: 105, Output: 10, CacheRead: 40, Cost: 0.1}) || got.ToolErrors != 2 ||
+		!got.ActiveAt.Equal(now.Add(20*time.Second)) {
+		t.Fatalf("attempt = %#v", got)
 	}
-	if stored.Sequence != repeated.Sequence {
-		t.Fatalf("event sequences = %d and %d", stored.Sequence, repeated.Sequence)
+
+	if _, err := s.ConcludeOperation(ctx, "done", 1, model.OperationSucceeded, "", now.Add(time.Minute)); err != nil {
+		t.Fatalf("conclude: %v", err)
 	}
-	event.Kind = "different"
-	if _, err := s.AppendOperationEvent(ctx, event); !errors.Is(err, model.ErrIdempotencyConflict) {
-		t.Fatalf("changed event error = %v, want model.ErrIdempotencyConflict", err)
+	if _, err := s.FailOperation(ctx, "failing", 1, "", "boom", now.Add(time.Minute)); err != nil {
+		t.Fatalf("fail: %v", err)
+	}
+	removed, err := s.PruneTranscripts(ctx)
+	if err != nil || removed != 2 {
+		t.Fatalf("prune = %d, %v; want 2", removed, err)
+	}
+	for id, want := range map[string]int{"done": 0, "failing": 1} {
+		transcript, err := s.ListTranscript(ctx, id)
+		if err != nil || len(transcript) != want {
+			t.Fatalf("%s transcript = %d entries, %v; want %d", id, len(transcript), err, want)
+		}
+	}
+	if attempts, err := s.ListOperationAttempts(ctx, "done"); err != nil || attempts[0].Usage.Input != 105 || attempts[0].Outcome != model.OperationSucceeded {
+		t.Fatalf("pruned attempt = %#v, %v", attempts, err)
+	}
+	if failures, err := s.CountOperationFailures(ctx, "failing"); err != nil || failures != 1 {
+		t.Fatalf("failures = %d, %v", failures, err)
 	}
 }
 

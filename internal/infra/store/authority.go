@@ -258,7 +258,8 @@ func (s *Store) DeleteProject(ctx context.Context, projectID string) error {
 		query string
 		args  []any
 	}{
-		{`DELETE FROM operation_events WHERE operation_id IN (` + operationScope + `)`, []any{model.AuthorityProject, projectID}},
+		{`DELETE FROM operation_transcripts WHERE operation_id IN (` + operationScope + `)`, []any{model.AuthorityProject, projectID}},
+		{`DELETE FROM operation_attempts WHERE operation_id IN (` + operationScope + `)`, []any{model.AuthorityProject, projectID}},
 		{`DELETE FROM operation_artifacts WHERE operation_id IN (` + operationScope + `)`, []any{model.AuthorityProject, projectID}},
 		{`DELETE FROM artifacts WHERE project_id = ?`, []any{projectID}},
 		{`DELETE FROM operation_dependencies WHERE operation_id IN (` + operationScope + `) OR dependency_id IN (` + operationScope + `)`,

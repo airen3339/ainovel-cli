@@ -223,54 +223,44 @@ func (r *Runtime) AnalyzeSemanticCompliance(
 		Observe: feed.observe,
 	}, &report)
 	feed.finish(err)
-	// 判断用的是默认绑定、不经过 agent.run_started：载荷记下实际模型，用量按同一价目记在
-	// 事件上，创作团队的统计计入所在任务。
-	by, usage := judge{Provider: binding.Provider, Model: binding.Model}, judgmentUsage(spent, binding.Chat.Pricing)
+	// 判断用的是默认绑定、不在 Agent 会话里：对话记录记下实际模型与结论，用量按同一价目
+	// 并入所在尝试，创作团队的统计计入所在任务。
+	judgment := semanticJudgment{Provider: binding.Provider, Model: binding.Model}
+	if err == nil {
+		err = report.Validate()
+	}
 	if err != nil {
-		return model.SemanticComplianceReport{}, r.recordSemanticFailure(ctx, operation, by, usage, err)
+		judgment.Error = err.Error()
+	} else {
+		judgment.Report = &report
 	}
-	if err := report.Validate(); err != nil {
-		return model.SemanticComplianceReport{}, r.recordSemanticFailure(ctx, operation, by, usage, err)
+	if recordErr := r.recordJudgment(ctx, operation, judgment, judgmentUsage(spent, binding.Chat.Pricing)); recordErr != nil {
+		return model.SemanticComplianceReport{}, errors.Join(err, recordErr)
 	}
-	eventPayload, err := json.Marshal(struct {
-		Report model.SemanticComplianceReport `json:"report"`
-		judge
-	}{Report: report, judge: by})
 	if err != nil {
-		return model.SemanticComplianceReport{}, fmt.Errorf("encode semantic compliance event: %w", err)
-	}
-	if _, err := r.store.AppendOperationEvent(ctx, model.OperationEvent{
-		OperationID: operation.ID, StepID: "semantic.compliance", Attempt: operation.Attempt,
-		IdempotencyKey: fmt.Sprintf("semantic-compliance:%d", operation.Attempt),
-		Kind:           "semantic.compliance_checked", Payload: eventPayload, Usage: usage, CreatedAt: r.now(),
-	}); err != nil {
 		return model.SemanticComplianceReport{}, err
 	}
 	return report, nil
 }
 
-func (r *Runtime) recordSemanticFailure(ctx context.Context, operation model.Operation, by judge, usage model.Usage, cause error) error {
-	payload, err := json.Marshal(struct {
-		Error string `json:"error"`
-		judge
-	}{Error: cause.Error(), judge: by})
-	if err != nil {
-		return errors.Join(cause, fmt.Errorf("encode semantic compliance failure: %w", err))
-	}
-	if _, err := r.store.AppendOperationEvent(ctx, model.OperationEvent{
-		OperationID: operation.ID, StepID: "semantic.compliance", Attempt: operation.Attempt,
-		IdempotencyKey: fmt.Sprintf("semantic-compliance:%d", operation.Attempt),
-		Kind:           "semantic.compliance_failed", Payload: payload, Usage: usage, CreatedAt: r.now(),
-	}); err != nil {
-		return errors.Join(cause, err)
-	}
-	return cause
+// semanticJudgment 是一次语义合规判断的对话记录：实际模型，以及结论或失败原因。
+type semanticJudgment struct {
+	Provider string                          `json:"provider"`
+	Model    string                          `json:"model"`
+	Report   *model.SemanticComplianceReport `json:"report,omitempty"`
+	Error    string                          `json:"error,omitempty"`
 }
 
-// judge 是单次判断实际用的模型，记进它的事件载荷。
-type judge struct {
-	Provider string `json:"provider"`
-	Model    string `json:"model"`
+func (r *Runtime) recordJudgment(ctx context.Context, operation model.Operation, judgment semanticJudgment, spent model.Usage) error {
+	payload, err := json.Marshal(judgment)
+	if err != nil {
+		return fmt.Errorf("encode semantic judgment: %w", err)
+	}
+	_, err = r.store.AppendTranscript(ctx, model.TranscriptEntry{
+		OperationID: operation.ID, Attempt: operation.Attempt,
+		Kind: model.TranscriptJudgment, Payload: payload, CreatedAt: r.now(),
+	}, spent, 0)
+	return err
 }
 
 // judgmentUsage 按绑定价目折算单次调用的用量，与 Agent 消息同一口径：价目缺失或算不出时

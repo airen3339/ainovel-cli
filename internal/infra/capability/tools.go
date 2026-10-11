@@ -342,7 +342,7 @@ func (r *Runtime) executor(
 			if err := proposal.Validate(); err != nil {
 				return nil, err
 			}
-			if err := r.changes.Validate(ctx, proposal); err != nil {
+			if err := r.validator.Validate(ctx, proposal); err != nil {
 				if projected, applyErr := base.Apply(patches); applyErr == nil {
 					return nil, projected.Humanize(err)
 				}

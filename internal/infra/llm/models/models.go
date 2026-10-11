@@ -53,7 +53,7 @@ type Config struct {
 }
 
 // Binding 是一次尝试实际使用的模型：实例、身份与生效的思考强度。Digest 是执行
-// 配置摘要（不含密钥），记进 agent.run_started 供诊断比对不同尝试的配置。
+// 配置摘要（不含密钥），记进尝试摘要供诊断比对不同尝试的配置。
 type Binding struct {
 	Provider string
 	Model    string

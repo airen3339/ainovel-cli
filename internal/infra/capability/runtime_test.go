@@ -242,11 +242,9 @@ func TestRuntimeRestoresCommittedConversationAndWorkspace(t *testing.T) {
 	previous := agentcore.UserText("这是崩溃前已经提交到会话日志的原始任务")
 	previous.Time = now.Add(3 * time.Second)
 	payload, _ := json.Marshal(previous)
-	if _, err := authorityStore.AppendOperationEvent(ctx, domainmodel.OperationEvent{
-		OperationID: first.ID, StepID: "agent.message", Attempt: first.Attempt,
-		IdempotencyKey: "agent-message:1:1", Kind: "agent.message_committed",
-		Payload: payload, CreatedAt: previous.Time,
-	}); err != nil {
+	if _, err := authorityStore.AppendTranscript(ctx, domainmodel.TranscriptEntry{
+		OperationID: first.ID, Attempt: first.Attempt, Kind: domainmodel.TranscriptMessage, Payload: payload, CreatedAt: previous.Time,
+	}, domainmodel.Usage{}, 0); err != nil {
 		t.Fatalf("persist previous message: %v", err)
 	}
 	previousReply := agentcore.Message{
@@ -254,11 +252,9 @@ func TestRuntimeRestoresCommittedConversationAndWorkspace(t *testing.T) {
 		Usage: &agentcore.Usage{Usage: litellm.Usage{InputTokens: 100, OutputTokens: 20}}, Time: previous.Time,
 	}
 	payload, _ = json.Marshal(previousReply)
-	if _, err := authorityStore.AppendOperationEvent(ctx, domainmodel.OperationEvent{
-		OperationID: first.ID, StepID: "agent.message", Attempt: first.Attempt,
-		IdempotencyKey: "agent-message:1:2", Kind: "agent.message_committed",
-		Payload: payload, CreatedAt: previousReply.Time,
-	}); err != nil {
+	if _, err := authorityStore.AppendTranscript(ctx, domainmodel.TranscriptEntry{
+		OperationID: first.ID, Attempt: first.Attempt, Kind: domainmodel.TranscriptMessage, Payload: payload, CreatedAt: previousReply.Time,
+	}, messageUsage(previousReply.Usage), 0); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := authorityStore.TransitionOperation(
@@ -303,59 +299,52 @@ func TestRuntimeRestoresCommittedConversationAndWorkspace(t *testing.T) {
 	if !foundPrevious || !foundRecovery || !foundFailure {
 		t.Fatalf("restored request missing history, recovery instruction or failure reason: %#v", firstRequest)
 	}
-	events, err := authorityStore.ListOperationEvents(ctx, second.ID)
-	if err != nil {
-		t.Fatal(err)
+	// 每次尝试的用量只记自己花的：恢复的历史消息不再计入第二次尝试；摘要记下实际模型。
+	attempts, err := authorityStore.ListOperationAttempts(ctx, second.ID)
+	if err != nil || len(attempts) != 2 {
+		t.Fatalf("attempts = %+v, %v", attempts, err)
 	}
-	for _, event := range events {
-		if event.Kind != "agent.run_ended" || event.Attempt != second.Attempt {
-			continue
-		}
-		var end struct{ Usage agentcore.Usage }
-		if err := json.Unmarshal(event.Payload, &end); err != nil {
-			t.Fatal(err)
-		}
-		// 当前测试模型没有计费用量，恢复的历史消息不能再计费。
-		if end.Usage.InputTokens != 0 || end.Usage.OutputTokens != 0 {
-			t.Fatalf("restored usage counted again: %+v", end.Usage)
-		}
-		return
+	if attempts[0].Usage != (domainmodel.Usage{Input: 100, Output: 20}) || attempts[0].Outcome != domainmodel.OperationFailed {
+		t.Fatalf("first attempt = %+v", attempts[0])
 	}
-	t.Fatal("missing resumed run summary")
+	if attempts[1].Usage != (domainmodel.Usage{}) || attempts[1].Agent.Model == "" || attempts[1].Agent.Role == "" {
+		t.Fatalf("resumed attempt = %+v", attempts[1])
+	}
 }
 
-type eventStore struct {
+type transcriptStore struct {
 	runtimeStore
-	events []domainmodel.OperationEvent
+	attempts   []domainmodel.OperationAttempt
+	transcript []domainmodel.TranscriptEntry
 }
 
-func (s eventStore) ListOperationEvents(context.Context, string) ([]domainmodel.OperationEvent, error) {
-	return s.events, nil
+func (s transcriptStore) ListOperationAttempts(context.Context, string) ([]domainmodel.OperationAttempt, error) {
+	return s.attempts, nil
 }
 
-// 旧版本落盘的消息形如 {"role":…,"content":[…]}：解成新消息没有内容，不能当空消息带进会话。
-func TestRestoreRejectsMessagesWithoutContent(t *testing.T) {
-	old := json.RawMessage(`{"role":"user","content":[{"type":"text","text":"原始任务"}],"timestamp":"2026-08-18T13:00:00Z"}`)
-	runtime := &Runtime{store: eventStore{events: []domainmodel.OperationEvent{
-		{Sequence: 7, Attempt: 1, Kind: "agent.message_committed", Payload: old},
-	}}}
-	_, _, err := runtime.restoreMessages(context.Background(), domainmodel.Operation{ID: "op", Attempt: 2})
-	if !errors.Is(err, domainmodel.ErrInvalid) || !strings.Contains(err.Error(), "event 7") {
-		t.Fatalf("restore err = %v, want the stale message rejected", err)
-	}
+func (s transcriptStore) ListTranscript(context.Context, string) ([]domainmodel.TranscriptEntry, error) {
+	return s.transcript, nil
 }
 
-// 连接中途断开的回合以 StopError 记下，可以一个字都没有：续跑照常恢复，不当成旧版本消息。
-func TestRestoreKeepsFailedTurnsWithoutContent(t *testing.T) {
+// 连接中途断开的回合以 StopError 记下，可以一个字都没有：续跑照常恢复；判断不是会话消息，
+// 不带回；租约回收判的失败只说明执行者失联，不当作失败原因告诉模型。
+func TestRestoreKeepsFailedTurnsAndExecutionFailures(t *testing.T) {
 	task := json.RawMessage(`{"role":"user","blocks":[{"type":"text","text":"写第 1 章"}]}`)
 	failed := json.RawMessage(`{"role":"assistant","blocks":null,"stop":"error","provider":"openai","model":"m"}`)
-	runtime := &Runtime{store: eventStore{events: []domainmodel.OperationEvent{
-		{Sequence: 3, Attempt: 1, Kind: "agent.message_committed", Payload: task},
-		{Sequence: 7, Attempt: 1, Kind: "agent.message_committed", Payload: failed},
-	}}}
-	messages, _, err := runtime.restoreMessages(context.Background(), domainmodel.Operation{ID: "op", Attempt: 2})
-	if err != nil || len(messages) != 2 || messages[1].Stop != agentcore.StopError {
-		t.Fatalf("restore = %d messages, err = %v", len(messages), err)
+	runtime := &Runtime{store: transcriptStore{
+		attempts: []domainmodel.OperationAttempt{
+			{Attempt: 1, Outcome: domainmodel.OperationFailed, Error: "提交被拒：章节字数不足"},
+			{Attempt: 2, Outcome: domainmodel.OperationFailed, Error: "worker lease expired", LeaseExpired: true},
+		},
+		transcript: []domainmodel.TranscriptEntry{
+			{Sequence: 3, Attempt: 1, Kind: domainmodel.TranscriptMessage, Payload: task},
+			{Sequence: 7, Attempt: 1, Kind: domainmodel.TranscriptMessage, Payload: failed},
+			{Sequence: 8, Attempt: 1, Kind: domainmodel.TranscriptJudgment, Payload: json.RawMessage(`{"model":"judge"}`)},
+		},
+	}}
+	messages, lastFailure, err := runtime.restoreMessages(context.Background(), domainmodel.Operation{ID: "op", Attempt: 3})
+	if err != nil || len(messages) != 2 || messages[1].Stop != agentcore.StopError || lastFailure != "提交被拒：章节字数不足" {
+		t.Fatalf("restore = %d messages, failure %q, err = %v", len(messages), lastFailure, err)
 	}
 }
 
@@ -476,7 +465,7 @@ func TestRuntimeReviewSubmitsVerdictWithoutProposal(t *testing.T) {
 		t.Fatalf("project attempts = %+v, %v", attempts, err)
 	}
 	if a := attempts[0]; a.Role != "editor" || a.Usage.Input != 40 || a.Usage.Output != 12 || a.Usage.Cost < 0.039 || a.Usage.Cost > 0.041 ||
-		a.StartedAt.IsZero() || a.LastAt.Before(a.StartedAt) || !a.Live || a.State != domainmodel.OperationRunning {
+		a.StartedAt.IsZero() || a.ActiveAt.Before(a.StartedAt) || !a.Live || a.State != domainmodel.OperationRunning {
 		t.Fatalf("persisted attempt usage = %+v", a)
 	}
 }
@@ -709,24 +698,19 @@ func TestRuntimeSemanticComplianceUsesIndependentStructuredCall(t *testing.T) {
 	if feed.Waiting {
 		t.Fatal("a finished judgment must not leave the feed waiting")
 	}
-	if attempts, err := authorityStore.ProjectAttempts(ctx, operation.Target.ID, now.Add(time.Second)); err != nil || len(attempts) != 1 ||
-		attempts[0].Usage != (domainmodel.Usage{Input: 10, Output: 3}) || attempts[0].Attempt != operation.Attempt {
+	// 用量经 llm.Structured 回传后并入所在尝试，不能在收口时丢掉；判断不在 Agent 会话里，
+	// 对话记录记下实际用的模型与结论。
+	if attempts, err := authorityStore.ListOperationAttempts(ctx, operation.ID); err != nil || len(attempts) != 1 ||
+		attempts[0].Usage != (domainmodel.Usage{Input: 10, Output: 3}) || attempts[0].Attempt != operation.Attempt || attempts[0].Agent.Model != "" {
 		t.Fatalf("compliance usage must count toward its attempt: %+v, %v", attempts, err)
 	}
-	events, err := authorityStore.ListOperationEvents(ctx, operation.ID)
-	if err != nil {
-		t.Fatalf("list operation events: %v", err)
+	transcript, err := authorityStore.ListTranscript(ctx, operation.ID)
+	if err != nil || len(transcript) != 1 || transcript[0].Kind != domainmodel.TranscriptJudgment {
+		t.Fatalf("transcript = %#v, %v", transcript, err)
 	}
-	if len(events) != 2 || events[1].Kind != "semantic.compliance_checked" {
-		t.Fatalf("events = %#v", events)
-	}
-	// 用量经 llm.Structured 回传后记在审计事件上，不能在收口时丢掉；判断不经过
-	// agent.run_started，载荷记下实际用的模型。
-	var checked struct {
-		Model string `json:"model"`
-	}
-	if err := json.Unmarshal(events[1].Payload, &checked); err != nil || checked.Model == "" || events[1].Usage != (domainmodel.Usage{Input: 10, Output: 3}) {
-		t.Fatalf("compliance event lacks its model or usage: %s %+v", events[1].Payload, events[1].Usage)
+	var checked semanticJudgment
+	if err := json.Unmarshal(transcript[0].Payload, &checked); err != nil || checked.Model == "" || checked.Report == nil || checked.Report.Status != domainmodel.SemanticCompliancePass {
+		t.Fatalf("judgment lacks its model or report: %s", transcript[0].Payload)
 	}
 }
 
@@ -843,7 +827,7 @@ func TestAffectedRewriteSubmissionCoversEveryWorkspaceChapter(t *testing.T) {
 		t.Fatal("affected rewrite without drafts accepted")
 	}
 	// 只引用部分章节在工作区层面是一致的；是否覆盖任务的全部章节由任务提交契约判定
-	// （model.ValidateChange，工具边界经 changes.Validate 执行）。
+	// （model.ValidateChange，工具边界经 validator.Validate 执行）。
 }
 
 func TestRuntimePlanSubmissionEnforcesLengthBound(t *testing.T) {

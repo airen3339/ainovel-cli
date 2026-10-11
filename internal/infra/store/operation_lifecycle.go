@@ -116,15 +116,7 @@ func (s *Store) claimOperation(
 	if err != nil {
 		return model.Operation{}, err
 	}
-	payload, err := json.Marshal(map[string]any{"worker": workerID, "lease_until": leaseUntil})
-	if err != nil {
-		return model.Operation{}, fmt.Errorf("encode operation claim event: %w", err)
-	}
-	if _, err := appendEventTx(ctx, tx, model.OperationEvent{
-		OperationID: operation.ID, StepID: "claim", Attempt: operation.Attempt,
-		IdempotencyKey: fmt.Sprintf("claim:%d", leaseUntil.UnixNano()),
-		Kind:           "operation.claimed", Payload: payload, CreatedAt: now,
-	}); err != nil {
+	if err := startAttemptTx(ctx, tx, operation, workerID, now); err != nil {
 		return model.Operation{}, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -241,16 +233,10 @@ func transitionOperationTx(ctx context.Context, tx *sql.Tx, id string, from, to 
 	if err != nil {
 		return model.Operation{}, err
 	}
-	payload, err := json.Marshal(map[string]any{"from": from, "to": to, "message": message, "failure_code": code})
-	if err != nil {
-		return model.Operation{}, fmt.Errorf("encode operation transition event: %w", err)
-	}
-	if _, err := appendEventTx(ctx, tx, model.OperationEvent{
-		OperationID: id, StepID: "transition", Attempt: operation.Attempt,
-		IdempotencyKey: fmt.Sprintf("transition:%s:%s:%d", from, to, now.UnixNano()),
-		Kind:           "operation.transitioned", Payload: payload, CreatedAt: now,
-	}); err != nil {
-		return model.Operation{}, err
+	if from == model.OperationRunning {
+		if err := concludeAttemptTx(ctx, tx, operation, code, false, now); err != nil {
+			return model.Operation{}, err
+		}
 	}
 	return operation, nil
 }
@@ -298,7 +284,7 @@ func (s *Store) RecoverExpiredOperations(ctx context.Context, now time.Time) ([]
 		ids = append(ids, id)
 		var expiries int
 		if err := tx.QueryRowContext(ctx, `
-			SELECT COUNT(*) FROM operation_events WHERE operation_id = ? AND kind = 'operation.lease_expired'`, id,
+			SELECT COUNT(*) FROM operation_attempts WHERE operation_id = ? AND lease_expired = 1`, id,
 		).Scan(&expiries); err != nil {
 			return nil, fmt.Errorf("count lease expiries of %q: %w", id, err)
 		}
@@ -324,15 +310,8 @@ func (s *Store) RecoverExpiredOperations(ctx context.Context, now time.Time) ([]
 		if err != nil || count != 1 {
 			return nil, fmt.Errorf("recover operation %q: %w", id, model.ErrStateConflict)
 		}
-		payload, err := json.Marshal(map[string]any{"reason": message, "state": recovered})
-		if err != nil {
-			return nil, fmt.Errorf("encode lease recovery event: %w", err)
-		}
-		if _, err := appendEventTx(ctx, tx, model.OperationEvent{
-			OperationID: id, StepID: "lease-recovery", Attempt: operation.attempt,
-			IdempotencyKey: fmt.Sprintf("lease-recovery:%d", now.UnixNano()),
-			Kind:           "operation.lease_expired", Payload: payload, CreatedAt: now,
-		}); err != nil {
+		concluded := model.Operation{ID: id, Attempt: operation.attempt, State: recovered, Error: message}
+		if err := concludeAttemptTx(ctx, tx, concluded, "", true, now); err != nil {
 			return nil, err
 		}
 	}
@@ -340,23 +319,6 @@ func (s *Store) RecoverExpiredOperations(ctx context.Context, now time.Time) ([]
 		return nil, fmt.Errorf("commit expired operation recovery: %w", err)
 	}
 	return ids, nil
-}
-
-// CountOperationFailures 从事件日志数 Operation 落过几次 failed：执行失败的收尾与
-// 租约过期判失败都算。D56 的自动重开预算只数失败——attempt 是执行围栏，进程退出
-// 释放的执行不在其中。
-func (s *Store) CountOperationFailures(ctx context.Context, id string) (int, error) {
-	var count int
-	err := s.db.QueryRowContext(ctx, `
-		SELECT COUNT(*) FROM operation_events
-		WHERE operation_id = ?
-			AND ((kind = 'operation.transitioned' AND json_extract(CAST(payload AS TEXT), '$.to') = ?)
-				OR (kind = 'operation.lease_expired' AND json_extract(CAST(payload AS TEXT), '$.state') = ?))`,
-		id, model.OperationFailed, model.OperationFailed).Scan(&count)
-	if err != nil {
-		return 0, fmt.Errorf("count failures of operation %q: %w", id, err)
-	}
-	return count, nil
 }
 
 // PutWorkspaceArtifact 只接受当前执行实例的写入：writerAttempt 必须等于 Operation

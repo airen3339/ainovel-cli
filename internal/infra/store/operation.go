@@ -269,17 +269,6 @@ func (s *Store) SetOperationPriority(ctx context.Context, id string, priority in
 	if err != nil {
 		return model.Operation{}, err
 	}
-	payload, err := json.Marshal(map[string]any{"priority": priority})
-	if err != nil {
-		return model.Operation{}, fmt.Errorf("encode operation priority event: %w", err)
-	}
-	if _, err := appendEventTx(ctx, tx, model.OperationEvent{
-		OperationID: id, StepID: "priority", Attempt: operation.Attempt,
-		IdempotencyKey: fmt.Sprintf("priority:%d:%d", priority, now.UnixNano()),
-		Kind:           "operation.priority_changed", Payload: payload, CreatedAt: now,
-	}); err != nil {
-		return model.Operation{}, err
-	}
 	if err := tx.Commit(); err != nil {
 		return model.Operation{}, fmt.Errorf("commit operation reprioritization: %w", err)
 	}

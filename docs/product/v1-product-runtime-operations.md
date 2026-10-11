@@ -56,7 +56,7 @@
 - 环境变量仍在下次启动时优先于文件：界面里切换保存的是文件，启动时若设了 `AINOVEL_MODEL` 等变量，以变量为准。
 - 工作台：`/model [architect|writer|editor]` 打开内嵌面板（角色 / 连接 / 模型 / 思考强度），←→ 切选项、Tab 或 ↑↓ 换行、Enter 应用、Esc 取消；应用后底栏说明生效时机。底栏模型摘要在思考强度非自动时附「思考 高」，有角色覆盖时附「角色 N」。
 - Headless：`model` 输出默认与各角色的当前绑定；`model list` 列出全部连接与已保存模型（带编号）；`model use [--role R] [--connection C] <模型|编号>` 切换；`model use --role R --inherit` 清除角色覆盖；`model effort [--role R] <档位|inherit>` 调思考强度。模型名可能自带 `/`，所以连接用 `--connection` 指定。
-- 历史追溯：每次尝试追加 `agent.run_started` 事件（角色、provider、模型、生效思考强度、配置摘要）；语义合规检查用检查时刻的默认绑定，其用量事件带 provider 与模型。
+- 历史追溯：每次尝试的尝试摘要记下实际绑定（角色、provider、模型、生效思考强度、配置摘要）；语义合规检查用检查时刻的默认绑定，其模型记在对话记录里，用量并入所在尝试（D72）。
 
 配置文件形态：
 

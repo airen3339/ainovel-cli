@@ -37,26 +37,33 @@ func seedDiagHistory(tb testing.TB, count int) *Store {
 		tb.Fatal(err)
 	}
 	defer op.Close()
-	event, err := tx.Prepare(`INSERT INTO operation_events(operation_id,sequence,step_id,attempt,idempotency_key,kind,input_tokens,output_tokens,payload,payload_digest,created_at_unix_ms) VALUES (?,?,'',?,?,?,?,?,?,'digest',?)`)
+	attempt, err := tx.Prepare(`INSERT INTO operation_attempts(operation_id,attempt,worker,agent_role,agent_model,input_tokens,output_tokens,outcome,started_at_unix_ms,active_at_unix_ms) VALUES (?,?,'worker','writer','model',?,?,?,?,?)`)
 	if err != nil {
 		tb.Fatal(err)
 	}
-	defer event.Close()
-	message := []byte(`{"role":"assistant","content":"` + strings.Repeat("content ", 256) + `"}`)
+	defer attempt.Close()
+	entry, err := tx.Prepare(`INSERT INTO operation_transcripts(operation_id,sequence,attempt,kind,payload,created_at_unix_ms) VALUES (?,?,?,'message',?,?)`)
+	if err != nil {
+		tb.Fatal(err)
+	}
+	defer entry.Close()
+	message := []byte(`{"role":"assistant","blocks":[{"type":"text","text":"` + strings.Repeat("content ", 256) + `"}]}`)
 	for i := 0; i < count; i++ {
 		id := fmt.Sprintf("op-%04d", i)
 		if _, err = op.Exec(id, []byte(`{"executor":"llm.agent@1","config_digest":"profile"}`)); err != nil {
 			tb.Fatal(err)
 		}
-		for sequence := 1; sequence <= 200; sequence++ {
-			attempt := 1 + (sequence-1)/67
-			kind, payload, input, output := "agent.message_committed", message, 100, 10
-			if sequence == 67 || sequence == 134 || sequence == 200 {
-				kind, payload, input, output = "agent.run_ended", []byte(`{}`), 0, 0
-			} else if sequence == 1 || sequence == 68 || sequence == 135 {
-				kind, payload, input, output = "operation.running", []byte(`{"state":"running"}`), 0, 0
+		for n := 1; n <= 3; n++ {
+			outcome := "failed"
+			if n == 3 {
+				outcome = "succeeded"
 			}
-			if _, err = event.Exec(id, sequence, attempt, fmt.Sprint(sequence), kind, input, output, payload, sequence); err != nil {
+			if _, err = attempt.Exec(id, n, 6600, 660, outcome, n*100, n*100+66); err != nil {
+				tb.Fatal(err)
+			}
+		}
+		for sequence := 1; sequence <= 198; sequence++ {
+			if _, err = entry.Exec(id, sequence, 1+(sequence-1)/66, message, sequence); err != nil {
 				tb.Fatal(err)
 			}
 		}
@@ -78,14 +85,9 @@ func BenchmarkDiagLongHistory(b *testing.B) {
 				if err != nil {
 					b.Fatal(err)
 				}
-				if snap.OperationCount != count || snap.EventCount != count*200 || snap.AttemptCount != count*3 || len(snap.Operations) != 50 || len(snap.Events) != 200 || snap.MissingCompletionEventCount != 0 ||
-					snap.Usage.Input != count*194*100 {
-					b.Fatalf("incorrect long-history projection: operations=%d events=%d attempts=%d task page=%d event page=%d missing=%d", snap.OperationCount, snap.EventCount, snap.AttemptCount, len(snap.Operations), len(snap.Events), snap.MissingCompletionEventCount)
-				}
-				for _, event := range snap.Events {
-					if len(event.Payload) != 0 {
-						b.Fatal("summary read payload")
-					}
+				if snap.OperationCount != count || snap.AttemptCount != count*3 || len(snap.Operations) != 50 || len(snap.Attempts) != 150 ||
+					len(snap.Transcript) != 0 || snap.Usage.Input != count*3*6600 {
+					b.Fatalf("incorrect long-history projection: operations=%d attempts=%d task page=%d attempt page=%d", snap.OperationCount, snap.AttemptCount, len(snap.Operations), len(snap.Attempts))
 				}
 			}
 		})
@@ -100,8 +102,8 @@ func TestDiagHistoryCancelledContext(t *testing.T) {
 		t.Fatalf("cancelled query: %v", err)
 	}
 	// A cancelled read must release its transaction and leave the store usable.
-	if snap, err := s.ReadDiagSnapshot(context.Background(), DiagRequest{ProjectID: "book"}); err != nil || snap.EventCount != 600 {
-		t.Fatalf("read after cancellation: events=%d err=%v", snap.EventCount, err)
+	if snap, err := s.ReadDiagSnapshot(context.Background(), DiagRequest{ProjectID: "book"}); err != nil || len(snap.Attempts) != 9 {
+		t.Fatalf("read after cancellation: attempts=%d err=%v", len(snap.Attempts), err)
 	}
 }
 
@@ -114,19 +116,16 @@ func BenchmarkDiagLongHistoryShare(b *testing.B) {
 		if err != nil {
 			b.Fatal(err)
 		}
-		if len(snapshot.Operations) != 200 || len(snapshot.Events) != 200 || snapshot.EventCount != 200000 {
+		if len(snapshot.Operations) != 200 || len(snapshot.Attempts) != 200 || !snapshot.AttemptsTruncated || len(snapshot.Transcript) != 0 {
 			b.Fatal("share exceeded its context budget")
 		}
 		ids := map[string]bool{}
 		for _, op := range snapshot.Operations {
 			ids[op.ID] = true
 		}
-		for _, event := range snapshot.Events {
-			if !ids[event.OperationID] {
-				b.Fatal("event lacks task context")
-			}
-			if event.Kind != "agent.run_ended" && len(event.Payload) != 0 {
-				b.Fatal("share read message payload")
+		for _, attempt := range snapshot.Attempts {
+			if !ids[attempt.OperationID] {
+				b.Fatal("attempt lacks task context")
 			}
 		}
 	}

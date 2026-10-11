@@ -22,7 +22,7 @@ func runDiag(ctx context.Context, api *bootstrap.App, args []string, stdout, std
 	flags.StringVar(&request.RunID, "run", "", "创作运行 ID")
 	flags.StringVar(&request.OperationID, "operation", "", "任务 ID")
 	flags.StringVar(&request.After, "after", "", "浏览任务游标 next_operation_id；分享忽略页码")
-	flags.Int64Var(&request.EventAfter, "event-after", 0, "浏览事件游标 next_event_sequence；需要 --operation，分享忽略页码")
+	flags.Int64Var(&request.TranscriptAfter, "transcript-after", 0, "浏览对话记录游标 next_transcript_sequence；需要 --operation，分享忽略页码")
 	var path string
 	if export {
 		flags.StringVar(&path, "file", "", "分享报告输出路径；不覆盖现有文件")

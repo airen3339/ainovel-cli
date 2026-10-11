@@ -133,8 +133,8 @@ const (
 	reasonPausedJob = "创作已暂停，恢复该任务后再继续"
 	reasonCancelled = "创作已停止"
 	reasonCancelJob = "创作任务被取消"
-	// reasonDiagnostics 接在失败文案后面，指向事件日志里的原始诊断。
-	reasonDiagnostics = "可展开 %s 的事件记录查看原始诊断"
+	// reasonDiagnostics 接在失败文案后面，指向执行记录里的原始诊断。
+	reasonDiagnostics = "可展开 %s 的执行记录查看原始诊断"
 	reasonSuperseded  = "已被新的推导取代，这份待审批稿件作废"
 )
 
@@ -530,7 +530,7 @@ func (s *Coordinator) CreationRunEvents(ctx context.Context, runID string) ([]mo
 }
 
 // RunOperations 按创建序取一轮创作的全部 Operation。诊断视图靠它下钻：
-// run 事件表只有编排流水，真实的失败原因在 Operation.Error 与 operation_events。
+// run 事件表只有编排流水，真实的失败原因在 Operation.Error 与各次尝试的摘要。
 func (s *Coordinator) RunOperations(ctx context.Context, runID string) ([]model.Operation, error) {
 	ids, err := s.RunOperationIDs(ctx, runID)
 	if err != nil {
