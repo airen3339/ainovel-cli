@@ -310,7 +310,7 @@ func (m model) activityHead(feed activity.Snapshot, ok bool, width int) []string
 	return []string{viewHead("创作过程", title, "", width)}
 }
 
-// activityView 活动视图：跟随最新；上滚后持有快照，↓ 到底或 /follow 恢复。
+// activityView 活动视图：跟随最新；上滚后持有快照，↓ 到底或 Esc 恢复。
 func (m model) activityView(width, height int) []string {
 	feed, ok := m.timelineFeed()
 	lines := m.activityHead(feed, ok, width)
@@ -370,15 +370,15 @@ func (m model) idleSceneText() string {
 	case situationDecidingProposal, situationDeciding:
 		return "等你决定 · 见下方决定卡"
 	case situationNoRun:
-		return "还没有开始创作 · /continue 开始"
+		return "还没有开始创作 · 回车开始"
 	case situationCompleted:
-		return "全书完成 · /continue 续写"
+		return "全书完成 · /goal 续写"
 	case situationPaused:
-		return "已暂停 · /continue 继续"
+		return "已暂停 · 回车继续"
 	case situationFailed:
-		return "需要处理 · /continue 重试，/diag 查看诊断"
+		return "需要处理 · 回车重试，/diag 查看诊断"
 	case situationCancelled:
-		return "已停止 · /continue 接着写"
+		return "已停止 · 回车接着写"
 	default:
 		return runStateLabel(b.run().State)
 	}
@@ -500,30 +500,4 @@ func (m model) sceneStepAt(row, width int) (activity.Entry, bool) {
 		}
 	}
 	return activity.Entry{}, false
-}
-
-// thinkingContent 本轮全部思考原文（/think 全屏）。
-func (m model) thinkingContent() string {
-	feed, ok := m.activityFeed()
-	if !ok {
-		return ""
-	}
-	var parts []string
-	for _, block := range feed.Output {
-		if block.Kind != activity.Thinking {
-			continue
-		}
-		label := block.TaskLabel
-		if label == "" {
-			label = "创作任务"
-		}
-		if block.Truncated {
-			label += " · 前文已截断"
-		}
-		parts = append(parts, label+"\n"+string(block.Text))
-	}
-	if len(parts) == 0 {
-		return ""
-	}
-	return "思考原文 · 模型提供的实时内容\n\n" + strings.Join(parts, "\n\n")
 }

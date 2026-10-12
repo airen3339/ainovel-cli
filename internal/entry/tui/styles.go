@@ -21,8 +21,6 @@ var (
 	styleErr    = lipgloss.NewStyle().Foreground(colorDanger)
 	styleNotice = lipgloss.NewStyle().Foreground(colorSuccess)
 	styleWarn   = lipgloss.NewStyle().Bold(true).Foreground(colorWarn)
-
-	styleSubtitle = lipgloss.NewStyle().Foreground(colorMuted).Italic(true)
 )
 
 // spinnerFrames 是进行中步骤与顶栏的转圈，随创作动画的节拍换帧（pulse.go）。

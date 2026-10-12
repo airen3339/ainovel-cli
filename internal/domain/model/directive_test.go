@@ -12,9 +12,9 @@ func TestDirectiveScopeCoversTarget(t *testing.T) {
 		{ID: "arc-1", Kind: PlanArc, ParentID: "volume-1", Order: 1, Title: "弧一", Summary: "s"},
 		{ID: "chapter-plan-3", Kind: PlanChapter, ParentID: "arc-1", Order: 3, Title: "三", Summary: "s"},
 	}
-	target := DirectiveTarget{ChapterNumber: 3, PlanNodeIDs: PlanAncestry(plan, "chapter-plan-3")}
+	target := DirectiveTarget{ChapterNumber: 3, PlanNodeIDs: IndexPlan(plan).Ancestry("chapter-plan-3")}
 	if got := target.PlanNodeIDs; len(got) != 3 || got[0] != "chapter-plan-3" || got[2] != "volume-1" {
-		t.Fatalf("PlanAncestry = %v, want chapter → arc → volume", got)
+		t.Fatalf("Ancestry = %v, want chapter → arc → volume", got)
 	}
 	// end 是作用域自带的末章（D63）：只有章号区间有，其余随全书章数确定。
 	cases := []struct {

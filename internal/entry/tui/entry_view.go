@@ -13,7 +13,7 @@ func (m model) entryPage(title string, content []string, problem, hint string) s
 	lines := []string{benchTheme.Accent.Render("AINOVEL") + benchTheme.Muted.Render(" / "+title), benchRule(inner), ""}
 	lines = append(lines, content...)
 	lines = fitBlock(strings.Join(lines, "\n"), inner, h-3)
-	lines = append(lines, benchRule(inner), benchTheme.Error.Render(truncate(problem, inner)), benchTheme.Muted.Render(truncate(hint, inner)))
+	lines = append(lines, benchRule(inner), benchTheme.Error.Render(truncate(problem, inner)), m.keyHint(benchTheme.Muted.Render(truncate(hint, inner))))
 	for i, line := range lines {
 		lines[i] = pad + fitLine(line, inner)
 	}

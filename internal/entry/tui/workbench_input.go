@@ -6,7 +6,6 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
-	domainmodel "github.com/voocel/ainovel-cli/internal/domain/model"
 )
 
 const benchHelp = `创作控制台
@@ -14,36 +13,32 @@ const benchHelp = `创作控制台
 正文视图：阅读选中章。正在写的章逐字流出并带光标；候选稿与已入稿正文明确标注。
 活动视图：创作的完整过程——每一步、思考、说明与正文预览按时间排列。
 创作现场：正文下方常驻，显示上一步、当前步（或等待计时）与最新输出的尾部。
-决定卡：有稿件等你确认时出现在正文下方；输入 y 通过，或写下修改意见后回车重写。
+决定卡：等你决定时出现在正文下方。有稿件时回车看全部内容，y 通过，写下修改意见后回车重写；
+某章自动修订多次仍有阻塞意见时，y 接受现状，回车让它再改，写下意见后回车按意见改。
 
-输入框里的文字：等你决定时是修改意见，其余时候是对选中章（或卷、后续章节）的创作要求。
-开始输入时锁定作用对象，之后切章不改变已输入文字的语义。/note 内容（或 /n 内容）在任何时候独立提出要求。
+输入框里的文字：等你决定稿件时是修改意见，其余时候是对选中章（或卷、后续章节）的创作要求。
+开始输入时锁定作用对象，之后切章、新稿件出现都不改变已输入文字的语义。
 
-/prose · /activity        切换正文、活动视图
-/current                  定位正在写作／待确认／最近入稿的章节
-/follow                   恢复跟随最新内容
-/review                   全屏查看待确认稿件的完整变更
-/think · /view            全屏查看思考原文、完整详情
-/pause · /continue        暂停推进、继续创作（也可 /p · /c）
-/goal <章数|auto>         固定篇幅或交给 AI，并继续
-/budget <次数>            等待时调整自动修订预算
-/accept <理由>            接受选中章第一条阻塞发现
+/view                     全屏查看选中章（或全书）的完整依据
+/goal <章数|auto>         固定篇幅或交给 AI，并继续；完本后用它续写
 /export <路径>            导出已确认正文（.txt 或 .epub）
 /model [角色]             切换连接 / 模型 / 思考强度（角色：architect、writer、editor）
-/stop · /diag             停止创作、查看诊断
+/diag                     查看诊断
 /<章号或标题> · /next     跳章或搜索、下一个匹配
 /help                     本页
 
-命令支持唯一前缀；有歧义时保留输入并列出可选命令。常用动作有单字母别名：/c 继续、/p 暂停、/n 要求。
+命令支持唯一前缀；有歧义时保留输入并列出可选命令。
 Tab                       目录 ⇄ 正文切换焦点
 ↑ / ↓ · PgUp / PgDn       滚动焦点区域；输入为空时 Home/End 到顶／到底
-Enter（空）               目录焦点：折叠卷弧；正文焦点：全屏阅读当前内容
-Esc                       清空输入 → 关闭全屏 → 回到跟随 → 作品首页
-F1 / F2                   正文、活动视图
+Enter（空）               正文焦点：有稿件时看全部内容，创作停着时继续创作，否则全屏阅读；目录焦点：折叠卷弧、全屏阅读选中章
+Esc                       清空输入 → 关闭全屏 → 回到最新 → 暂停创作 → 作品首页
+F1 / F2                   正文、活动视图（也可点标签）
 
 点击章节选章；点击标签切换视图；点击决定卡阅读候选稿；点击现场报错行查看诊断。
 思考仅展示模型服务提供的原文；直播内容不会自动成为正式稿，最终以确认稿为准。
-暂停只停止后续推进，当前任务可能继续收尾。终端原生划选复制通常需要按住 Shift。`
+打开作品时，上次没停就退出的创作自动接着写；Esc 暂停立即停下在途的模型调用，对话与草稿保留，
+之后回车、或写下要求回车，都从停下的地方接着写。
+终端原生划选复制通常需要按住 Shift。`
 
 func (m model) handleBenchKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if m.bench.diag != nil {
@@ -120,7 +115,8 @@ func (m model) handleBenchKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// escape 分层返回：清空输入 → 回到跟随（正文视图、当前章、最新内容）→ 作品首页。
+// escape 分层返回：清空输入 → 回到跟随（正文视图、当前章、最新内容）→ 暂停正在进行的
+// 创作（打断在途的模型调用）→ 作品首页。
 func (m model) escape() (tea.Model, tea.Cmd) {
 	b := &m.bench
 	if b.input.Value() != "" {
@@ -131,6 +127,9 @@ func (m model) escape() (tea.Model, tea.Cmd) {
 	if b.view == viewActivity || b.pinned || b.proseHold || b.activityHeld != nil {
 		m.follow()
 		return m, nil
+	}
+	if b.situation() == situationWriting && b.hasRun() {
+		return m, m.pauseRunCmd()
 	}
 	b.close()
 	m.page = pageHome
@@ -195,11 +194,7 @@ func (m model) submitInput() (tea.Model, tea.Cmd) {
 			bench.notice = "现在没有等你决定的稿件"
 		}
 		next = m
-	case m.reviewing():
-		if bench.inputDecision != bench.decision.proposal.ID {
-			bench.err = "新的稿件正在等待审阅；这段文字仍是创作要求，请用 /note 提交，或 Esc 清空后再写修改意见"
-			return m, nil
-		}
+	case m.reviewing() && bench.inputDecision == bench.decision.proposal.ID:
 		next, cmd = m.decideCmd(false, text)
 	default:
 		if bench.inputDecision != "" {
@@ -217,7 +212,8 @@ func (m model) submitInput() (tea.Model, tea.Cmd) {
 	return updated, cmd
 }
 
-// enterPane 空回车：目录焦点折叠卷弧（尚未展开的空弧无动作），主区全屏阅读当前内容；批准必须由 y 明确确认。
+// enterPane 空回车：正文焦点有稿件等你确认时看全部内容，创作停着时继续创作，否则全屏阅读当前
+// 内容；目录焦点折叠卷弧（尚未展开的空弧无动作）、全屏阅读选中章。批准必须由 y 明确确认。
 func (m model) enterPane() (tea.Model, tea.Cmd) {
 	b := &m.bench
 	if b.pane == benchPaneOutline {
@@ -229,6 +225,12 @@ func (m model) enterPane() (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+	}
+	if b.pane == benchPaneMain && m.reviewing() {
+		return m.openReview(), nil
+	}
+	if b.pane == benchPaneMain && b.resumable() {
+		return m.continueRun()
 	}
 	if b.view == viewActivity {
 		feed, ok := m.timelineFeed()
@@ -247,7 +249,7 @@ func (m model) enterPane() (tea.Model, tea.Cmd) {
 	case m.reviewing():
 		b.notice = "输入 y 通过，或写下修改意见后回车"
 	case m.selectedChapterNumber() == 0:
-		b.notice = "还没有可读的章节；写下要求，或 /continue 开始创作"
+		b.notice = "还没有可读的章节"
 	default:
 		b.notice = "这一章还没有正文"
 	}
@@ -257,6 +259,8 @@ func (m model) enterPane() (tea.Model, tea.Cmd) {
 func (m model) approve() (tea.Model, tea.Cmd) {
 	bench := &m.bench
 	switch {
+	case bench.decision != nil && bench.decision.held != "":
+		return m.acceptHeld()
 	case bench.decision == nil || !bench.decision.hasProposal:
 		bench.notice = "现在没有等你决定的稿件"
 	case bench.writing:
@@ -272,59 +276,20 @@ func (m model) approve() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// benchCommand 是底栏 `/` 命令：唯一前缀匹配，命令面板与帮助共用同一张表。
-// alias 给首字母撞车的常用动作一个单字母写法（/c 继续、/p 暂停、/n 要求）。
+// benchCommand 是底栏 `/` 命令：唯一前缀匹配，命令面板与帮助共用同一张表。启停创作、
+// 看稿、提要求都不用命令（Esc、回车与直接输入），这里只留按键表达不了的事。
 // idleOnly 的命令在创作进行中屏蔽，以免并发驱动；quiet 的不进 `/` 总览。
 type benchCommand struct {
-	name, alias, usage, label string
-	idleOnly, quiet           bool
-	run                       func(m model, arg string) (tea.Model, tea.Cmd)
+	name, usage, label string
+	idleOnly, quiet    bool
+	run                func(m model, arg string) (tea.Model, tea.Cmd)
 }
 
 var benchCommands = []benchCommand{
-	{name: "current", label: "定位当前章节", run: func(m model, _ string) (tea.Model, tea.Cmd) {
-		m.returnToCurrentChapter()
-		return m, nil
-	}},
-	{name: "prose", label: "正文视图", run: func(m model, _ string) (tea.Model, tea.Cmd) {
-		m.switchView(viewProse)
-		return m, nil
-	}},
-	{name: "activity", label: "活动视图", run: func(m model, _ string) (tea.Model, tea.Cmd) {
-		m.switchView(viewActivity)
-		return m, nil
-	}},
-	{name: "review", label: "查看等你确认的全部内容", run: func(m model, _ string) (tea.Model, tea.Cmd) {
-		return m.openReview(), nil
-	}},
-	{name: "follow", label: "回到最新", run: func(m model, _ string) (tea.Model, tea.Cmd) {
-		m.follow()
-		return m, nil
-	}},
-	{name: "note", alias: "n", usage: "<要求>", label: "提出创作要求（不裁决稿件）", run: func(m model, arg string) (tea.Model, tea.Cmd) {
-		if arg == "" {
-			m.bench.err = "用法：/note 要求内容；作用范围见输入框右侧"
-			return m, nil
-		}
-		scope, label := m.composerScope()
-		return m, m.addDirectiveCmd(scope, label, arg)
-	}},
-	{name: "pause", alias: "p", label: "暂停推进", run: func(m model, _ string) (tea.Model, tea.Cmd) {
-		if b := &m.bench; b.hasRun() && (b.run().State == domainmodel.RunRunning || b.run().State == domainmodel.RunWaitingUser) {
-			return m, m.pauseRunCmd()
-		}
-		m.bench.notice = "现在没有在推进的创作"
-		return m, nil
-	}},
-	{name: "continue", alias: "c", label: "继续创作（完本后续写）", idleOnly: true, run: func(m model, _ string) (tea.Model, tea.Cmd) {
-		if m.bench.situation() == situationCompleted {
-			return m.continueRunWith(quickParams{extend: true})
-		}
-		return m.continueRun()
-	}},
-	{name: "goal", usage: "<章数|auto>", label: "调整篇幅并继续", idleOnly: true, run: func(m model, arg string) (tea.Model, tea.Cmd) {
+	{name: "goal", usage: "<章数|auto>", label: "调整篇幅并继续（完本后续写）", idleOnly: true, run: func(m model, arg string) (tea.Model, tea.Cmd) {
 		if arg == "auto" {
-			return m.continueRunWith(quickParams{})
+			// 完本后交给 AI 就是续写：撤回收官承诺，由 AI 决定再写多少。
+			return m.continueRunWith(quickParams{extend: m.bench.situation() == situationCompleted})
 		}
 		chapters, err := strconv.Atoi(arg)
 		if err != nil || chapters <= 0 {
@@ -333,54 +298,14 @@ var benchCommands = []benchCommand{
 		}
 		return m.continueRunWith(quickParams{chapters: chapters})
 	}},
-	{name: "budget", usage: "<次数>", label: "修订预算", idleOnly: true, run: func(m model, arg string) (tea.Model, tea.Cmd) {
-		b := &m.bench
-		if b.decision == nil || b.decision.hasProposal || !b.hasRun() {
-			b.notice = "只有等待修订预算时才能调整"
-			return m, nil
-		}
-		budget, err := strconv.Atoi(arg)
-		if err != nil || budget <= 0 {
-			b.err = fmt.Sprintf("用法：/budget 次数（当前 %d 次）", b.run().Strategy.AutoRepairBudget)
-			return m, nil
-		}
-		return m, m.applyBudgetCmd(budget)
-	}},
-	{name: "accept", usage: "<理由>", label: "接受发现", idleOnly: true, run: func(m model, arg string) (tea.Model, tea.Cmd) {
-		finding, ok := m.firstBlockingFinding()
-		if !ok {
-			m.bench.notice = "选中的章节没有待处理的阻塞发现"
-			return m, nil
-		}
-		if arg == "" {
-			m.bench.err = "用法：/accept 理由 · 接受发现「" + truncate(finding.Note, 40) + "」"
-			return m, nil
-		}
-		return m, m.adjudicateCmd(finding.ID, arg)
-	}},
 	{name: "export", usage: "<路径>", label: "导出", run: func(m model, arg string) (tea.Model, tea.Cmd) {
 		return m.submitExport(arg)
-	}},
-	{name: "think", label: "思考原文", run: func(m model, _ string) (tea.Model, tea.Cmd) {
-		if text := m.thinkingContent(); text != "" {
-			return m.openBody(text), nil
-		}
-		m.bench.notice = "模型未提供思考文本"
-		return m, nil
 	}},
 	{name: "view", label: "完整详情", run: func(m model, _ string) (tea.Model, tea.Cmd) {
 		return m.openBody(m.detailReport()), nil
 	}},
 	{name: "model", usage: "[角色]", label: "切换模型与思考强度", run: func(m model, arg string) (tea.Model, tea.Cmd) {
 		return m.openModelPanel(arg)
-	}},
-	{name: "stop", label: "停止创作", run: func(m model, _ string) (tea.Model, tea.Cmd) {
-		if b := &m.bench; b.hasRun() && b.run().State != domainmodel.RunCompleted &&
-			b.run().State != domainmodel.RunFailed && b.run().State != domainmodel.RunCancelled {
-			return m, m.cancelRunCmd()
-		}
-		m.bench.notice = "没有可以结束的创作"
-		return m, nil
 	}},
 	{name: "diag", label: "诊断", run: func(m model, _ string) (tea.Model, tea.Cmd) {
 		return m.openDiagnostics()
@@ -401,7 +326,7 @@ func matchCommand(name string) (benchCommand, bool) {
 	var found *benchCommand
 	for i := range benchCommands {
 		command := &benchCommands[i]
-		if command.name == name || command.alias == name {
+		if command.name == name {
 			return *command, true
 		}
 		if strings.HasPrefix(command.name, name) {
@@ -425,7 +350,7 @@ func (m model) runCommand(text string) (tea.Model, tea.Cmd) {
 	}
 	if command, ok := matchCommand(name); ok {
 		if command.idleOnly && m.bench.writing {
-			m.bench.notice = "创作进行中，先 /pause 或等它写完"
+			m.bench.notice = "创作进行中，先按 Esc 暂停"
 			return m, nil
 		}
 		return command.run(m, strings.TrimSpace(arg))
@@ -512,6 +437,9 @@ func (m model) handleBenchMouse(mouse tea.MouseMsg) (tea.Model, tea.Cmd) {
 			if bench.input.Value() != "" {
 				bench.notice = "输入框中有未提交内容，请先提交或清空"
 				return m, nil
+			}
+			if action.do != nil {
+				return action.do(m)
 			}
 			command := action.key
 			if action.key == "/goal" {

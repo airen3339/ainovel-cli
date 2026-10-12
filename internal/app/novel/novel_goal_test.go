@@ -183,7 +183,7 @@ func TestNovelDeriverNextFollowsNovelRules(t *testing.T) {
 			wantKind: model.OperationRewriteChapter, wantID: "run:book:1:rewrite:chapter-ii:r2"},
 		{name: "exhausted budget waits", plans: 3, written: 3,
 			evidence: Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, model.ReviewBlocked, first, blocking)}, Repairs: map[string]int{"chapter-ii": 1}},
-			wantWait: "第 2 章《第一一章》的自动修订预算（每章 1 次）已用尽"},
+			wantWait: "第 2 章《第一一章》自动修订了 1 次仍有阻塞意见"},
 		// 预算按章计（D63）：别的章用过的重写次数不挤占本章。
 		{name: "budget is per chapter", plans: 5, written: 5,
 			evidence: Evidence{Verdicts: []StoredVerdict{firstPass, storedTestVerdict("review-b", 2, model.ReviewBlocked, last, lastBlocking)}, Repairs: map[string]int{"chapter-ii": 1}},

@@ -65,13 +65,38 @@ func TestRuntimeRemindsToSubmitBeforeStopping(t *testing.T) {
 		t.Fatalf("outcome = %+v, %v", outcome, err)
 	}
 	requests := llm.Requests()
-	if len(requests) != 2 || !strings.Contains(requestText(requests[1].Messages[len(requests[1].Messages)-1]), "任务尚未形成 Proposal") {
+	if len(requests) != 2 {
 		t.Fatalf("the model was not reminded to submit: %d requests", len(requests))
+	}
+	if reminder := requestText(requests[1].Messages[len(requests[1].Messages)-1]); !strings.Contains(reminder, "任务尚未形成 Proposal") || strings.Contains(reminder, "只有思考") {
+		t.Fatalf("reminder = %q", reminder)
 	}
 	// 提醒前后的两次回复都记下用量：随各自的消息并入尝试摘要，加起来是这次执行的全部。
 	attempts, err := s.ListOperationAttempts(ctx, op.ID)
 	if err != nil || len(attempts) != 1 || attempts[0].Usage != (model.Usage{Input: 30, Output: 8}) || attempts[0].ToolErrors != 0 {
 		t.Fatalf("attempts = %+v, %v", attempts, err)
+	}
+}
+
+// 思考被截断的回复只有思考、没有正文也没有工具调用：提醒点明这一点，让模型接着分析调工具，
+// 而不是从头重新审题。
+func TestRuntimeRemindsATruncatedThoughtToContinue(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	s, op := runningWriterWithDraft(t, ctx)
+	thought := litellmtest.Respond(litellm.ReasoningBlock{Text: "先核对第一章的大纲，再看草稿里"})
+	submit := callReply("submit-existing", prompt.ToolProposalSubmit,
+		json.RawMessage(`{"reason":"完成","workspace_key":"draft","workspace_version":1,"facts":[{"subject":"主角","predicate":"event.arrival","value":"抵达山门"}]}`))
+	llm := litellmtest.New(thought, submit)
+	if outcome, err := boundRuntime(s, testChat(llm)).Execute(ctx, op); err != nil || outcome.Proposal == nil {
+		t.Fatalf("outcome = %+v, %v", outcome, err)
+	}
+	requests := llm.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("the model was not reminded: %d requests", len(requests))
+	}
+	if reminder := requestText(requests[1].Messages[len(requests[1].Messages)-1]); !strings.Contains(reminder, "只有思考、没有输出") || !strings.Contains(reminder, "任务尚未形成 Proposal") {
+		t.Fatalf("reminder = %q", reminder)
 	}
 }
 

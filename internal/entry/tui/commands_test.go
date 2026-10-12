@@ -15,23 +15,14 @@ func TestBenchHelpCoversEveryCommand(t *testing.T) {
 		if !strings.Contains(benchHelp, "/"+command.name) {
 			t.Errorf("帮助文本缺少命令 /%s", command.name)
 		}
-		if command.alias != "" && !strings.Contains(benchHelp, "/"+command.alias) {
-			t.Errorf("帮助文本缺少别名 /%s", command.alias)
-		}
 	}
 }
 
-// 唯一前缀匹配是命令行为的一部分：别名与全名都必须能解析到同一条命令。
-func TestMatchCommandResolvesNamesAndAliases(t *testing.T) {
+// 唯一前缀匹配是命令行为的一部分：全名必须能解析到同一条命令。
+func TestMatchCommandResolvesNames(t *testing.T) {
 	for _, command := range benchCommands {
 		if got, ok := matchCommand(command.name); !ok || got.name != command.name {
 			t.Errorf("matchCommand(%q) = %q, %v", command.name, got.name, ok)
-		}
-		if command.alias == "" {
-			continue
-		}
-		if got, ok := matchCommand(command.alias); !ok || got.name != command.name {
-			t.Errorf("matchCommand(别名 %q) = %q, %v", command.alias, got.name, ok)
 		}
 	}
 	if _, ok := matchCommand("definitely-not-a-command"); ok {

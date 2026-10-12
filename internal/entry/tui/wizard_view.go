@@ -165,7 +165,10 @@ func (s *wizardScreen) addWizardInput(m model, i, width int, add func(string)) {
 func (m model) viewWizard() string {
 	screen := m.wizardLayout()
 	lines := fitBlock(strings.Join(screen.lines, "\n"), m.width, m.height-3)
-	hint := "↑↓ 选择 · Enter 继续 · Esc 返回"
+	hint := "↑↓ 选择 · Enter 继续 · Ctrl+C 退出"
+	if m.wizard.fromHome {
+		hint = "↑↓ 选择 · Enter 继续 · Esc 返回"
+	}
 	if !m.wizard.choosing {
 		hint = "Tab 切换 · Enter 继续 · Esc 返回"
 		if m.wizard.step == 0 {
@@ -179,6 +182,6 @@ func (m model) viewWizard() string {
 	if m.wizard.err == "" {
 		feedback = styleNotice.Render(m.wizard.notice)
 	}
-	lines = append(lines, "  "+benchRule(m.width-4), "  "+fitLine(feedback, m.width-4), "  "+fitLine(benchTheme.Muted.Render(hint), m.width-4))
+	lines = append(lines, "  "+benchRule(m.width-4), "  "+fitLine(feedback, m.width-4), "  "+fitLine(m.keyHint(benchTheme.Muted.Render(hint)), m.width-4))
 	return strings.Join(fitBlock(strings.Join(lines, "\n"), m.width, m.height), "\n")
 }

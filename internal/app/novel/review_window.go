@@ -49,18 +49,22 @@ func requirements(project projectdoc.Snapshot, final int) (list []requirement, d
 	if final > 0 {
 		add(finaleRequirement(project, final))
 	}
+	// 覆盖判定到全书末章（未收官时到蓝图末章）：已规划的章节按祖先链匹配，蓝图之外
+	// 只有章号。推导器保证收官后蓝图不超过全书章数。各章的匹配对象只算一次。
+	index := model.IndexPlan(project.Plan)
+	targets := make([]model.DirectiveTarget, max(final, len(plans)))
+	for i := range targets {
+		var planID string
+		if i < len(plans) {
+			planID = plans[i].ID
+		}
+		targets[i] = directiveTarget(index, i+1, planID)
+	}
 	for _, directive := range model.ActiveDirectives(project.Directives) {
-		// 覆盖判定到全书末章（未收官时到蓝图末章）：已规划的章节按祖先链匹配，蓝图之外
-		// 只有章号。推导器保证收官后蓝图不超过全书章数。
-		known := max(final, len(plans))
-		scope, last := make(map[int]bool, known), 0
-		for n := 1; n <= known; n++ {
-			var planID string
-			if n <= len(plans) {
-				planID = plans[n-1].ID
-			}
-			if directive.Covers(directiveTarget(project, n, planID)) {
-				scope[n], last = true, n
+		scope, last := make(map[int]bool, len(targets)), 0
+		for i, target := range targets {
+			if directive.Covers(target) {
+				scope[i+1], last = true, i+1
 			}
 		}
 		covers := func(n int) bool { return scope[n] }

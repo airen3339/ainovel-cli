@@ -31,6 +31,9 @@ type QuickWriteCommand struct {
 	// Extend 是续写：篇幅交给 AI 并撤回已有的收官承诺，由 AI 决定再写多少。它是显式意图，
 	// 重复执行普通续跑不会隐式续写。
 	Extend bool
+	// RenewRepairBudget 是在某章自动修订预算用尽时继续：以运行当前的策略再确认一次，各章
+	// 预算重新起算（D63）。
+	RenewRepairBudget bool
 	// Approval 请求更新 Project 的有效审批策略；Run 创建时只保留不可变预设摘要。
 	Approval        model.ApprovalPolicy
 	Packs           []resource.PackRef
@@ -102,6 +105,11 @@ func (s *Application) QuickWrite(ctx context.Context, command QuickWriteCommand)
 	run, err := s.ensureCreationRun(ctx, command, project.Approval)
 	if err != nil {
 		return result, err
+	}
+	if command.RenewRepairBudget {
+		if run, err = s.runs.UpdateCreationRunStrategy(ctx, run.ID, run.Strategy, command.CreatedAt); err != nil {
+			return result, err
+		}
 	}
 	outcome, err := s.runs.Drive(ctx, run, s.creationTasks(command), driveCommand(command))
 	result = attachRun(outcome.Run, result)

@@ -107,7 +107,7 @@ func (m model) homeFrame() homeFrame {
 		}
 	}
 
-	lines = append(lines, benchRule(l.inner), m.homeStatus(capacity), benchTheme.Muted.Render(m.homeHint()))
+	lines = append(lines, benchRule(l.inner), m.homeStatus(capacity), m.keyHint(benchTheme.Muted.Render(m.homeHint())))
 	pad := strings.Repeat(" ", l.x)
 	for i, line := range lines {
 		lines[i] = pad + fitLine(line, l.inner)
@@ -402,7 +402,7 @@ func (m model) homeHint() string {
 		focusImport:   "Enter 导入作品文件 · Tab 下一项",
 		focusConfig:   "Enter 设置模型连接 · Tab 下一项",
 	}[m.home.focus]
-	return hint + " · Esc 退出"
+	return hint + " · Ctrl+C 退出"
 }
 
 func homeControl(text string, selected bool) string {

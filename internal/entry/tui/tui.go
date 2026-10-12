@@ -32,6 +32,13 @@ type Deps struct {
 	Output io.Writer
 }
 
+// quitWindow 是确认退出的时限：Ctrl+C 第一次只把底栏提示换成退出确认，时限内再按一次
+// 才退出，误触不会打断在途创作。
+const quitWindow = 2 * time.Second
+
+// quitExpiredMsg 是退出确认到期：底栏恢复页面自己的按键提示。
+type quitExpiredMsg struct{}
+
 // shutdownGrace 是退出时等在途创作释放任务的上限：取消后执行器立即停手，释放只是
 // 一次本地写入；超时就交给租约到期回收。
 const shutdownGrace = 10 * time.Second
@@ -110,6 +117,8 @@ type model struct {
 	gen    int
 	width  int
 	height int
+	// quitArmed 表示已按过一次 Ctrl+C、正等确认；同时只有一个到期计时在途。
+	quitArmed bool
 }
 
 func newModel(ctx context.Context, deps Deps) model {
@@ -190,8 +199,15 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 		if m.tooSmall() {
 			return m, nil
 		}
+	case quitExpiredMsg:
+		m.quitArmed = false
+		return m, nil
 	case tea.KeyMsg:
 		if message.Type == tea.KeyCtrlC {
+			if !m.quitArmed {
+				m.quitArmed = true
+				return m, tea.Tick(quitWindow, func(time.Time) tea.Msg { return quitExpiredMsg{} })
+			}
 			if m.page == pageWizard && m.wizard.cancel != nil {
 				m.wizard.cancel()
 			}
@@ -223,7 +239,7 @@ func (m model) viewTooSmall() string {
 		benchTheme.Title.Render("请将终端窗口最大化"),
 		benchTheme.Muted.Render(fmt.Sprintf("当前 %d × %d · 需要至少 %d × %d", m.width, m.height, minWidth, minHeight)),
 		"",
-		benchTheme.Muted.Render("Esc 返回 · Ctrl+C 退出"),
+		m.keyHint(benchTheme.Muted.Render("Esc 返回 · Ctrl+C 退出")),
 	}
 	block := make([]string, max(0, (h-len(lines))/2))
 	for _, line := range lines {
@@ -231,6 +247,14 @@ func (m model) viewTooSmall() string {
 		block = append(block, strings.Repeat(" ", max(0, (w-lipgloss.Width(line))/2))+line)
 	}
 	return strings.Join(fitBlock(strings.Join(block, "\n"), w, h), "\n")
+}
+
+// keyHint 是页面底栏的按键提示；按过一次 Ctrl+C 后换成退出确认。
+func (m model) keyHint(hint string) string {
+	if m.quitArmed {
+		return benchTheme.Warning.Render("再按一次 Ctrl+C 退出")
+	}
+	return hint
 }
 
 func (m model) View() string {

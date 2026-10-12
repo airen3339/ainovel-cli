@@ -155,14 +155,11 @@ func (r *Runtime) Execute(ctx context.Context, operation model.Operation) (model
 			return nil
 		},
 		// 提交工具成功即收尾（Terminate），不额外请求模型；未提交就想停则提醒继续。
-		OnStop: func(context.Context, agentcore.StopInfo) ([]agentcore.Message, error) {
-			switch {
-			case submitted != nil || verdict != nil:
+		OnStop: func(_ context.Context, info agentcore.StopInfo) ([]agentcore.Message, error) {
+			if submitted != nil || verdict != nil {
 				return nil, nil
-			case wantsVerdict:
-				return []agentcore.Message{agentcore.UserText("任务尚未提交裁定。请完成审阅并调用 verdict_submit 提交覆盖请求范围的结构化裁定；如无法完成，明确返回工具错误。")}, nil
 			}
-			return []agentcore.Message{agentcore.UserText("任务尚未形成 Proposal。请继续使用工作区工具完成候选，并调用 proposal_submit；如无法完成，明确返回工具错误。")}, nil
+			return []agentcore.Message{agentcore.UserText(stopReminder(wantsVerdict, info.Message))}, nil
 		},
 	}
 	_, executionErr := agentcore.Run(executionCtx, config, recoveredMessages, agentcore.UserText(promptText))
@@ -183,6 +180,20 @@ func (r *Runtime) Execute(ctx context.Context, operation model.Operation) (model
 		return model.OperationOutcome{}, endedWithout(end, ErrNoProposal)
 	}
 	return model.OperationOutcome{Proposal: submitted}, nil
+}
+
+// stopReminder 提醒没提交就想停的模型继续。只有思考、没有输出的回复多半是思考在中途
+// 被截断：中转常把截断报成正常结束，agentcore 的续写接不住，这里让它接着已有的分析行动，
+// 而不是从头审题再想一遍。
+func stopReminder(wantsVerdict bool, last agentcore.Message) string {
+	next := "任务尚未形成 Proposal。请继续使用工作区工具完成候选，并调用 proposal_submit；如无法完成，明确返回工具错误。"
+	if wantsVerdict {
+		next = "任务尚未提交裁定。请完成审阅并调用 verdict_submit 提交覆盖请求范围的结构化裁定；如无法完成，明确返回工具错误。"
+	}
+	if last.Text() == "" && last.Reasoning() != "" {
+		return "上一条回复只有思考、没有输出，多半在思考中途被截断。不要从头重新审题，接着已有的分析直接调用工具。" + next
+	}
+	return next
 }
 
 // activityEvent 是这次执行发出的一条活动事件：归属、任务名与时刻统一在这里填。

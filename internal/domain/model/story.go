@@ -94,16 +94,22 @@ func PlanNodesInOrder(plan []PlanNode, kind PlanNodeKind) []PlanNode {
 	return nodes
 }
 
-// PlanAncestry 返回节点自身及其祖先 ID（章 → 弧 → 卷），供作用域匹配；
-// 节点缺失时在断点处停止。
-func PlanAncestry(plan []PlanNode, id string) []string {
-	byID := make(map[string]PlanNode, len(plan))
+// PlanIndex 按 ID 索引计划节点：建一次，反复沿父链查祖先。
+type PlanIndex map[string]PlanNode
+
+func IndexPlan(plan []PlanNode) PlanIndex {
+	index := make(PlanIndex, len(plan))
 	for _, node := range plan {
-		byID[node.ID] = node
+		index[node.ID] = node
 	}
+	return index
+}
+
+// Ancestry 返回节点自身及其祖先 ID（章 → 弧 → 卷），供作用域匹配；节点缺失时在断点处停止。
+func (index PlanIndex) Ancestry(id string) []string {
 	var path []string
-	for current := id; current != "" && len(path) <= len(plan); {
-		node, ok := byID[current]
+	for current := id; current != "" && len(path) <= len(index); {
+		node, ok := index[current]
 		if !ok {
 			break
 		}

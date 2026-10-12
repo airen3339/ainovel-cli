@@ -326,7 +326,7 @@ func (m model) viewDiagnostics() string {
 	if d.input != nil {
 		help = "仅分享状态、统计与别名证据 · 不含正文/思考/密钥/原始错误 · Enter 保存 · Esc 取消"
 	}
-	lines = append(lines, styleHint.Render(fitLine(help, m.width)))
+	lines = append(lines, m.keyHint(styleHint.Render(fitLine(help, m.width))))
 	return strings.Join(fitBlock(strings.Join(lines, "\n"), max(1, m.width), max(1, m.height)), "\n")
 }
 

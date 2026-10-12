@@ -89,7 +89,7 @@ func TestHomeFramesFitSizesThemesAndStates(t *testing.T) {
 				if lipgloss.Width(frame.text) > size[0] || lipgloss.Height(frame.text) != size[1] {
 					t.Fatalf("frame overflow %v %s", size, name)
 				}
-				if !strings.Contains(ansi.Strip(frame.text), "Esc") {
+				if !strings.Contains(ansi.Strip(frame.text), "Enter") {
 					t.Fatalf("footer missing at %v %s", size, name)
 				}
 				for _, hit := range frame.hits {

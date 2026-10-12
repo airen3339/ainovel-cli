@@ -75,6 +75,8 @@ type PendingDecision struct {
 	Stale       bool           `json:"stale,omitempty"`
 	// View 是稿件里正文以外变更的故事语言描述，有稿件时才有。
 	View ProposalView `json:"view,omitzero"`
+	// Held 是推进卡住的那一章（章节 ID）：它的自动修订预算已用尽，等用户接受现状或让它再改。
+	Held string `json:"held,omitempty"`
 }
 
 type WorkbenchSnapshot struct {
@@ -185,7 +187,8 @@ func (s *Query) workbenchDecision(
 	}
 	decision := &PendingDecision{Reason: run.StateReason, Proposal: proposal, HasProposal: ok}
 	if !ok {
-		return nil, decision, nil
+		decision.Held, err = s.reviews.RepairHold(ctx, project, run)
+		return nil, decision, err
 	}
 	// 等待期间的漂移按 D51 判定：只有用户专属变化时候选可重定位、仍是当前稿件；
 	// 正文/规划/相干要求变过则基线过期，不解出章节候选（大纲不得标 ◐），由界面

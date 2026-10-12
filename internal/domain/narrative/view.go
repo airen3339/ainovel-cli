@@ -73,7 +73,7 @@ func (s *Story) Totals() Totals {
 func (s *Story) Outline(ids []string) []VolumeView {
 	include := make(map[string]bool)
 	for _, id := range ids {
-		for _, ancestor := range model.PlanAncestry(s.content.Plan, id) {
+		for _, ancestor := range s.plans.Ancestry(id) {
 			include[ancestor] = true
 		}
 	}

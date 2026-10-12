@@ -96,21 +96,21 @@ func (m model) overviewSource() proseSource {
 func (m model) nextStepText() string {
 	switch m.bench.situation() {
 	case situationDecidingProposal:
-		return "有稿件等你确认：/review 查看全部内容，输入 y 回车通过，或写下修改意见后回车。"
+		return "有稿件等你确认：回车查看全部内容，输入 y 回车通过，或写下修改意见后回车。"
 	case situationDeciding:
 		return "创作在等你的决定：" + m.bench.decision.reason
 	case situationNoRun:
-		return "输入 /continue 回车开始创作。"
+		return "回车开始创作，或先写下要求。"
 	case situationFailed:
-		return "输入 /diag 查看诊断，/continue 重试。"
+		return "回车重试，/diag 查看诊断。"
 	case situationCancelled:
-		return "创作已取消。输入 /continue 从现有内容继续。"
+		return "创作已停止。回车从现有内容接着写。"
 	case situationCompleted:
-		return "全书完成。输入 /continue 续写，由 AI 决定写多少；/goal 章数 可固定篇幅。"
+		return "全书完成。/goal auto 续写，由 AI 决定写多少；/goal 章数 固定续写到第几章。"
 	case situationPaused:
-		return "创作已暂停。输入 /continue 回车继续。"
+		return "创作已暂停。回车继续，或写下要求后回车。"
 	default:
-		return "从一个故事开始。输入 /continue 继续创作，或直接写下要求。"
+		return "从一个故事开始。回车继续创作，或直接写下要求。"
 	}
 }
 

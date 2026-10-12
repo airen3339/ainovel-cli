@@ -27,7 +27,7 @@ type Evidence struct {
 	Verdicts []StoredVerdict
 	// Prior 是基线已失效的上一轮裁定（D68）：章节正文未变时沿用其结论。
 	Prior []StoredVerdict
-	// Repairs 是本轮各章已派发的自动修订次数，预算按章计（D63）。
+	// Repairs 是各章自运行最近一次策略事件以来已派发的自动修订次数，预算按章计（D63）。
 	Repairs map[string]int
 }
 
@@ -55,7 +55,21 @@ func (g *Goal) Next(ctx context.Context, run model.CreationRun) (creation.Decisi
 	return decision, err
 }
 
-// repairCounts 统计本轮各章已派发的自动修订任务数。
+// RepairHold 是 run 推进卡住的那一章（Policy.RepairHold）：工作台据此让用户接受现状或让它再改。
+func (s *Reviews) RepairHold(ctx context.Context, project projectdoc.Snapshot, run model.CreationRun) (string, error) {
+	verdicts, prior, err := s.listVerdicts(ctx, project)
+	if err != nil {
+		return "", err
+	}
+	repairs, err := s.repairCounts(ctx, run.ID)
+	if err != nil {
+		return "", err
+	}
+	return (Policy{}).RepairHold(project, run, Evidence{Verdicts: verdicts, Prior: prior, Repairs: repairs})
+}
+
+// repairCounts 统计各章自最近一次策略事件以来已派发的自动修订任务数。预算管的是无人过问的
+// 连续修订：运行创建、用户调整策略、或在预算用尽时确认继续，都重新起算（D63）。
 func (s *Reviews) repairCounts(ctx context.Context, runID string) (map[string]int, error) {
 	events, err := s.store.ListCreationRunEvents(ctx, runID)
 	if err != nil {
@@ -63,6 +77,10 @@ func (s *Reviews) repairCounts(ctx context.Context, runID string) (map[string]in
 	}
 	repairs := make(map[string]int)
 	for _, event := range events {
+		if event.Kind == model.RunEventCreated || event.Kind == model.RunEventStrategyUpdated {
+			repairs = make(map[string]int)
+			continue
+		}
 		if event.Kind != model.RunEventOperationCreated {
 			continue
 		}

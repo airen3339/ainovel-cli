@@ -80,7 +80,7 @@ func TestWorkbenchFramesFitSizesThemesAndStates(t *testing.T) {
 						t.Fatalf("%s %v: line %d width %d:\n%s", name, size, i, w, ansi.Strip(line))
 					}
 				}
-				requireContains(t, ansi.Strip(view), "AINOVEL", "作品目录", "正文", "活动", "Esc 返回")
+				requireContains(t, ansi.Strip(view), "AINOVEL", "作品目录", "正文", "活动", "Esc ")
 			}
 		}
 	}
@@ -345,7 +345,7 @@ func TestSceneStripReflectsWaitingIdleAndLeavesWithActivityView(t *testing.T) {
 	done.bench.writing = false
 	done.bench.snap.Run.State = domainmodel.RunCompleted
 	done.bench.activity = activity.Snapshot{}
-	requireContains(t, frame(done), "✓ 已完成", "AI 创作现场 · 已完成", "全书完成 · /continue 续写", "/continue 续写（AI 决定篇幅）")
+	requireContains(t, frame(done), "✓ 已完成", "AI 创作现场 · 已完成", "全书完成 · /goal 续写", "/goal 续写（auto 或章数）")
 	if title := main(strings.Split(frame(done), "\n")[l.sceneY+1]); !strings.HasPrefix(title, "AI 创作现场 · 已完成") {
 		t.Fatalf("the star must go out once creation stops: %q", title)
 	}
@@ -431,7 +431,7 @@ func TestBlueprintProposalReadsAsStoryAndPreviewsInOutline(t *testing.T) {
 	}
 	requireContains(t, frame(m),
 		"◇ 创作方案 · 等待你确认", "新增 1 个故事弧 · 1 章 · 新增人物地点 1 个 · 设定 1 条 · 终局：真相大白",
-		"y 通过 · 写下修改意见后回车重新规划（意见留作后续章节的要求） · /review 查看全部", "门后 ◇", "◇ 05  旧友",
+		"y 通过 · 写下修改意见后回车重新规划（意见留作后续章节的要求） · 回车查看全部", "门后 ◇", "◇ 05  旧友",
 	)
 	m.bench.cursor = 7 // 行 6 是方案里的新故事弧，行 7 是它的第 5 章
 	requireContains(t, frame(m), "◇ 方案待你确认 · 尚未生效", "苏晚认出陈渡")
@@ -463,8 +463,8 @@ func TestDecisionCardGuardsApprovalAndFeedback(t *testing.T) {
 	view := frame(m)
 	requireContains(t, view,
 		"◇ 等你决定", "◇ 04  门后的声音", "◇ 候选稿 · 等你确认 · 尚未入稿",
-		"◇ 第 4 章 · 门后的声音 · 等待你确认", "新稿 ", "说明：第四章初稿", "y 通过 · 写下修改意见后回车重写 · /review 查看全部",
-		"写下修改意见后回车，或输入 y 通过", "◇ 修改意见 · 第 4 章 · 门后的声音", "/review 查看全部内容",
+		"◇ 第 4 章 · 门后的声音 · 等待你确认", "新稿 ", "说明：第四章初稿", "y 通过 · 写下修改意见后回车重写 · 回车查看全部",
+		"写下修改意见后回车，或输入 y 通过", "◇ 修改意见 · 第 4 章 · 门后的声音", "Enter 查看全部内容",
 	)
 	if l := m.benchLayout(); l.cardY < 0 || l.sceneY < 0 || l.cardY != l.sceneY+benchSceneRows {
 		t.Fatalf("decision card must sit between the scene strip and the footer: %+v", l)
@@ -480,8 +480,18 @@ func TestDecisionCardGuardsApprovalAndFeedback(t *testing.T) {
 	m = typeText(t, m, "结尾再收一点")
 	m.bench.decision.proposal.ID = "candidate-4c"
 	m, cmd = press(t, m, tea.KeyEnter)
-	if cmd != nil || !strings.Contains(m.bench.err, "/note") {
+	if cmd != nil || !strings.Contains(m.bench.err, "已不再等待审阅") {
 		t.Fatalf("changed proposal must refuse feedback: err=%q", m.bench.err)
+	}
+	// 稿件出现前就开始写的文字仍是要求（首字锁定）：照常入账，不当成修改意见。
+	m, _ = press(t, m, tea.KeyEsc)
+	decision := m.bench.decision
+	m.bench.decision = nil
+	m = typeText(t, m, "多一点雨声")
+	m.bench.decision = decision
+	requireContains(t, frame(m), "要求 · 第 4 章")
+	if m, cmd = press(t, m, tea.KeyEnter); cmd == nil || m.bench.err != "" || m.bench.decision == nil {
+		t.Fatalf("a requirement typed before the draft arrived must be recorded: err=%q", m.bench.err)
 	}
 	// 过期稿件只能重写。
 	stale := withCandidate(studioModel(t, 150, 40), true)
@@ -492,7 +502,6 @@ func TestDecisionCardGuardsApprovalAndFeedback(t *testing.T) {
 		t.Fatalf("stale proposal must not be approved: notice=%q", stale.bench.notice)
 	}
 	// 创作已恢复时输入框是要求而不是修改意见。
-	m, _ = press(t, m, tea.KeyEsc)
 	m.bench.writing = true
 	requireContains(t, frame(m), "给第 4 章提一个要求")
 }
@@ -500,31 +509,14 @@ func TestDecisionCardGuardsApprovalAndFeedback(t *testing.T) {
 func TestCommandPaletteFiltersJumpsAndRejectsUnknown(t *testing.T) {
 	m := studioModel(t, 150, 40)
 	m = typeText(t, m, "/")
-	requireContains(t, frame(m), "命令 · 回车执行，支持唯一前缀", "/current", "/note /n <要求>", "继续输入首字母筛选")
-	m = typeText(t, m, "a")
+	requireContains(t, frame(m), "命令 · 回车执行，支持唯一前缀", "/goal <章数|auto>", "/model [角色]", "/help")
+	m = typeText(t, m, "m")
 	view := frame(m)
-	requireContains(t, view, "/activity", "/accept")
-	if strings.Contains(view, "/current") {
+	requireContains(t, view, "/model")
+	if strings.Contains(view, "/goal") {
 		t.Fatal("palette must filter by prefix")
 	}
-	m, _ = press(t, m, tea.KeyEnter)
-	if !strings.Contains(m.bench.err, "/activity 或 /accept") || m.bench.input.Value() != "/a" {
-		t.Fatalf("ambiguous prefix must keep the input: err=%q", m.bench.err)
-	}
-	// 首字母撞车的常用动作走单字母别名：/c 是 continue（创作中被屏蔽即证明没落到 current）、/p 暂停、/n 要求。
 	m, _ = press(t, m, tea.KeyEsc)
-	m = typeText(t, m, "/c")
-	requireContains(t, frame(m), "/continue /c", "/current")
-	m, _ = press(t, m, tea.KeyEsc)
-	if m, _ = submit(t, m, "/c"); !strings.Contains(m.bench.notice, "创作进行中") {
-		t.Fatalf("/c must resolve to /continue: notice=%q", m.bench.notice)
-	}
-	if _, cmd := submit(t, m, "/p"); cmd == nil {
-		t.Fatal("/p must resolve to /pause and issue the pause command")
-	}
-	if _, cmd := submit(t, m, "/n 结尾留一个未拆的信封"); cmd == nil {
-		t.Fatal("/n must resolve to /note and submit the directive")
-	}
 	m, _ = submit(t, m, "/2")
 	if m.selectedChapterNumber() != 2 || !m.bench.pinned {
 		t.Fatalf("/2 must pin chapter 2: number=%d pinned=%v", m.selectedChapterNumber(), m.bench.pinned)
@@ -539,7 +531,7 @@ func TestCommandPaletteFiltersJumpsAndRejectsUnknown(t *testing.T) {
 		t.Fatalf("unknown command must explain and keep the input: err=%q", m.bench.err)
 	}
 	m, _ = press(t, m, tea.KeyEsc)
-	m, _ = submit(t, m, "/continue")
+	m, _ = submit(t, m, "/goal 10")
 	if !strings.Contains(m.bench.notice, "创作进行中") {
 		t.Fatalf("idle-only command must be blocked while writing: notice=%q", m.bench.notice)
 	}
@@ -549,7 +541,7 @@ func TestCommandPaletteFiltersJumpsAndRejectsUnknown(t *testing.T) {
 	}
 }
 
-func TestEscapeLayersInputFollowThenHome(t *testing.T) {
+func TestEscapeLayersInputFollowPauseThenHome(t *testing.T) {
 	m := studioModel(t, 150, 40)
 	m = typeText(t, m, "多一点雨声")
 	if m.bench.inputLabel != "第 4 章" {
@@ -569,11 +561,69 @@ func TestEscapeLayersInputFollowThenHome(t *testing.T) {
 	if m.bench.pinned || m.selectedChapterNumber() != 4 || m.bench.pane != benchPaneMain || m.page != pageWorkbench {
 		t.Fatalf("Esc must return to the current chapter: pinned=%v number=%d", m.bench.pinned, m.selectedChapterNumber())
 	}
+	m, cmd := press(t, m, tea.KeyEsc)
+	if m.page != pageWorkbench || cmd == nil {
+		t.Fatal("Esc while writing must pause the creation before leaving")
+	}
+	m.bench.writing = false // 暂停打断了驱动
 	closed := false
 	m.bench.activityOff = func() { closed = true }
-	m, cmd := press(t, m, tea.KeyEsc)
+	m, cmd = press(t, m, tea.KeyEsc)
 	if m.page != pageHome || cmd == nil || !closed || m.home.lastOpened != "letters" || len(m.bench.snap.Manuscript) != 0 {
 		t.Fatal("Esc from a following workbench must go home and release the book")
+	}
+}
+
+// 创作停着时回车就接着写；完本不算停着（续写要 /goal 明说），回车照常全屏阅读。打开作品时，
+// 上次没停就退出的创作自动接着写，暂停过的保持暂停。
+func TestStoppedCreationResumesOnEnterAndOnOpen(t *testing.T) {
+	stopped := func(state domainmodel.CreationRunState) model {
+		m := studioModel(t, 150, 40)
+		m.bench.writing = false
+		m.bench.snap.Run.State = state
+		return m
+	}
+	m, cmd := press(t, stopped(domainmodel.RunPaused), tea.KeyEnter)
+	if cmd == nil || !m.bench.writing {
+		t.Fatal("Enter on a paused book must continue creating")
+	}
+	m, _ = press(t, stopped(domainmodel.RunCompleted), tea.KeyEnter)
+	if m.bench.writing || !m.bench.reading {
+		t.Fatal("Enter on a finished book must read, not extend it")
+	}
+	for state, resume := range map[domainmodel.CreationRunState]bool{domainmodel.RunRunning: true, domainmodel.RunPaused: false} {
+		m := stopped(state)
+		m.bench.resumeOnLoad = true
+		updated, _ := m.Update(benchRefreshedMsg{gen: m.bench.gen, snap: m.bench.snap})
+		if m = updated.(model); m.bench.writing != resume || m.bench.resumeOnLoad {
+			t.Fatalf("opening a %s book: writing=%v, want %v", state, m.bench.writing, resume)
+		}
+	}
+}
+
+// 某章自动修订多次仍有阻塞意见：决定卡点名那一章与它的阻塞意见并选中它；回车让它再改，
+// y 接受现状后接着写。
+func TestHeldChapterDecisionAcceptsOrRetries(t *testing.T) {
+	held := func() model {
+		m := studioModel(t, 150, 40)
+		m.bench.writing = false
+		m.bench.snap.Run.State = domainmodel.RunWaitingUser
+		m.bench.snap.Decision = &workbench.PendingDecision{Reason: "第 3 章《回信》自动修订了 2 次仍有阻塞意见，等你决定：接受现状，或让它再改", Held: "ch-3"}
+		updated, _ := m.Update(benchRefreshedMsg{gen: m.bench.gen, snap: m.bench.snap})
+		return updated.(model)
+	}
+	m := held()
+	view := frame(m)
+	requireContains(t, view, "第 3 章《回信》自动修订了 2 次", "阻塞意见：回信背面的笔迹提前揭示了门后人的身份",
+		"y 接受现状 · 回车让它再改 · 写下意见后回车按意见改", "Enter 让它再改", "要求 · 第 3 章")
+	if m.selectedChapterNumber() != 3 || strings.Contains(view, "（另有") {
+		t.Fatalf("the held chapter must be selected and only its blocking findings summarized: %d", m.selectedChapterNumber())
+	}
+	if retried, cmd := press(t, m, tea.KeyEnter); cmd == nil || !retried.bench.writing {
+		t.Fatal("Enter must let the held chapter be rewritten again")
+	}
+	if accepted, cmd := submit(t, held(), "y"); cmd == nil || accepted.bench.decision != nil || accepted.bench.err != "" {
+		t.Fatalf("y must accept the held chapter as it is: err=%q", accepted.bench.err)
 	}
 }
 
@@ -621,11 +671,10 @@ func TestMouseHitsUseTheSharedLayout(t *testing.T) {
 	if m.bench.view != viewProse {
 		t.Fatal("clicking the prose tab must switch back")
 	}
-	m = clickBench(m, 3, l.footerY+2)
-	if m.bench.input.Value() != "/pause" {
-		t.Fatalf("clicking the primary action must fill the command: %q", m.bench.input.Value())
+	// 创作中的主要操作是「Esc 暂停」：点它直接暂停，不往输入框里填东西。
+	if clicked, cmd := m.Update(tea.MouseMsg{X: 3, Y: l.footerY + 2, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}); cmd == nil || clicked.(model).bench.input.Value() != "" {
+		t.Fatal("clicking 「Esc 暂停」 must pause")
 	}
-	m.bench.input.SetValue("")
 
 	decided := withCandidate(m, false)
 	l = decided.benchLayout()
@@ -683,7 +732,7 @@ func TestTooSmallTerminalAsksToMaximize(t *testing.T) {
 
 func TestFooterShowsUsageContextAndPrimaryAction(t *testing.T) {
 	m := studioModel(t, 150, 40)
-	requireContains(t, frame(m), "deepseek/deepseek-v4-flash · 思考 自动 · ↑233K ↓58K · 缓存 80% · $0.42", "/pause 暂停推进", "要求 · 第 4 章")
+	requireContains(t, frame(m), "deepseek/deepseek-v4-flash · 思考 自动 · ↑233K ↓58K · 缓存 80% · $0.42", "Esc 暂停", "要求 · 第 4 章")
 	// 模型清单查得到时附上下文窗口；最窄时提示完整，模型摘要与用量截掉尾部。
 	list := `{"deepseek-v4-flash": {"mode": "chat", "litellm_provider": "deepseek", "max_input_tokens": 1000000}}`
 	if err := os.WriteFile(filepath.Join(m.deps.ConfigDir, "models.json"), []byte(list), 0o600); err != nil {
@@ -696,7 +745,7 @@ func TestFooterShowsUsageContextAndPrimaryAction(t *testing.T) {
 	requireContains(t, frame(m), "deepseek/deepseek-v4-flash · 思考 自动 · 上下文 1M · ↑233K ↓58K")
 	narrow := m
 	narrow.width = 120
-	requireContains(t, frame(narrow), "Esc 返回", "deepseek/deepseek-v4-flash · 思考 自动 · 上下文 1M")
+	requireContains(t, frame(narrow), "Esc 暂停", "deepseek/deepseek-v4-flash · 思考 自动 · 上下文 1M")
 	m.bench.snap.Usage = workbench.TeamUsage{}
 	if view := frame(m); strings.Contains(view, "↑233K") || !strings.Contains(view, "deepseek-v4-flash") {
 		t.Fatal("no usage yet must show only the model")
@@ -708,7 +757,7 @@ func TestFooterShowsUsageContextAndPrimaryAction(t *testing.T) {
 	paused.bench.snap.Run.State = domainmodel.RunPaused
 	paused.bench.activity = activity.Snapshot{}
 	view := frame(paused)
-	requireContains(t, view, "已暂停  ·  已入稿", "/continue 继续创作", "已暂停 · /continue 继续", "◌ 未完成的草稿 · 未入稿")
+	requireContains(t, view, "已暂停  ·  已入稿", "Enter 继续创作", "已暂停 · 回车继续", "回车继续创作，或给第 4 章提要求", "◌ 未完成的草稿 · 未入稿")
 	if strings.Contains(view, "▍") || strings.Contains(view, "实时预览") {
 		t.Fatal("a paused draft must not look like a live stream")
 	}
@@ -728,6 +777,7 @@ func TestLeavingWorkbenchReleasesBookCaches(t *testing.T) {
 	m := newModel(context.Background(), deps)
 	m.page = pageWorkbench
 	m.bench = longWorkbench(t, 500).bench
+	m.bench.writing = false // 创作进行中 Esc 先暂停，停下后才离开
 	oldCache := m.bench.rowsCache
 	_ = m.View()
 	closed := false

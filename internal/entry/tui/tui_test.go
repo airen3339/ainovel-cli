@@ -24,12 +24,21 @@ import (
 	"github.com/voocel/ainovel-cli/internal/infra/store"
 )
 
-// testExecutor 是测试里的 LLM 执行器：接受绑定但不调模型，执行一律失败。
-type testExecutor struct{ bound bool }
+// testExecutor 是测试里的 LLM 执行器：接受绑定但不调模型，执行一律失败；设了 started 时
+// 改为报到后一直执行到被取消，相当于一次很长的模型调用。
+type testExecutor struct {
+	bound   bool
+	started chan struct{}
+}
 
 func (e *testExecutor) Identity() string { return "llm.agent@1" }
-func (e *testExecutor) Execute(context.Context, domainmodel.Operation) (domainmodel.OperationOutcome, error) {
-	return domainmodel.OperationOutcome{}, errors.New("test executor does not call models")
+func (e *testExecutor) Execute(ctx context.Context, _ domainmodel.Operation) (domainmodel.OperationOutcome, error) {
+	if e.started == nil {
+		return domainmodel.OperationOutcome{}, errors.New("test executor does not call models")
+	}
+	e.started <- struct{}{}
+	<-ctx.Done()
+	return domainmodel.OperationOutcome{}, ctx.Err()
 }
 func (e *testExecutor) Bind(models.Bindings) { e.bound = true }
 func (e *testExecutor) Bound() bool          { return e.bound }
@@ -37,6 +46,14 @@ func (e *testExecutor) Bound() bool          { return e.bound }
 // newTestDeps 装配测试应用：configured 时注入 testExecutor 并绑定一个不联网的
 // 模型配置（deepseek 连接 + 假密钥），页脚与右栏按这个模型名断言。
 func newTestDeps(tb testing.TB, configured bool) (Deps, *bootstrap.App) {
+	if !configured {
+		return testDeps(tb, nil)
+	}
+	return testDeps(tb, &testExecutor{})
+}
+
+// testDeps 用给定的执行器装配测试应用；没有执行器时是未配置的应用。
+func testDeps(tb testing.TB, executor *testExecutor) (Deps, *bootstrap.App) {
 	tb.Helper()
 	ctx := context.Background()
 	authorityStore, err := store.Open(ctx, filepath.Join(tb.TempDir(), "ainovel.db"))
@@ -46,11 +63,11 @@ func newTestDeps(tb testing.TB, configured bool) (Deps, *bootstrap.App) {
 	tb.Cleanup(func() { authorityStore.Close() })
 	configDir := tb.TempDir()
 	options := bootstrap.Options{ConfigDir: configDir, Interactive: true}
-	if configured {
-		options.Executors.LLM = &testExecutor{}
+	if executor != nil {
+		options.Executors.LLM = executor
 	}
 	api := bootstrap.New(authorityStore, options)
-	if configured {
+	if executor != nil {
 		if err := api.Models.Apply(testConfig()); err != nil {
 			tb.Fatalf("bind test model: %v", err)
 		}
@@ -381,11 +398,12 @@ func TestDecisionRequiresExplicitApproveAndReasonRejects(t *testing.T) {
 	if !strings.Contains(ansi.Strip(m.View()), "等你决定") || !strings.Contains(ansi.Strip(m.View()), "输入 y 通过") {
 		t.Fatal("决定卡或输入指引未出现在视图中")
 	}
-	// 空回车：不提交，回以确认指引。
+	// 空回车：不提交，打开全部内容。
 	m, cmd := press(t, m, tea.KeyEnter)
-	if m.bench.decision == nil || cmd != nil || !strings.Contains(m.bench.notice, "输入 y 通过") {
-		t.Fatalf("空回车应回以指引且不提交：decision=%v notice=%q", m.bench.decision, m.bench.notice)
+	if m.bench.decision == nil || cmd != nil || !m.bench.reading {
+		t.Fatalf("空回车应打开全部内容且不提交：decision=%v reading=%v err=%q", m.bench.decision, m.bench.reading, m.bench.err)
 	}
+	m, _ = press(t, m, tea.KeyEsc)
 	// 单独的 y 只是打进输入框，回车才批准。
 	m, cmd = pressRune(t, m, 'y')
 	if m.bench.decision == nil || cmd != nil || m.bench.input.Value() != "y" {
@@ -583,7 +601,7 @@ func TestOutlineFoldingCollapsesSubtreeAndAnchorsCursor(t *testing.T) {
 	}
 	m, _ = press(t, m, tea.KeyEnter)
 	view := m.View()
-	if !strings.Contains(view, "▸ 卷一") || !strings.Contains(view, "2 章") || !strings.Contains(view, "◇") {
+	if !strings.Contains(view, "▸ 卷一") || !strings.Contains(view, "1/2") || !strings.Contains(view, "◇") {
 		t.Fatalf("collapsed header must summarize subtree:\n%s", view)
 	}
 	if strings.Contains(view, "第一章") || strings.Contains(view, "弧一") {
@@ -611,9 +629,10 @@ func TestOutlineFoldingCollapsesSubtreeAndAnchorsCursor(t *testing.T) {
 	}
 }
 
-// 目录按层级缩进：顶部是全书行，卷标序号，弧在卷下、章在弧下各缩进一级。滚动规划只展开
-// 当前故事弧（D67/D73）：还没展开的弧没有折叠箭头、注明待展开，回车与点击都不折叠它；
-// 下面只有空弧的卷照常可折叠；开放期末尾交代后续随创作推进规划。选中行与未选中行对齐。
+// 目录看起来只有卷与章两级：顶部是全书行，卷顶格、标序号，弧与章同级缩进在卷名下、用颜色
+// 区分，照样能折叠。滚动规划只展开当前故事弧（D67/D73）：还没展开的弧没有折叠箭头、注明
+// 待展开，回车与点击都不折叠它；下面只有空弧的卷照常可折叠；开放期末尾交代后续随创作推进
+// 规划。选中行与未选中行对齐。
 func TestOutlineHierarchyAndUnexpandedArcs(t *testing.T) {
 	deps, _ := newTestDeps(t, true)
 	m := newModel(context.Background(), deps)
@@ -638,7 +657,7 @@ func TestOutlineHierarchyAndUnexpandedArcs(t *testing.T) {
 	rows := m.outlineRows()
 	line := func(index int, selected bool) string { return ansi.Strip(m.outlineRowLine(rows[index], selected, 40)) }
 	column := func(text, symbol string) int { return ansi.StringWidth(text[:strings.Index(text, symbol)]) }
-	for index, want := range map[int]string{0: "全书", 1: "▾ 第 1 卷 · 漏根", 2: "▾ 残页", 5: "清辉楼 · 待展开", 6: "▾ 第 2 卷 · 入山", 7: "云麓外门 · 待展开", 8: "··· 后续随创作推进规划"} {
+	for index, want := range map[int]string{0: "全书", 1: "▾ 第 1 卷 · 漏根", 2: "▾ 残页", 3: "✓ 01", 5: "清辉楼 · 待展开", 6: "▾ 第 2 卷 · 入山", 7: "云麓外门 · 待展开", 8: "··· 后续随创作推进规划"} {
 		if !strings.Contains(line(index, false), want) {
 			t.Fatalf("row %d = %q, want %q", index, line(index, false), want)
 		}
@@ -649,12 +668,11 @@ func TestOutlineHierarchyAndUnexpandedArcs(t *testing.T) {
 	if strings.Contains(line(5, false), "▾") || strings.Contains(line(7, false), "▾") {
 		t.Fatalf("unexpanded arcs have no fold arrow: %q %q", line(5, false), line(7, false))
 	}
-	if column(line(0, false), "全书") != column(line(1, false), "第") || column(line(2, false), "▾") != column(line(1, false), "第") ||
-		column(line(3, false), "✓") != column(line(2, false), "残页") {
-		t.Fatalf("each level indents under its parent's title:\n%s\n%s\n%s\n%s", line(0, false), line(1, false), line(2, false), line(3, false))
-	}
-	if column(line(5, false), "清辉楼") != column(line(2, false), "残页") {
-		t.Fatalf("unexpanded arc title aligns with other arcs: %q %q", line(5, false), line(2, false))
+	if column(line(1, false), "▾") != 1 || column(line(0, false), "全书") != column(line(1, false), "第") ||
+		column(line(2, false), "▾") != column(line(1, false), "第") || column(line(3, false), "✓") != column(line(2, false), "▾") ||
+		column(line(5, false), "清辉楼") != column(line(2, false), "残页") {
+		t.Fatalf("volumes sit flush, arcs and chapters share one level under the volume title:\n%s\n%s\n%s\n%s\n%s",
+			line(0, false), line(1, false), line(2, false), line(3, false), line(5, false))
 	}
 	if column(line(4, true), "◉") != column(line(3, false), "✓") || column(line(2, true), "▾") != column(line(2, false), "▾") ||
 		column(line(0, true), "全书") != column(line(0, false), "全书") {
@@ -673,6 +691,20 @@ func TestOutlineHierarchyAndUnexpandedArcs(t *testing.T) {
 	m.clickOutlineRow(6)
 	if !m.bench.collapsed["v2"] {
 		t.Fatal("a volume holding unexpanded arcs still folds")
+	}
+	m.clickOutlineRow(2)
+	folded := m.outlineRows()
+	if !m.bench.collapsed["a1"] || len(folded) != 6 || !strings.HasSuffix(ansi.Strip(m.outlineRowLine(folded[2], false, 40)), "1/2") {
+		t.Fatalf("an arc folds its chapters: %v", m.bench.collapsed)
+	}
+	// 折叠行右端是「已入稿/章数」，窄栏里名字先占位置：两字卷名在最窄目录（27 列）也完整；
+	// 还没有章的不标。
+	m.bench.collapsed["v1"] = true
+	folded = m.outlineRows()
+	first, second := ansi.Strip(m.outlineRowLine(folded[1], false, 27)), ansi.Strip(m.outlineRowLine(folded[2], false, 27))
+	if !strings.HasPrefix(first, " ▸ 第 1 卷 · 漏根") || !strings.HasSuffix(first, "1/2") || ansi.StringWidth(first) != 27 ||
+		strings.Contains(second, "/") {
+		t.Fatalf("a folded volume keeps its name and right-aligns its progress: %q / %q", first, second)
 	}
 }
 
@@ -869,8 +901,8 @@ func TestCompassSummaryDescribesTheChange(t *testing.T) {
 }
 
 func TestWorkbenchDirectivePromptRecordsRequirement(t *testing.T) {
-	// §4.9：直接在底栏写要求，作用域跟随大纲选中行；空回车不提交；
-	// 文字回车入账为 Directive 并刷新工作台。
+	// §4.9：直接在底栏写要求，作用域跟随大纲选中行；文字回车入账为 Directive，
+	// 创作停着时（这本书还没开始）同时接着写。
 	deps, api := newTestDeps(t, true)
 	ctx := context.Background()
 	plan := []domainmodel.PlanNode{
@@ -901,16 +933,12 @@ func TestWorkbenchDirectivePromptRecordsRequirement(t *testing.T) {
 	if scope, label := m.directiveScope(); scope != "plan_node:volume-1" || label != "「第一卷」" {
 		t.Fatalf("scope follows the selected outline row: %s %s", scope, label)
 	}
-	m, cmd := press(t, m, tea.KeyEnter)
-	if cmd != nil {
-		t.Fatal("empty enter must not submit anything")
-	}
-	m, cmd = submit(t, m, "每章结尾留钩子")
+	m, cmd := submit(t, m, "每章结尾留钩子")
 	if m.bench.input.Value() != "" || cmd == nil {
 		t.Fatalf("directive did not submit: input=%q", m.bench.input.Value())
 	}
 	message := findMsg[runControlMsg](t, cmd)
-	if message.err != nil || message.next != "refresh" || message.echo != "你提了要求 · 「第一卷」：每章结尾留钩子" {
+	if message.err != nil || message.next != "continue" || message.echo != "你提了要求 · 「第一卷」：每章结尾留钩子" {
 		t.Fatalf("add directive message = %#v", message)
 	}
 	project, err := api.Projects.Project(ctx, "book-1", 0)
@@ -1292,9 +1320,8 @@ func TestManualSelectionPinsMainPaneDuringWriting(t *testing.T) {
 	}
 }
 
-func TestWritingStateAllowsPauseCancelDiagnostics(t *testing.T) {
-	// 在案缺陷修复：创作进行中 p/x/d 必须可用（此前被 writing 卫语句整体屏蔽，
-	// 卡死的一轮无法中途暂停/取消）；c 仍屏蔽，避免并发驱动同一轮创作。
+func TestWritingStateAllowsDiagnosticsAndBlocksDriving(t *testing.T) {
+	// 创作进行中诊断照常可用；会驱动创作的命令（/goal）屏蔽，避免并发驱动同一轮创作。
 	deps, _ := newTestDeps(t, true)
 	m := newModel(context.Background(), deps)
 	m = typeText(t, m, "创作中控制测试")
@@ -1304,17 +1331,11 @@ func TestWritingStateAllowsPauseCancelDiagnostics(t *testing.T) {
 	}
 	m.bench.snap.Run = &domainmodel.CreationRun{ID: "run-1", State: domainmodel.RunRunning}
 	m.bench.loaded = true
-	if _, cmd := submit(t, m, "/pause"); cmd == nil {
-		t.Fatal("/pause must issue pause during writing")
-	}
-	if _, cmd := submit(t, m, "/stop"); cmd == nil {
-		t.Fatal("/stop must issue cancel during writing")
-	}
 	if _, cmd := submit(t, m, "/diag"); cmd == nil {
 		t.Fatal("/diag must load diagnostics during writing")
 	}
-	if blocked, cmd := submit(t, m, "/continue"); cmd != nil || !strings.Contains(blocked.bench.notice, "创作进行中") {
-		t.Fatalf("/continue must stay blocked during writing: notice=%q", blocked.bench.notice)
+	if blocked, cmd := submit(t, m, "/goal 10"); cmd != nil || !strings.Contains(blocked.bench.notice, "先按 Esc 暂停") {
+		t.Fatalf("/goal must stay blocked during writing: notice=%q", blocked.bench.notice)
 	}
 	// 写作中提要求照常入账（S12），不被当成快捷键。
 	if typed, cmd := submit(t, m, "p 开头的要求也只是文字"); cmd == nil || typed.bench.input.Value() != "" {

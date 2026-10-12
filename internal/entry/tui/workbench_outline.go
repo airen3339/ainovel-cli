@@ -21,7 +21,7 @@ type outlineRow struct {
 	node        workbench.OutlineNode
 	endChapter  int // 占位行的末章；0 表示开放期，后续章数未定
 	chapter     int // 章行与占位行的章节号
-	level       int // 目录层级：上方实际存在的卷、弧层数，每级缩进两列
+	level       int // 缩进级数：在卷下为 1，每级两列；弧与章同级，目录看起来只有卷与章两级
 	placeholder bool
 	collapsed   bool // 头行且已折叠
 	empty       bool // 头行下面还没有节点（滚动规划尚未展开的故事弧）：不显示箭头、不可折叠
@@ -156,19 +156,16 @@ func (m model) buildOutlineRows() []outlineRow {
 				delete(ancestors, d)
 			}
 		}
-		level := 0
 		var context []string
 		for d := 0; d < depth; d++ {
-			title, ok := ancestors[d]
-			if !ok {
-				continue
-			}
-			level++
-			if title != "" {
+			if title := ancestors[d]; title != "" {
 				context = append(context, title)
 			}
 		}
-		row := outlineRow{node: entry, chapter: entry.Number, level: level, context: strings.Join(context, " / ")}
+		row := outlineRow{node: entry, chapter: entry.Number, context: strings.Join(context, " / ")}
+		if _, inVolume := ancestors[0]; inVolume && depth > 0 {
+			row.level = 1
+		}
 		if depth < 2 {
 			ancestors[depth] = entry.Node.Title
 			s := stats[entry.Node.ID]
@@ -289,8 +286,12 @@ func (m model) selectedChapterID() string {
 	return ""
 }
 
-// currentChapter 正在写 > 待确认 > 最近入稿的章节号。
+// currentChapter 卡在修订预算上 > 正在写 > 待确认 > 最近入稿的章节号。卡住的那一章选中
+// 摆出来：正文就是它，写下的意见也落在它身上。
 func (m model) currentChapter() int {
+	if number := m.heldNumber(); number > 0 {
+		return number
+	}
 	for _, state := range []workbench.ChapterState{workbench.ChapterInProgress, workbench.ChapterPending} {
 		for _, entry := range m.bench.snap.Outline {
 			if entry.Node.Kind == domainmodel.PlanChapter && entry.State == state {
@@ -413,16 +414,6 @@ func (m *model) revealCurrent(number int) bool {
 	b.view, b.pane, b.pinned, b.search = view, pane, pinned, search
 	b.proseOffset, b.proseHold = proseOffset, proseHold
 	return true
-}
-
-// returnToCurrentChapter 回到创作进度所在章并恢复跟随。
-func (m *model) returnToCurrentChapter() {
-	if !m.revealCurrent(m.currentChapter()) {
-		m.bench.notice = "暂无正在写作、待确认或已入稿的章节"
-		return
-	}
-	m.bench.pinned = false
-	m.bench.proseOffset, m.bench.proseHold = 0, false
 }
 
 // toggleFold 折叠/展开一个卷/弧，并把偏好写进用户级 state.json；空列表也保存（明确全部展开）。
@@ -568,50 +559,58 @@ func (m model) directoryNote() []string {
 	return []string{benchTheme.Muted.Render(note), benchTheme.Muted.Render(" " + approvalLabel(snap.Approval))}
 }
 
-// outlineRowLine 一行目录：两列选中标记，每级缩进两列，两列行标（折叠箭头或章节状态），
-// 再接文字。卷标出序号；下面还没有节点的卷弧没有箭头，注明待展开，开放期末尾交代后续
-// 随创作推进规划（滚动规划，D67/D73）。全书行与卷名对齐。
+// outlineRowLine 一行目录：一列选中标记，在卷下缩进两列，两列行标（折叠箭头或章节状态），
+// 再接文字。卷顶格、标出序号；弧与章同级，用强调色区分；折叠的卷弧在右端淡色标出「已入稿/
+// 章数」，名字先占位置；下面还没有节点的卷弧没有箭头，注明待展开，开放期末尾交代后续随创作
+// 推进规划（滚动规划，D67/D73）。全书行与卷名对齐。
 func (m model) outlineRowLine(row outlineRow, selected bool, width int) string {
 	indent := strings.Repeat("  ", row.level)
 	switch {
 	case row.placeholder && row.endChapter == 0:
-		return benchTheme.Muted.Render("  " + indent + "··· 后续随创作推进规划")
+		return benchTheme.Muted.Render(" " + indent + "··· 后续随创作推进规划")
 	case row.placeholder:
 		label := fmt.Sprintf("%02d", row.chapter)
 		if row.endChapter > row.chapter {
 			label = fmt.Sprintf("%02d–%02d", row.chapter, row.endChapter)
 		}
-		return benchTheme.Muted.Render("  " + indent + "○ " + label + "  待规划")
+		return benchTheme.Muted.Render(" " + indent + "○ " + label + "  待规划")
 	case row.isChapter():
 		return m.outlineChapterLine(row.node, indent, selected, width)
 	case row.isBook():
 		if selected {
-			return benchTheme.Selected.Render(fitLine("▎   全书", width))
+			return benchTheme.Selected.Render(fitLine("▎  全书", width))
 		}
-		return "    " + benchTheme.Title.Render("全书")
+		return "   " + benchTheme.Title.Render("全书")
 	}
 	fold, style, title := "▾ ", benchTheme.Title, row.node.Node.Title
 	if row.node.Volume > 0 {
 		title = fmt.Sprintf("第 %d 卷 · %s", row.node.Volume, title)
 	}
 	if row.node.Node.Kind == domainmodel.PlanArc {
-		style = styleSubtitle
+		style = benchTheme.Accent
 	}
-	summary, pending := "", ""
+	label, pending, progress := "", "", ""
 	switch {
 	case row.empty:
-		fold, summary = "  ", " · 待展开"
+		fold, label = "  ", " · 待展开"
 	case row.collapsed:
-		fold, summary = "▸ ", fmt.Sprintf(" · %d/%d 章", row.confirmed, row.chapters)
+		fold = "▸ "
+		if row.chapters > 0 {
+			progress = fmt.Sprintf("%d/%d", row.confirmed, row.chapters)
+		}
 	}
 	if row.node.Proposed || row.collapsed && row.pending > 0 {
 		pending = " ◇"
 	}
-	text := indent + fold + truncate(title, max(1, width-3-lipgloss.Width(indent+fold+summary+pending)))
-	if selected {
-		return benchTheme.Selected.Render(fitLine("▎ "+text+summary+pending, width))
+	room := width - 2 - lipgloss.Width(indent+fold+label+pending)
+	if progress != "" {
+		room -= lipgloss.Width(progress) + 1
 	}
-	return "  " + style.Render(text) + benchTheme.Muted.Render(summary) + benchTheme.Warning.Render(pending)
+	text := indent + fold + truncate(title, max(1, room))
+	if selected {
+		return benchTheme.Selected.Render(alignRight("▎"+text+label+pending, progress, width))
+	}
+	return alignRight(" "+style.Render(text)+benchTheme.Muted.Render(label)+benchTheme.Warning.Render(pending), benchTheme.Muted.Render(progress), width)
 }
 
 func (m model) outlineChapterLine(entry workbench.OutlineNode, indent string, selected bool, width int) string {
@@ -625,9 +624,9 @@ func (m model) outlineChapterLine(entry workbench.OutlineNode, indent string, se
 		symbol, style, titleStyle = "◉", benchTheme.Accent, benchTheme.Text
 	}
 	digits := max(2, len(strconv.Itoa(max(m.bench.snap.Length.Final, chapterCount(m.bench.snap)))))
-	label := fmt.Sprintf("%0*d  %s", digits, entry.Number, truncate(entry.Node.Title, max(1, width-digits-6-len(indent))))
+	label := fmt.Sprintf("%0*d  %s", digits, entry.Number, truncate(entry.Node.Title, max(1, width-digits-5-len(indent))))
 	if selected {
-		return benchTheme.Selected.Render(fitLine("▎ "+indent+symbol+" "+label, width))
+		return benchTheme.Selected.Render(fitLine("▎"+indent+symbol+" "+label, width))
 	}
-	return "  " + indent + style.Render(symbol) + " " + titleStyle.Render(label)
+	return " " + indent + style.Render(symbol) + " " + titleStyle.Render(label)
 }

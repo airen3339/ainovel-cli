@@ -232,11 +232,11 @@ func (m model) updateWizard(message tea.Msg) (tea.Model, tea.Cmd) {
 			case tea.KeyEnter:
 				return m.chooseWizardProvider()
 			case tea.KeyEsc:
+				// 首次配置没有可返回的页面：退出走 Ctrl+C。
 				if m.wizard.fromHome {
 					m.page = pageHome
 					return m, m.loadLibraryCmd()
 				}
-				return m, tea.Quit
 			}
 			return m, nil
 		}

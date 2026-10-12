@@ -292,17 +292,6 @@ func (m model) revealCandidate() model {
 	return m.openReview()
 }
 
-// firstBlockingFinding 取选中章第一条尚未被接受的阻塞发现（/accept 一次只裁一条）。
-func (m model) firstBlockingFinding() (workbench.WorkbenchFinding, bool) {
-	chapterID := m.selectedChapterID()
-	for _, finding := range m.bench.snap.Findings {
-		if chapterID != "" && finding.ChapterID == chapterID && finding.Severity == domainmodel.FindingBlocking {
-			return finding, true
-		}
-	}
-	return workbench.WorkbenchFinding{}, false
-}
-
 // detailReport 完整详情（/view 全屏）：选中章的全部依据（与右栏同序，放不下的在这里读全）；
 // 选中全书时是篇幅、终局与全部人物；最后都是全书的创作意图与要求。
 func (m model) detailReport() string {
@@ -396,4 +385,40 @@ func castLine(member workbench.CastMember) string {
 		line += "（又名 " + strings.Join(member.Aliases, "、") + "）"
 	}
 	return line + styleHint.Render(fmt.Sprintf(" · %d 章 · 最近第 %d 章", member.Chapters, member.Latest))
+}
+
+// heldFindings 是卡住那一章尚未被接受的阻塞意见。
+func (m model) heldFindings() []workbench.WorkbenchFinding {
+	var held []workbench.WorkbenchFinding
+	for _, finding := range m.bench.snap.Findings {
+		if finding.ChapterID == m.bench.decision.held && finding.Severity == domainmodel.FindingBlocking {
+			held = append(held, finding)
+		}
+	}
+	return held
+}
+
+// heldNumber 是卡住那一章的章号，没有卡住为 0。
+func (m model) heldNumber() int {
+	if d := m.bench.decision; d != nil && d.held != "" {
+		for _, chapter := range m.bench.snap.Manuscript {
+			if chapter.ID == d.held {
+				return chapter.Number
+			}
+		}
+	}
+	return 0
+}
+
+// heldSummary 是决定卡上卡住那一章的阻塞意见：第一条原话，其余计数。
+func (m model) heldSummary() string {
+	findings := m.heldFindings()
+	if len(findings) == 0 {
+		return ""
+	}
+	summary := "阻塞意见：" + oneLine(findings[0].Note)
+	if len(findings) > 1 {
+		summary += fmt.Sprintf("（另有 %d 条）", len(findings)-1)
+	}
+	return summary
 }

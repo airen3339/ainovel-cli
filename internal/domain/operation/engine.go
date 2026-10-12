@@ -408,8 +408,8 @@ func unavailableComplianceReport(
 }
 
 // fail 收尾失败并按原因打码（D46）：结果未知不是普通失败，用户对账或重提前不会自动重试。
-// fail 落盘执行失败。进程正在退出（ctx 已取消）时不是失败：任务放回队列、释放租约，
-// 下次进入接着对话与工作区续跑，不消耗失败预算。
+// fail 落盘执行失败。执行被取消（用户暂停或进程退出）时不是失败：任务放回队列、释放
+// 租约，续跑时接着对话与工作区，不消耗失败预算。
 func (e *Engine) fail(ctx context.Context, operation model.Operation, cause error, now time.Time) (RunResult, error) {
 	if ctx.Err() != nil {
 		return e.release(ctx, operation, cause)
@@ -422,7 +422,7 @@ func (e *Engine) fail(ctx context.Context, operation model.Operation, cause erro
 const releaseTimeout = 5 * time.Second
 
 // releasedMessage 记在任务上，诊断与续跑提示都能看到中断原因。
-const releasedMessage = "进程退出，任务已放回队列等待续跑"
+const releasedMessage = "执行被中断（暂停或退出），任务已放回队列等待续跑"
 
 // release 用脱离取消的短上下文把任务 running → queued（attempt 围栏内），旧执行的
 // 对话与工作区保留；释放失败就交给租约到期回收。

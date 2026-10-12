@@ -249,7 +249,8 @@ func (s *Coordinator) drive(
 		}
 		if operation.State == model.OperationQueued {
 			ran, err := tasks.Run(ctx, work, operation, command.WorkerID, command.LeaseDuration, clock.next())
-			// 进程退出等取消不是创作失败：引擎已把任务放回队列，Run 保持 running 可续跑。
+			// 暂停、进程退出等取消不是创作失败：引擎已把任务放回队列，Run 的状态由取消方决定
+			// （暂停已落盘为 paused，退出保持 running），续跑接着写。
 			if err != nil && ctx.Err() != nil {
 				return Outcome{Run: run, Revision: decision.Revision}, err
 			}

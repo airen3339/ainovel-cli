@@ -26,7 +26,7 @@ type Story struct {
 	content     Content
 	ordered     map[model.PlanNodeKind][]model.PlanNode // 卷、弧、章各自按唯一口径排序
 	number      map[string]int                          // 计划节点 ID → 所在种类的序号
-	plans       map[string]model.PlanNode
+	plans       model.PlanIndex
 	written     map[string]model.ManuscriptChapter // 章节计划 ID → 正文
 	manuscripts map[string]model.ManuscriptChapter // 正文 ID → 正文
 	entities    map[string]model.Entity
@@ -37,12 +37,9 @@ type Story struct {
 func New(content Content) *Story {
 	s := &Story{
 		content: content, ordered: make(map[model.PlanNodeKind][]model.PlanNode),
-		number: make(map[string]int), plans: make(map[string]model.PlanNode),
+		number: make(map[string]int), plans: model.IndexPlan(content.Plan),
 		written: make(map[string]model.ManuscriptChapter), manuscripts: make(map[string]model.ManuscriptChapter),
 		entities: make(map[string]model.Entity), facts: make(map[string]model.CanonFact),
-	}
-	for _, node := range content.Plan {
-		s.plans[node.ID] = node
 	}
 	for _, kind := range []model.PlanNodeKind{model.PlanVolume, model.PlanArc, model.PlanChapter} {
 		s.ordered[kind] = model.PlanNodesInOrder(content.Plan, kind)

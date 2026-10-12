@@ -14,8 +14,8 @@ func manuscriptRef(chapterID string) model.DocumentRef {
 }
 
 // directiveTarget 是章节的要求作用域匹配对象：章号加该章 Plan 节点及其祖先。
-func directiveTarget(project projectdoc.Snapshot, number int, planID string) model.DirectiveTarget {
-	return model.DirectiveTarget{ChapterNumber: number, PlanNodeIDs: model.PlanAncestry(project.Plan, planID)}
+func directiveTarget(plans model.PlanIndex, number int, planID string) model.DirectiveTarget {
+	return model.DirectiveTarget{ChapterNumber: number, PlanNodeIDs: plans.Ancestry(planID)}
 }
 
 // directiveScope 把命中 target 的 active 要求集合（含各自版本）钉成作用域基线：

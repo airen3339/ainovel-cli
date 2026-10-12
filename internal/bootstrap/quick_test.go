@@ -609,9 +609,9 @@ func TestQuickWriteWindowReviewBlockedTriggersRewriteBeforeExtending(t *testing.
 	}
 }
 
-func TestQuickWriteExhaustedRepairBudgetWaitsAndRaisedBudgetResumes(t *testing.T) {
+func TestQuickWriteExhaustedRepairBudgetWaitsAndRenewedBudgetResumes(t *testing.T) {
 	// 自动修订预算是显式 RunStrategy（§6.3）：预算用尽落 waiting_user 而不是
-	// 静默降低审阅标准；用户中途调高预算后，同一入口从落点继续到完成。
+	// 静默降低审阅标准；照常续跑仍卡在那一章，用户确认继续后预算重新起算，从落点写到完成。
 	ctx := context.Background()
 	executor := &scriptedQuickExecutor{
 		now: testTime(), blockChapter: "chapter-chapter-plan-2", blockRemaining: 3,
@@ -627,10 +627,10 @@ func TestQuickWriteExhaustedRepairBudgetWaitsAndRaisedBudgetResumes(t *testing.T
 	}
 	// 规划 1 + 两章 2 + 审阅/重写交替（阻塞 3 次、重写 2 次消耗预算 2）= 8 次。
 	if result.RunState != model.RunWaitingUser || executor.calls != 8 ||
-		!strings.Contains(result.RunReason, "自动修订预算") {
+		!strings.Contains(result.RunReason, "自动修订了 2 次仍有阻塞意见") {
 		t.Fatalf("result = %#v, executor calls = %d", result, executor.calls)
 	}
-	// 预算用尽的等待不携带稿件：决定卡只展示原因与调预算选项。
+	// 预算用尽的等待不携带稿件；卡住的那一章由推导器报给工作台。
 	if _, ok, err := api.Runs.WaitingProposal(ctx, result.RunID); err != nil || ok {
 		t.Fatalf("budget waiting should carry no proposal: ok=%v err=%v", ok, err)
 	}
@@ -638,20 +638,22 @@ func TestQuickWriteExhaustedRepairBudgetWaitsAndRaisedBudgetResumes(t *testing.T
 	if err != nil {
 		t.Fatalf("read waiting run: %v", err)
 	}
-	strategy := run.Strategy
-	strategy.AutoRepairBudget = 3
-	updated, err := api.Runs.UpdateCreationRunStrategy(ctx, run.ID, strategy, testTime().Add(time.Minute))
+	project, err := api.Projects.Project(ctx, "budget-book", 0)
 	if err != nil {
-		t.Fatalf("raise repair budget: %v", err)
+		t.Fatal(err)
 	}
-	if updated.Strategy.AutoRepairBudget != 3 {
-		t.Fatalf("updated strategy = %#v", updated.Strategy)
+	if held, err := api.Reviews.RepairHold(ctx, project, run); err != nil || held != "chapter-chapter-plan-2" {
+		t.Fatalf("repair hold = %q, %v", held, err)
 	}
 	resume := command
-	resume.CreatedAt = testTime().Add(2 * time.Minute)
+	resume.CreatedAt = testTime().Add(time.Minute)
+	if result, err = api.Novels.QuickWrite(ctx, resume); err != nil || result.RunState != model.RunWaitingUser || executor.calls != 8 {
+		t.Fatalf("plain resume must stay on the exhausted chapter: %#v calls=%d err=%v", result, executor.calls, err)
+	}
+	resume.CreatedAt, resume.RenewRepairBudget = testTime().Add(2*time.Minute), true
 	result, err = api.Novels.QuickWrite(ctx, resume)
 	if err != nil {
-		t.Fatalf("resume after raising budget: %v", err)
+		t.Fatalf("resume after renewing budget: %v", err)
 	}
 	// 续跑：第三次重写 1 + 末窗审阅通过 1 = 10 次。
 	if result.RunState != model.RunCompleted || executor.calls != 10 {
@@ -1531,7 +1533,7 @@ func testFixingLengthSupersedesWaitingRaise(t *testing.T, paused bool) {
 		t.Fatalf("fix length: %v", err)
 	}
 	// 第 4 章审阅一直阻塞：每章 2 次自动重写用尽后等待，这次等待不带稿件。
-	if result.RunState != model.RunWaitingUser || !strings.Contains(result.RunReason, "自动修订预算") {
+	if result.RunState != model.RunWaitingUser || !strings.Contains(result.RunReason, "自动修订了 2 次仍有阻塞意见") {
 		t.Fatalf("budget wait = %#v", result)
 	}
 	// 被取代的上调转为 stale（D64）：不再作为等待稿件呈现，旧稿也不能再被批准入账。

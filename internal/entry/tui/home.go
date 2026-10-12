@@ -271,8 +271,6 @@ func (m model) handleHomeKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		home.confirmDelete, home.notice = "", ""
 	}
 	switch key.Type {
-	case tea.KeyEsc:
-		return m, tea.Quit
 	case tea.KeyTab, tea.KeyShiftTab:
 		delta := 1
 		if key.Type == tea.KeyShiftTab {
@@ -482,12 +480,14 @@ func (m model) createProject() (tea.Model, tea.Cmd) {
 	}
 	watch := m.openBench(projectID)
 	m.bench.writing = true
-	return m, tea.Batch(m.startQuickWriteCmd(params), pollTick(m.bench.gen), m.bench.pulse.start(m.bench.gen), watch)
+	drive := m.startQuickWriteCmd(params)
+	return m, tea.Batch(drive, pollTick(m.bench.gen), m.bench.pulse.start(m.bench.gen), watch)
 }
 
-// openProject 打开作品库中的既有作品并恢复落点。
+// openProject 打开作品库中的既有作品并恢复落点；上次没停就退出的创作接着写。
 func (m model) openProject(projectID string) (tea.Model, tea.Cmd) {
 	watch := m.openBench(projectID)
+	m.bench.resumeOnLoad = true
 	return m, tea.Batch(m.refreshBenchCmd(), watch)
 }
 
