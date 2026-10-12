@@ -1,0 +1,424 @@
+package chief
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/voocel/ainovel-cli/internal/app/decision"
+	"github.com/voocel/ainovel-cli/internal/app/novel"
+	projectdoc "github.com/voocel/ainovel-cli/internal/app/project"
+	"github.com/voocel/ainovel-cli/internal/app/workbench"
+	"github.com/voocel/ainovel-cli/internal/domain/model"
+	"github.com/voocel/ainovel-cli/internal/domain/narrative"
+	"github.com/voocel/ainovel-cli/internal/infra/capability/prompt"
+)
+
+const (
+	toolOutline      = "book_outline"
+	toolRead         = "book_read"
+	toolRequirements = "book_requirements"
+	toolReviews      = "book_reviews"
+	toolDraft        = "book_draft"
+	toolNote         = "note_requirement"
+	toolRetire       = "retire_requirement"
+	toolReject       = "reject_draft"
+	toolLength       = "set_length"
+	toolPause        = "pause_creation"
+	toolResume       = "resume_creation"
+)
+
+// changes 是改动作品或创作的工具：它们的结果就是给用户看的回执。
+var changes = map[string]bool{toolNote: true, toolRetire: true, toolReject: true, toolLength: true, toolPause: true, toolResume: true}
+
+type tool struct {
+	schema prompt.ToolSchema
+	run    func(ctx context.Context, args json.RawMessage) (string, error)
+}
+
+func define[A any](name, description, schema string, run func(ctx context.Context, args A) (string, error)) tool {
+	return tool{
+		schema: prompt.ToolSchema{Name: name, Description: description, InputSchema: json.RawMessage(schema)},
+		run: func(ctx context.Context, raw json.RawMessage) (string, error) {
+			var args A
+			if err := json.Unmarshal(raw, &args); err != nil {
+				return "", fmt.Errorf("参数不合法：%w", err)
+			}
+			return run(ctx, args)
+		},
+	}
+}
+
+const empty = `{"type":"object","properties":{},"additionalProperties":false}`
+
+// tools 是主编的固定工具集（§7.4：会话内不增删）。读的工具读此刻的作品；改的工具经各自的
+// 用例落成一等对象，没有旁路。
+func (s *Session) tools() []tool {
+	return []tool{
+		define(toolOutline, "看全书的梗概、篇幅与卷→故事弧→章的大纲（每章是否已入稿）", empty, s.outline),
+		define(toolRead, "读这本书：chapter 给该章大纲、正文与来源于它的事实；arc、volume 给故事弧或卷；entity 给人物、地点、物品、组织的设定与事实。四选一", `{
+			"type":"object",
+			"properties":{
+				"chapter":{"type":"integer","minimum":1},
+				"arc":{"type":"integer","minimum":1},
+				"volume":{"type":"integer","minimum":1},
+				"entity":{"type":"string","minLength":1,"description":"名称或别名"}
+			},
+			"additionalProperties":false}`, s.read),
+		define(toolRequirements, "看生效中的要求：编号、作用域、原话与量化约束", empty, s.requirements),
+		define(toolReviews, "看某章当前的审阅意见（阻塞的要改，参考的仅供参考）", `{
+			"type":"object","properties":{"chapter":{"type":"integer","minimum":1}},
+			"required":["chapter"],"additionalProperties":false}`, s.reviews),
+		define(toolDraft, "看等用户决定的稿件：为什么等用户、改了什么，候选章节通过后的规划、全文与设定", empty, s.draft),
+		define(toolNote, "把用户对之后怎么写的要求记下来：之后作用域内的写作都会看到它，审阅逐条核验。"+
+			"text 逐字摘自用户的话；scope 省略即全书。只记要求，不要把对已有内容的修改记成要求", `{
+			"type":"object",
+			"properties":{
+				"text":{"type":"string","minLength":1,"description":"用户的原话，逐字摘录，可以只摘与这条要求有关的部分"},
+				"scope":{"type":"object","description":"作用于哪里，给一种：chapter 单章；from 与 to 章号区间；只给 from 是自该章起；volume 或 arc 是某卷或某故事弧",
+					"properties":{
+						"chapter":{"type":"integer","minimum":1},
+						"from":{"type":"integer","minimum":1},
+						"to":{"type":"integer","minimum":1},
+						"volume":{"type":"integer","minimum":1},
+						"arc":{"type":"integer","minimum":1}
+					},
+					"additionalProperties":false},
+				"target_words":{"type":"integer","minimum":1,"description":"每章字数目标（用户提到字数时）"},
+				"min_words":{"type":"integer","minimum":1},
+				"max_words":{"type":"integer","minimum":1}
+			},
+			"required":["text"],"additionalProperties":false}`, s.note),
+		define(toolRetire, "退掉一条要求（用户说不要了或记错了）；编号见 book_requirements", `{
+			"type":"object","properties":{"id":{"type":"string","minLength":1}},
+			"required":["id"],"additionalProperties":false}`, s.retire),
+		define(toolReject, "退回等用户决定的稿件，理由交给写作者按它重写，之后接着创作。reason 逐字摘自用户的话", `{
+			"type":"object","properties":{"reason":{"type":"string","minLength":1}},
+			"required":["reason"],"additionalProperties":false}`, s.reject),
+		define(toolLength, "调整全书篇幅并继续创作：chapters 为全书章数；0 表示交给 AI（完本的书即为续写）", `{
+			"type":"object","properties":{"chapters":{"type":"integer","minimum":0}},
+			"required":["chapters"],"additionalProperties":false}`, s.length),
+		define(toolPause, "暂停创作（用户要停下时）", empty, s.pauseTool),
+		define(toolResume, "继续创作；卡在某章修订次数上时，就是让它再改一次", empty, s.resume),
+	}
+}
+
+type none struct{}
+
+func (s *Session) project(ctx context.Context) (projectdoc.Snapshot, *narrative.Story, error) {
+	project, err := s.service.projects.Project(ctx, s.projectID, model.InitialRevision)
+	if err != nil {
+		return projectdoc.Snapshot{}, nil, err
+	}
+	story := narrative.New(narrative.Content{Plan: project.Plan, Entities: project.Entities, Canon: project.Canon, Manuscript: project.Manuscript})
+	return project, story, nil
+}
+
+func encode(value any) (string, error) {
+	payload, err := json.Marshal(value)
+	return string(payload), err
+}
+
+func (s *Session) outline(ctx context.Context, _ none) (string, error) {
+	project, story, err := s.project(ctx)
+	if err != nil {
+		return "", err
+	}
+	var chapters []string
+	for _, node := range project.Plan {
+		if node.Kind == model.PlanChapter {
+			chapters = append(chapters, node.ID)
+		}
+	}
+	return encode(struct {
+		Intent  model.Intent           `json:"intent"`
+		Compass *model.Compass         `json:"compass,omitempty"`
+		Totals  narrative.Totals       `json:"totals"`
+		Outline []narrative.VolumeView `json:"outline"`
+	}{project.Intent, project.Compass, story.Totals(), story.Outline(chapters)})
+}
+
+func (s *Session) read(ctx context.Context, query narrative.Query) (string, error) {
+	_, story, err := s.project(ctx)
+	if err != nil {
+		return "", err
+	}
+	view, err := story.Read(query)
+	if err != nil {
+		return "", err
+	}
+	return encode(view)
+}
+
+func (s *Session) requirements(ctx context.Context, _ none) (string, error) {
+	project, story, err := s.project(ctx)
+	if err != nil {
+		return "", err
+	}
+	type requirement struct {
+		ID          string                      `json:"id"`
+		Scope       string                      `json:"scope"`
+		Text        string                      `json:"text"`
+		Constraints *model.DirectiveConstraints `json:"constraints,omitempty"`
+	}
+	list := []requirement{}
+	for _, directive := range model.ActiveDirectives(project.Directives) {
+		list = append(list, requirement{directive.ID, story.DescribeScope(directive), directive.Text, directive.Constraints})
+	}
+	return encode(list)
+}
+
+func (s *Session) reviews(ctx context.Context, args struct {
+	Chapter int `json:"chapter"`
+}) (string, error) {
+	snap, err := s.service.bench.WorkbenchSnapshot(ctx, s.projectID)
+	if err != nil {
+		return "", err
+	}
+	chapterID := ""
+	for _, chapter := range snap.Manuscript {
+		if chapter.Number == args.Chapter {
+			chapterID = chapter.ID
+		}
+	}
+	if chapterID == "" {
+		return "", fmt.Errorf("第 %d 章还没有入稿的正文", args.Chapter)
+	}
+	requirements := make(map[string]string, len(snap.Directives))
+	for _, directive := range snap.Directives {
+		requirements[directive.ID] = directive.Text
+	}
+	type finding struct {
+		Blocking    bool   `json:"blocking"`
+		Note        string `json:"note"`
+		Requirement string `json:"requirement,omitempty"`
+	}
+	list := []finding{}
+	for _, item := range snap.Findings {
+		if item.ChapterID == chapterID {
+			list = append(list, finding{item.Severity == "blocking", item.Note, requirements[item.Requirement]})
+		}
+	}
+	return encode(list)
+}
+
+func (s *Session) draft(ctx context.Context, _ none) (string, error) {
+	snap, err := s.service.bench.WorkbenchSnapshot(ctx, s.projectID)
+	if err != nil {
+		return "", err
+	}
+	decision := snap.Decision
+	if decision == nil || !decision.HasProposal {
+		return "", errors.New("现在没有等用户决定的稿件")
+	}
+	_, story, err := s.project(ctx)
+	if err != nil {
+		return "", err
+	}
+	next, err := story.Apply(decision.Proposal.Patches)
+	if err != nil {
+		return "", err
+	}
+	chapters := []any{}
+	for _, patch := range decision.Proposal.Patches {
+		if patch.Document.Kind != model.DocumentManuscript || patch.Operation != model.PatchPut {
+			continue
+		}
+		var chapter model.ManuscriptChapter
+		if err := json.Unmarshal(patch.Content, &chapter); err != nil {
+			return "", fmt.Errorf("读取候选章节：%w", err)
+		}
+		view, err := next.Read(narrative.Query{Chapter: chapter.Number})
+		if err != nil {
+			return "", err
+		}
+		chapters = append(chapters, view)
+	}
+	return encode(struct {
+		Reason   string                 `json:"reason"`
+		Stale    bool                   `json:"stale,omitempty"`
+		Changes  workbench.ProposalView `json:"changes"`
+		Chapters []any                  `json:"chapters"`
+	}{decision.Reason, decision.Stale, decision.View, chapters})
+}
+
+// quote 校验 text 逐字出自用户说过的话（D74：引用即署名），返回最近那句话的来源引用。
+func (s *Session) quote(text string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := len(s.said) - 1; i >= 0; i-- {
+		if strings.Contains(s.said[i].words, text) {
+			return model.ConversationSource(s.said[i].sequence), nil
+		}
+	}
+	return "", fmt.Errorf("「%s」不是用户说过的原话：以用户名义写入的文字必须逐字摘自用户的消息", text)
+}
+
+type scopeArgs struct {
+	Chapter int `json:"chapter"`
+	From    int `json:"from"`
+	To      int `json:"to"`
+	Volume  int `json:"volume"`
+	Arc     int `json:"arc"`
+}
+
+func (a *scopeArgs) resolve(story *narrative.Story) (string, error) {
+	if a == nil {
+		return model.DirectiveScopeProject, nil
+	}
+	switch {
+	case a.Chapter > 0 && a.From+a.To+a.Volume+a.Arc == 0:
+		return model.DirectiveScopeChapters(a.Chapter, a.Chapter), nil
+	case a.From > 0 && a.Chapter+a.Volume+a.Arc == 0:
+		if a.To == 0 {
+			return model.DirectiveScopeFromChapter(a.From), nil
+		}
+		if a.To < a.From {
+			return "", fmt.Errorf("章号区间 %d–%d 不成立", a.From, a.To)
+		}
+		return model.DirectiveScopeChapters(a.From, a.To), nil
+	case a.Volume > 0 && a.Chapter+a.From+a.To+a.Arc == 0:
+		node, err := story.PlanNode(model.PlanVolume, a.Volume)
+		return model.DirectiveScopePlanNode(node.ID), err
+	case a.Arc > 0 && a.Chapter+a.From+a.To+a.Volume == 0:
+		node, err := story.PlanNode(model.PlanArc, a.Arc)
+		return model.DirectiveScopePlanNode(node.ID), err
+	case a.Chapter+a.From+a.To+a.Volume+a.Arc == 0:
+		return model.DirectiveScopeProject, nil
+	}
+	return "", errors.New("scope 只能给一种：chapter、from（可带 to）、volume 或 arc")
+}
+
+func (s *Session) note(ctx context.Context, args struct {
+	Text        string     `json:"text"`
+	Scope       *scopeArgs `json:"scope"`
+	TargetWords int        `json:"target_words"`
+	MinWords    int        `json:"min_words"`
+	MaxWords    int        `json:"max_words"`
+}) (string, error) {
+	text := strings.TrimSpace(args.Text)
+	source, err := s.quote(text)
+	if err != nil {
+		return "", err
+	}
+	_, story, err := s.project(ctx)
+	if err != nil {
+		return "", err
+	}
+	scope, err := args.Scope.resolve(story)
+	if err != nil {
+		return "", err
+	}
+	var constraints *model.DirectiveConstraints
+	if args.TargetWords+args.MinWords+args.MaxWords > 0 {
+		constraints = &model.DirectiveConstraints{TargetWords: args.TargetWords, MinWords: args.MinWords, MaxWords: args.MaxWords}
+	}
+	now := time.Now().UTC()
+	result, err := s.service.projects.AddDirective(ctx, projectdoc.AddDirectiveCommand{
+		ProjectID: s.projectID, ChangeID: projectdoc.NewID("directive", now), UserID: s.userID,
+		Scope: scope, Text: text, Constraints: constraints, Source: source, Reason: "主编记下用户的要求", CreatedAt: now,
+	})
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("记下要求 · %s ·「%s」", story.DescribeScope(result.Directive), text), nil
+}
+
+func (s *Session) retire(ctx context.Context, args struct {
+	ID string `json:"id"`
+}) (string, error) {
+	project, _, err := s.project(ctx)
+	if err != nil {
+		return "", err
+	}
+	for _, directive := range model.ActiveDirectives(project.Directives) {
+		if directive.ID != args.ID {
+			continue
+		}
+		now := time.Now().UTC()
+		if _, err := s.service.projects.RetireDirective(ctx, projectdoc.RetireDirectiveCommand{
+			ProjectID: s.projectID, ChangeID: projectdoc.NewID("directive-retire", now), UserID: s.userID,
+			DirectiveID: directive.ID, Reason: "主编按用户的话退掉要求", CreatedAt: now,
+		}); err != nil {
+			return "", err
+		}
+		return "退掉要求 ·「" + directive.Text + "」", nil
+	}
+	return "", fmt.Errorf("没有生效中的要求 %q，先用 book_requirements 查编号", args.ID)
+}
+
+func (s *Session) reject(ctx context.Context, args struct {
+	Reason string `json:"reason"`
+}) (string, error) {
+	reason := strings.TrimSpace(args.Reason)
+	source, err := s.quote(reason)
+	if err != nil {
+		return "", err
+	}
+	snap, err := s.service.bench.WorkbenchSnapshot(ctx, s.projectID)
+	if err != nil {
+		return "", err
+	}
+	if snap.Decision == nil || !snap.Decision.HasProposal {
+		return "", errors.New("现在没有等用户决定的稿件")
+	}
+	if _, err := s.service.decisions.Reject(ctx, decision.RejectCommand{
+		ProposalID: snap.Decision.Proposal.ID, UserID: s.userID, Reason: reason, Source: source, At: time.Now().UTC(),
+	}); err != nil {
+		return "", err
+	}
+	s.Write(WriteParams{Chapters: novel.KeepChapters})
+	return "退回稿件 ·「" + reason + "」· 按这条意见重写", nil
+}
+
+func (s *Session) length(ctx context.Context, args struct {
+	Chapters int `json:"chapters"`
+}) (string, error) {
+	snap, err := s.service.bench.WorkbenchSnapshot(ctx, s.projectID)
+	if err != nil {
+		return "", err
+	}
+	if snap.Decision != nil && snap.Decision.HasProposal {
+		return "", errors.New("有稿件等用户决定，先让用户通过或退回")
+	}
+	completed := snap.Run != nil && snap.Run.State == model.RunCompleted
+	s.restart(WriteParams{Chapters: args.Chapters, Extend: completed && args.Chapters == 0})
+	if args.Chapters == 0 {
+		return "篇幅交给 AI · 继续创作", nil
+	}
+	return fmt.Sprintf("篇幅定为 %d 章 · 继续创作", args.Chapters), nil
+}
+
+func (s *Session) pauseTool(ctx context.Context, _ none) (string, error) {
+	if err := s.pause(ctx); err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	s.paused = false
+	s.mu.Unlock()
+	return "暂停创作", nil
+}
+
+func (s *Session) resume(ctx context.Context, _ none) (string, error) {
+	snap, err := s.service.bench.WorkbenchSnapshot(ctx, s.projectID)
+	if err != nil {
+		return "", err
+	}
+	switch {
+	case snap.Decision != nil && snap.Decision.HasProposal:
+		return "", errors.New("有稿件等用户决定，先让用户通过或退回")
+	case snap.Run != nil && snap.Run.State == model.RunCompleted:
+		return "", errors.New("全书已经完成；要续写就调整篇幅")
+	}
+	held := snap.Decision != nil && snap.Decision.Held != ""
+	if !s.Write(WriteParams{Chapters: novel.KeepChapters, Renew: held}) {
+		return "", errors.New("已经在写了")
+	}
+	if held {
+		return "让卡住的那一章再改一次 · 继续创作", nil
+	}
+	return "继续创作", nil
+}

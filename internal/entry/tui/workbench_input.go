@@ -1,7 +1,6 @@
 package tui
 
 import (
-	"fmt"
 	"strconv"
 	"strings"
 
@@ -10,19 +9,20 @@ import (
 
 const benchHelp = `创作控制台
 
+输入框里的话都交给主编：提要求（“这章主角要输”“以后每章三千字左右”）、问进度、讨论情节、
+退回稿件并说明理由、暂停或继续、调整篇幅都行。主编不写正文，它把你的意思落进书里，由创作团队
+去写；它做的每件事都在对话里留一行回执。主编回话时再说的话会送进它正在进行的这一轮。
+
+对话视图：你和主编的对话，以及主编做了什么。
 正文视图：阅读选中章。正在写的章逐字流出并带光标；候选稿与已入稿正文明确标注。
 活动视图：创作的完整过程——每一步、思考、说明与正文预览按时间排列。
 创作现场：正文下方常驻，显示上一步、当前步（或等待计时）与最新输出的尾部。
-决定卡：等你决定时出现在正文下方。有稿件时回车看全部内容，y 通过，写下修改意见后回车重写；
-某章自动修订多次仍有阻塞意见时，y 接受现状，回车让它再改，写下意见后回车按意见改。
-
-输入框里的文字：等你决定稿件时是修改意见，其余时候是对选中章（或卷、后续章节）的创作要求。
-开始输入时锁定作用对象，之后切章、新稿件出现都不改变已输入文字的语义。
+决定卡：等你决定时出现在正文下方。有稿件时回车看全部内容，y 通过，不满意就跟主编说理由；
+某章自动修订多次仍有阻塞意见时，y 接受现状，回车让它再改。
 
 /view                     全屏查看选中章（或全书）的完整依据
-/goal <章数|auto>         固定篇幅或交给 AI，并继续；完本后用它续写
 /export <路径>            导出已确认正文（.txt 或 .epub）
-/model [角色]             切换连接 / 模型 / 思考强度（角色：architect、writer、editor）
+/model [角色]             切换连接 / 模型 / 思考强度（角色：architect、writer、editor、chief）
 /diag                     查看诊断
 /<章号或标题> · /next     跳章或搜索、下一个匹配
 /help                     本页
@@ -31,13 +31,13 @@ const benchHelp = `创作控制台
 Tab                       目录 ⇄ 正文切换焦点
 ↑ / ↓ · PgUp / PgDn       滚动焦点区域；输入为空时 Home/End 到顶／到底
 Enter（空）               正文焦点：有稿件时看全部内容，创作停着时继续创作，否则全屏阅读；目录焦点：折叠卷弧、全屏阅读选中章
-Esc                       清空输入 → 关闭全屏 → 回到最新 → 暂停创作 → 作品首页
-F1 / F2                   正文、活动视图（也可点标签）
+Esc                       清空输入 → 打断主编 → 回到最新 → 暂停创作 → 作品首页
+F1 / F2 / F3              对话、正文、活动视图（也可点标签）
 
 点击章节选章；点击标签切换视图；点击决定卡阅读候选稿；点击现场报错行查看诊断。
 思考仅展示模型服务提供的原文；直播内容不会自动成为正式稿，最终以确认稿为准。
 打开作品时，上次没停就退出的创作自动接着写；Esc 暂停立即停下在途的模型调用，对话与草稿保留，
-之后回车、或写下要求回车，都从停下的地方接着写。
+之后回车，或跟主编说完一句话，都从停下的地方接着写。
 终端原生划选复制通常需要按住 Shift。`
 
 func (m model) handleBenchKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -64,9 +64,12 @@ func (m model) handleBenchKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEnter:
 		return m.submitInput()
 	case tea.KeyF1:
-		m.switchView(viewProse)
+		m.switchView(viewTalk)
 		return m, nil
 	case tea.KeyF2:
+		m.switchView(viewProse)
+		return m, nil
+	case tea.KeyF3:
 		m.switchView(viewActivity)
 		return m, nil
 	case tea.KeyTab, tea.KeyShiftTab:
@@ -99,32 +102,23 @@ func (m model) handleBenchKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.scrollPane(benchPaneMain, delta), nil
 	}
 	var cmd tea.Cmd
-	wasEmpty := bench.input.Value() == ""
 	bench.input, cmd = bench.input.Update(key)
-	if wasEmpty && bench.input.Value() != "" {
-		// 第一个字锁定作用对象：要求的范围，或正在裁决的稿件。
-		bench.inputScope, bench.inputLabel = m.directiveScope()
-		bench.inputDecision = ""
-		if m.reviewing() {
-			bench.inputDecision = bench.decision.proposal.ID
-		}
-	}
-	if bench.input.Value() == "" {
-		bench.inputScope, bench.inputLabel, bench.inputDecision = "", "", ""
-	}
 	return m, cmd
 }
 
-// escape 分层返回：清空输入 → 回到跟随（正文视图、当前章、最新内容）→ 暂停正在进行的
-// 创作（打断在途的模型调用）→ 作品首页。
+// escape 分层返回：清空输入 → 打断主编正在进行的回话 → 回到跟随（当前章、最新内容）→
+// 暂停正在进行的创作（打断在途的模型调用）→ 作品首页。
 func (m model) escape() (tea.Model, tea.Cmd) {
 	b := &m.bench
 	if b.input.Value() != "" {
 		b.input.SetValue("")
-		b.inputScope, b.inputLabel, b.inputDecision = "", "", ""
 		return m, nil
 	}
-	if b.view == viewActivity || b.pinned || b.proseHold || b.activityHeld != nil {
+	if b.session.Interrupt() {
+		b.notice = "已打断主编"
+		return m, nil
+	}
+	if b.view == viewActivity || b.pinned || b.proseHold || b.activityHeld != nil || b.talkHeld {
 		m.follow()
 		return m, nil
 	}
@@ -142,10 +136,15 @@ func (m *model) switchView(view benchView) {
 	m.bench.view, m.bench.pane = view, benchPaneMain
 }
 
-// follow 回到创作进度：正文视图、当前章、尾部跟随；离开只取消 UI 订阅，不取消创作。
+// follow 回到最新：对话视图留在对话，其余回到正文视图；目录回到当前章，各视图恢复尾部
+// 跟随。离开只取消 UI 订阅，不取消创作。
 func (m *model) follow() {
 	b := &m.bench
-	b.view, b.pane, b.pinned = viewProse, benchPaneMain, false
+	if b.view != viewTalk {
+		b.view = viewProse
+	}
+	b.pane, b.pinned = benchPaneMain, false
+	b.talkHeld, b.talkOffset = false, 0
 	b.activityHeld, b.activityOffset = nil, 0
 	b.proseOffset, b.proseHold = 0, false
 	if number := m.currentChapter(); number > 0 {
@@ -165,51 +164,37 @@ func (m model) scrollPane(pane benchPane, delta int) model {
 		}
 		return m
 	}
-	if m.bench.view == viewActivity {
+	switch m.bench.view {
+	case viewActivity:
 		return m.scrollActivity(delta)
+	case viewTalk:
+		return m.scrollTalk(delta)
 	}
 	return m.scrollProse(delta)
 }
 
-// submitInput 是回车的唯一分派：空回车走面板动作，`/` 是命令，`y` 通过，
-// 其余文字在等你决定时是修改意见、否则是带作用域的要求。校验失败保留输入并显示 err。
+// submitInput 是回车的唯一分派：空回车走面板动作，`/` 是命令，`y` 通过，其余文字交给主编。
+// 话没送出去时会话回执把它放回输入框。
 func (m model) submitInput() (tea.Model, tea.Cmd) {
 	bench := &m.bench
 	text := strings.TrimSpace(bench.input.Value())
 	bench.err, bench.notice = "", ""
-	var (
-		next tea.Model
-		cmd  tea.Cmd
-	)
 	switch {
 	case text == "":
 		return m.enterPane()
 	case strings.HasPrefix(text, "/"):
-		next, cmd = m.runCommand(strings.TrimSpace(text[1:]))
+		next, cmd := m.runCommand(strings.TrimSpace(text[1:]))
+		if updated := next.(model); updated.bench.err == "" {
+			updated.bench.input.SetValue("")
+			return updated, cmd
+		}
+		return next, cmd
 	case text == "y":
-		next, cmd = m.approve()
-	case text == "n":
-		bench.notice = "写下修改意见后回车"
-		if !m.reviewing() {
-			bench.notice = "现在没有等你决定的稿件"
-		}
-		next = m
-	case m.reviewing() && bench.inputDecision == bench.decision.proposal.ID:
-		next, cmd = m.decideCmd(false, text)
-	default:
-		if bench.inputDecision != "" {
-			bench.err = "这份稿件已不再等待审阅；修改意见已保留，请 Esc 清空后重新选择操作"
-			return m, nil
-		}
-		scope, label := m.composerScope()
-		next, cmd = m, m.addDirectiveCmd(scope, label, text)
+		bench.input.SetValue("")
+		return m.approve()
 	}
-	updated := next.(model)
-	if updated.bench.err == "" {
-		updated.bench.input.SetValue("")
-		updated.bench.inputScope, updated.bench.inputLabel, updated.bench.inputDecision = "", "", ""
-	}
-	return updated, cmd
+	bench.input.SetValue("")
+	return m.sendCmd(text)
 }
 
 // enterPane 空回车：正文焦点有稿件等你确认时看全部内容，创作停着时继续创作，否则全屏阅读当前
@@ -247,7 +232,7 @@ func (m model) enterPane() (tea.Model, tea.Cmd) {
 	}
 	switch {
 	case m.reviewing():
-		b.notice = "输入 y 通过，或写下修改意见后回车"
+		b.notice = "输入 y 通过；不满意就跟主编说理由"
 	case m.selectedChapterNumber() == 0:
 		b.notice = "还没有可读的章节"
 	default:
@@ -265,11 +250,9 @@ func (m model) approve() (tea.Model, tea.Cmd) {
 		bench.notice = "现在没有等你决定的稿件"
 	case bench.writing:
 		bench.notice = "创作进行中，稿件写完后再裁决"
-	case bench.inputDecision != bench.decision.proposal.ID:
-		bench.err = "待审稿件已变化，请 Esc 清空后重新确认"
 	case bench.decision.stale:
 		// 过期稿件不能直接通过（会撞版本冲突）：只留重写路径。
-		bench.notice = "这份稿件完成后书又有了新变化，不能直接通过；写下修改意见后回车，让它基于最新内容重写"
+		bench.notice = "这份稿件完成后书又有了新变化，不能直接通过；跟主编说修改意见，让它基于最新内容重写"
 	default:
 		return m.decideCmd(true, "")
 	}
@@ -277,7 +260,7 @@ func (m model) approve() (tea.Model, tea.Cmd) {
 }
 
 // benchCommand 是底栏 `/` 命令：唯一前缀匹配，命令面板与帮助共用同一张表。启停创作、
-// 看稿、提要求都不用命令（Esc、回车与直接输入），这里只留按键表达不了的事。
+// 看稿用按键，提要求、退稿、调篇幅跟主编说，这里只留与书的内容无关的事。
 // idleOnly 的命令在创作进行中屏蔽，以免并发驱动；quiet 的不进 `/` 总览。
 type benchCommand struct {
 	name, usage, label string
@@ -286,18 +269,6 @@ type benchCommand struct {
 }
 
 var benchCommands = []benchCommand{
-	{name: "goal", usage: "<章数|auto>", label: "调整篇幅并继续（完本后续写）", idleOnly: true, run: func(m model, arg string) (tea.Model, tea.Cmd) {
-		if arg == "auto" {
-			// 完本后交给 AI 就是续写：撤回收官承诺，由 AI 决定再写多少。
-			return m.continueRunWith(quickParams{extend: m.bench.situation() == situationCompleted})
-		}
-		chapters, err := strconv.Atoi(arg)
-		if err != nil || chapters <= 0 {
-			m.bench.err = fmt.Sprintf("用法：/goal 章数 固定篇幅，/goal auto 交给 AI（当前%s）", lengthStatus(m.bench.snap.Length))
-			return m, nil
-		}
-		return m.continueRunWith(quickParams{chapters: chapters})
-	}},
 	{name: "export", usage: "<路径>", label: "导出", run: func(m model, arg string) (tea.Model, tea.Cmd) {
 		return m.submitExport(arg)
 	}},
@@ -438,15 +409,7 @@ func (m model) handleBenchMouse(mouse tea.MouseMsg) (tea.Model, tea.Cmd) {
 				bench.notice = "输入框中有未提交内容，请先提交或清空"
 				return m, nil
 			}
-			if action.do != nil {
-				return action.do(m)
-			}
-			command := action.key
-			if action.key == "/goal" {
-				command += " "
-			}
-			bench.input.SetValue(command)
-			bench.inputScope, bench.inputLabel = m.directiveScope()
+			return action.do(m)
 		}
 		return m, nil
 	}

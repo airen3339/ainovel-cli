@@ -34,11 +34,11 @@ go run ./cmd/ainovel-cli --headless ...  # 无交互执行动作，供脚本与�
 go run ./cmd/ainovel-cli --version       # 程序级信息
 ```
 
-TUI 首次启动会进入配置向导（选择 provider、填写模型与 API Key），配置保存在 `~/.ainovel/v1/config.json`（v1 目录独立于 v0，格式不兼容也不迁移），之后在首页输入一句话回车即开写。作品库共用 `~/.ainovel/v1/ainovel.db`，作品身份与工作目录无关；`--db` 可为脚本或测试指定其他库。环境变量 `AINOVEL_PROVIDER/AINOVEL_MODEL/AINOVEL_API_KEY/AINOVEL_BASE_URL` 可临时覆盖配置文件；只设置 provider 或 model 会直接报错，不会降级成模板结果。
+TUI 首次启动会进入配置向导（选择 provider、填写模型与 API Key），配置保存在 `~/.ainovel/v1/config.json`（v1 目录独立于 v0，格式不兼容也不迁移），之后在首页输入一句话回车即开写。进了工作台，有什么想法直接跟主编说：提要求、退稿、改篇幅、问进度、讨论情节都行，它把你的话按原话落进作品、在对话里留回执，正文仍由创作团队写；通过稿件按 `y`，暂停按 Esc。作品库共用 `~/.ainovel/v1/ainovel.db`，作品身份与工作目录无关；`--db` 可为脚本或测试指定其他库。环境变量 `AINOVEL_PROVIDER/AINOVEL_MODEL/AINOVEL_API_KEY/AINOVEL_BASE_URL` 可临时覆盖配置文件；只设置 provider 或 model 会直接报错，不会降级成模板结果。
 
 连接名称可以自定义：顶层 `provider` 引用 `providers` 中的连接，连接的 `type` 指定协议（如 `openai`），`api` 选择 OpenAI 的 `chat` 或 `responses` 接口。每个连接保存自己的密钥、地址和模型列表，参见 [配置示例](config.example.jsonc)。`AINOVEL_PROVIDER_TYPE` 和 `AINOVEL_API` 可覆盖当前连接的协议和接口；选择其他连接不会沿用原连接的密钥与地址。
 
-Headless 一句话写全书（篇幅由 AI 在故事罗盘里给出上限并在合适时收官；`--chapters N` 可固定全书章数，续跑不传则沿用上一轮设定；完本后加 `--extend` 续写，撤回收官承诺、由 AI 决定再写多少，TUI 完本后 `/goal auto` 同义）：
+Headless 一句话写全书（篇幅由 AI 在故事罗盘里给出上限并在合适时收官；`--chapters N` 可固定全书章数，续跑不传则沿用上一轮设定；完本后加 `--extend` 续写，撤回收官承诺、由 AI 决定再写多少，TUI 完本后跟主编说“接着写”同义）：
 
 ```bash
 go run ./cmd/ainovel-cli --headless quick write \
@@ -51,7 +51,7 @@ go run ./cmd/ainovel-cli --headless quick write \
 
 ## 成品导出
 
-在作品工作台按 `e`（或点击“导出”），输入以 `.txt` 或 `.epub` 结尾的文件路径。导出只包含当前工作台版本的已确认正文，不包含候选稿、工作区草稿或流式预览；尚未写完也可导出已有章节。
+在作品工作台输入 `/export <路径>`，路径以 `.txt` 或 `.epub` 结尾。导出只包含当前工作台版本的已确认正文，不包含候选稿、工作区草稿或流式预览；尚未写完也可导出已有章节。
 
 ```sh
 ainovel-cli --headless project export --project book-1 --format txt --file ./book.txt
@@ -107,7 +107,7 @@ Canon 事实使用受控 `kind` 与 predicate namespace；`new_value` 是当前�
 ```text
 internal/
 ├── domain/       创作领域模型、变更与执行机制、目标推进、上下文推导
-├── app/          小说、作品、资源、任务、审批和工作台用例
+├── app/          小说、作品、资源、任务、审批、主编和工作台用例
 ├── infra/        SQLite、工作区、模型运行时、Prompt/Pack、活动和配置适配
 ├── entry/        TUI 与 headless 入口
 ├── bootstrap/    静态装配具名组件，不承载业务或转发方法

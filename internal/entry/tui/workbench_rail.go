@@ -265,8 +265,8 @@ func (m model) bookBrief(r *railText) {
 }
 
 // crewCard 创作团队在这本书上的累计：标题线右端是花费（有定价时）与用时；其下每个角色
-// 两行；最后是合计。数字来自落盘的执行记录，重启后照样完整。协调器按缺口派活，Architect、
-// Writer、Editor 一次一个接力，所以同一时刻至多一个角色亮着。还没有执行记录时整块不出现。
+// 两行；最后是合计。数字来自落盘的执行记录与主编对话，重启后照样完整。协调器按缺口派活，
+// Architect、Writer、Editor 一次一个接力；Chief 是主编，回话时亮起。还没有记录时整块不出现。
 func (m model) crewCard(width int) []string {
 	usage := m.bench.snap.Usage
 	if len(usage.Roles) == 0 {
@@ -295,7 +295,15 @@ func (m model) crewLines(role string, width int) []string {
 		}
 	}
 	name := benchTheme.Text.Render(roleNames[role])
-	if stats.State == domainmodel.OperationRunning && m.bench.writing {
+	mark, worked := m.stateMark(stats.State), formatDuration(stats.Worked)
+	switch {
+	case role == domainmodel.ChiefRole:
+		// 主编不经任务执行：亮不亮看它是否正在回话，没有用时。
+		mark, worked = styleNotice.Render("✓"), ""
+		if m.bench.thread.Busy {
+			mark, name = benchTheme.Accent.Render("◉"), styleFocus.Render(roleNames[role])
+		}
+	case stats.State == domainmodel.OperationRunning && m.bench.writing:
 		name = styleFocus.Render(roleNames[role])
 	}
 	price := ""
@@ -303,7 +311,7 @@ func (m model) crewLines(role string, width int) []string {
 		price = benchTheme.Muted.Render(formatCost(stats.Usage.Cost))
 	}
 	return []string{
-		alignRight(m.stateMark(stats.State)+" "+name+" "+benchTheme.Muted.Render(stats.Model), benchTheme.Muted.Render(formatDuration(stats.Worked)), width),
+		alignRight(mark+" "+name+" "+benchTheme.Muted.Render(stats.Model), benchTheme.Muted.Render(worked), width),
 		alignRight("  "+benchTheme.Muted.Render(tokensLine(stats.Usage)), price, width),
 	}
 }

@@ -98,22 +98,15 @@ func (s *Compiler) Compile(ctx context.Context, command CompileCommand) (prompt.
 	// Pack 与 Creator Profile——给这本书固定一套风格与方法，此后自动沿用。
 	var overlayRules []string
 	if revision > model.InitialRevision {
-		assets, err := projectdoc.LoadDocuments[model.ProjectAssetRefs](ctx, s.store, target, model.DocumentAssets, revision)
+		packs, profiles, err := s.pinnedAssets(ctx, target, revision)
 		if err != nil {
 			return prompt.Compiled{}, err
 		}
-		if len(assets) > 0 {
-			if len(command.Packs) == 0 {
-				for _, ref := range assets[0].Packs {
-					command.Packs = append(command.Packs, resource.PackRef{ID: ref.ID, Revision: ref.Revision})
-				}
-			}
-			if len(command.CreatorProfiles) == 0 {
-				for _, ref := range assets[0].CreatorProfiles {
-					command.CreatorProfiles = append(command.CreatorProfiles,
-						resource.CreatorProfileRef{ID: ref.ID, Scope: ref.Scope, Revision: ref.Revision})
-				}
-			}
+		if len(command.Packs) == 0 {
+			command.Packs = packs
+		}
+		if len(command.CreatorProfiles) == 0 {
+			command.CreatorProfiles = profiles
 		}
 		overlays, err := projectdoc.LoadDocuments[model.ProjectOverlay](ctx, s.store, target, model.DocumentOverlay, revision)
 		if err != nil {
@@ -123,21 +116,9 @@ func (s *Compiler) Compile(ctx context.Context, command CompileCommand) (prompt.
 			overlayRules = overlays[0].Rules
 		}
 	}
-	packs := make([]prompt.VersionedPack, len(command.Packs))
-	for i, ref := range command.Packs {
-		pack, err := resource.LoadPack(ctx, s.store, ref)
-		if err != nil {
-			return prompt.Compiled{}, err
-		}
-		packs[i] = pack
-	}
-	creatorProfiles := make([]prompt.VersionedCreatorProfile, len(command.CreatorProfiles))
-	for i, ref := range command.CreatorProfiles {
-		profile, err := resource.LoadCreatorProfile(ctx, s.store, ref)
-		if err != nil {
-			return prompt.Compiled{}, err
-		}
-		creatorProfiles[i] = profile
+	packs, creatorProfiles, err := s.loadAssets(ctx, command.Packs, command.CreatorProfiles)
+	if err != nil {
+		return prompt.Compiled{}, err
 	}
 	ownership, err := json.Marshal(view.Ownership)
 	if err != nil {
@@ -154,4 +135,42 @@ func (s *Compiler) Compile(ctx context.Context, command CompileCommand) (prompt.
 		StoryContext: storyContext, Task: view.Task,
 		BaseRevision: revision, ProjectOverlayRevision: revision,
 	}, command.CreatedAt)
+}
+
+// pinnedAssets 是作品在 revision 上固定的 Pack 与 Creator Profile 引用（D31）。
+func (s *Compiler) pinnedAssets(ctx context.Context, target model.AuthorityTarget, revision model.Revision) ([]resource.PackRef, []resource.CreatorProfileRef, error) {
+	assets, err := projectdoc.LoadDocuments[model.ProjectAssetRefs](ctx, s.store, target, model.DocumentAssets, revision)
+	if err != nil || len(assets) == 0 {
+		return nil, nil, err
+	}
+	var packs []resource.PackRef
+	for _, ref := range assets[0].Packs {
+		packs = append(packs, resource.PackRef{ID: ref.ID, Revision: ref.Revision})
+	}
+	var profiles []resource.CreatorProfileRef
+	for _, ref := range assets[0].CreatorProfiles {
+		profiles = append(profiles, resource.CreatorProfileRef{ID: ref.ID, Scope: ref.Scope, Revision: ref.Revision})
+	}
+	return packs, profiles, nil
+}
+
+// loadAssets 按引用读出 Pack 与 Creator Profile 的内容。
+func (s *Compiler) loadAssets(ctx context.Context, packRefs []resource.PackRef, profileRefs []resource.CreatorProfileRef) ([]prompt.VersionedPack, []prompt.VersionedCreatorProfile, error) {
+	packs := make([]prompt.VersionedPack, len(packRefs))
+	for i, ref := range packRefs {
+		pack, err := resource.LoadPack(ctx, s.store, ref)
+		if err != nil {
+			return nil, nil, err
+		}
+		packs[i] = pack
+	}
+	profiles := make([]prompt.VersionedCreatorProfile, len(profileRefs))
+	for i, ref := range profileRefs {
+		profile, err := resource.LoadCreatorProfile(ctx, s.store, ref)
+		if err != nil {
+			return nil, nil, err
+		}
+		profiles[i] = profile
+	}
+	return packs, profiles, nil
 }

@@ -136,6 +136,15 @@ func (s *Query) snapshotFromProject(ctx context.Context, project projectdoc.Snap
 		return WorkbenchSnapshot{}, err
 	}
 	snapshot.Usage = teamUsage(attempts, now)
+	// 主编不经任务执行：它的用量随对话消息落盘，按书汇总进同一个团队（D74）。
+	chiefUsage, chiefModel, err := s.store.ConversationUsage(ctx, projectID)
+	if err != nil {
+		return WorkbenchSnapshot{}, err
+	}
+	if chiefUsage != (model.Usage{}) {
+		snapshot.Usage.Total.Add(chiefUsage)
+		snapshot.Usage.Roles[model.ChiefRole] = RoleUsage{Usage: chiefUsage, Model: chiefModel}
+	}
 	writingPlanID := ""
 	if hasRun {
 		snapshot.Run = &run

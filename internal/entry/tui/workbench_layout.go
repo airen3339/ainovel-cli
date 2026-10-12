@@ -197,7 +197,7 @@ type benchTab struct {
 }
 
 func (m model) benchTabs(l benchLayout) []benchTab {
-	tabs := []benchTab{{view: viewProse, label: "正文"}, {view: viewActivity, label: "活动"}}
+	tabs := []benchTab{{view: viewTalk, label: "对话"}, {view: viewProse, label: "正文"}, {view: viewActivity, label: "活动"}}
 	x := l.mainX + benchPad
 	for i := range tabs {
 		tabs[i].x0, tabs[i].x1 = x, x+lipgloss.Width(tabs[i].label)
@@ -228,6 +228,10 @@ func (m model) tabRows(l benchLayout) []string {
 func (m model) viewNote() string {
 	b := m.bench
 	switch {
+	case b.view == viewTalk && b.talkHeld:
+		return "已暂停跟随 · Esc 回到最新"
+	case b.view == viewTalk:
+		return ""
 	case b.view == viewActivity && b.activityHeld != nil:
 		return "已暂停跟随 · Esc 回到最新"
 	case b.view == viewActivity:
@@ -245,8 +249,11 @@ func (m model) viewNote() string {
 }
 
 func (m model) contentLines(l benchLayout) []string {
-	if m.bench.view == viewActivity {
+	switch m.bench.view {
+	case viewActivity:
 		return padMain(m.activityView(l.inner, l.contentRows), l, l.contentRows)
+	case viewTalk:
+		return padMain(m.talkView(l.inner, l.contentRows), l, l.contentRows)
 	}
 	return padMain(m.proseView(l), l, l.contentRows)
 }
@@ -259,7 +266,7 @@ func (m model) decisionCard(width int) []string {
 	summary, actions := "", "回车继续"
 	if d.held != "" {
 		summary = m.heldSummary()
-		actions = "y 接受现状 · 回车让它再改 · 写下意见后回车按意见改"
+		actions = "y 接受现状 · 回车让它再改 · 或跟主编说怎么改"
 	}
 	if d.hasProposal {
 		title = "◇ " + m.reviewTarget() + " · 等待你确认"
@@ -316,13 +323,12 @@ func (m model) commandOverlay(width int) []string {
 	return lines
 }
 
-// benchFooter：分隔线（反馈嵌在线里）、输入框 + 作用对象、主要操作与提示 + 模型用量。
+// benchFooter：分隔线（反馈嵌在线里）、输入框、主要操作与提示 + 模型用量。
 func (m model) benchFooter(l benchLayout) []string {
 	b := m.bench
 	inner := l.width - 2
 	input := b.input
-	context := truncate(m.composerContext(), inner/3)
-	input.Width = max(1, inner-lipgloss.Width(context)-5)
+	input.Width = max(1, inner-5)
 	input.Placeholder = m.inputPlaceholder()
 	input.TextStyle = benchTheme.Text.Background(benchColors.InputBackground)
 	input.PlaceholderStyle = lipgloss.NewStyle().Foreground(benchColors.Faint).Background(benchColors.InputBackground)
@@ -348,33 +354,22 @@ func (m model) benchFooter(l benchLayout) []string {
 	}
 	return []string{
 		rule,
-		" " + alignRight(input.View(), context, inner),
+		" " + input.View(),
 		" " + alignRight(hints, m.usageLabel(l, inner-lipgloss.Width(hints)-2), inner),
 	}
 }
 
 func (m model) inputPlaceholder() string {
-	d := m.bench.decision
-	_, target := m.composerScope()
 	switch {
+	case m.bench.thread.Busy:
+		return "接着说，主编会在这一轮里读到"
 	case m.bench.resumable():
-		return "回车继续创作，或给" + target + "提要求"
-	case d == nil || !d.hasProposal || m.bench.writing:
-		return "给" + target + "提一个要求，或输入 / 命令"
-	case d.stale:
-		return "写下修改意见后回车，让它基于最新内容重写"
+		return "回车继续创作，或跟主编说说想法"
+	case m.reviewing():
+		return "y 通过，或跟主编说哪里不满意"
 	default:
-		return "写下修改意见后回车，或输入 y 通过"
+		return "跟主编说：提要求、问进度、讨论情节…（/ 命令）"
 	}
-}
-
-// composerContext 输入框右侧：这段文字将作用于谁。稿件出现前就开始写的文字仍是要求。
-func (m model) composerContext() string {
-	if m.reviewing() && (m.bench.input.Value() == "" || m.bench.inputDecision == m.bench.decision.proposal.ID) {
-		return benchTheme.Warning.Render("◇ 修改意见 · " + m.reviewTarget())
-	}
-	_, target := m.composerScope()
-	return benchTheme.Accent.Render("要求 · " + target)
 }
 
 // usageLabel 模型摘要与全书累计用量，占提示之外的宽度，放不下时截掉尾部；没有用量、
@@ -387,8 +382,7 @@ func (m model) usageLabel(l benchLayout, room int) string {
 	return benchTheme.Muted.Render(truncate(strings.Join(parts, " · "), room))
 }
 
-// benchAction 是提示行上的主要操作：按键类的点击直接执行 do，命令类（/ 开头）点击后
-// 填进输入框。
+// benchAction 是提示行上的主要操作：点击即执行 do。
 type benchAction struct {
 	key, label string
 	do         func(model) (tea.Model, tea.Cmd)
@@ -396,6 +390,9 @@ type benchAction struct {
 
 // primaryAction 当前最该做的一件事；其余全部在 / 命令面板里。
 func (m model) primaryAction() benchAction {
+	if m.bench.thread.Busy {
+		return benchAction{key: "Esc", label: "打断主编", do: model.escape}
+	}
 	switch m.bench.situation() {
 	case situationWriting:
 		return benchAction{key: "Esc", label: "暂停", do: func(m model) (tea.Model, tea.Cmd) { return m, m.pauseRunCmd() }}
@@ -404,7 +401,7 @@ func (m model) primaryAction() benchAction {
 	case situationDecidingProposal:
 		return benchAction{key: "Enter", label: "查看全部内容", do: func(m model) (tea.Model, tea.Cmd) { return m.openReview(), nil }}
 	case situationCompleted:
-		return benchAction{key: "/goal", label: "续写（auto 或章数）"}
+		return benchAction{key: "Enter", label: "阅读选中章", do: model.enterPane}
 	}
 	label := "继续创作"
 	switch {

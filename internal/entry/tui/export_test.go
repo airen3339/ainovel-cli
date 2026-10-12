@@ -27,7 +27,7 @@ func TestWorkbenchExportsAcceptedContent(t *testing.T) {
 	}
 	m := newModel(ctx, deps)
 	m.page = pageWorkbench
-	m.bench = newWorkbenchState("book", 1)
+	m.bench = testBench(m, "book")
 	m.width, m.height = 150, 40
 	m.bench.snap, err = api.Workbench.WorkbenchSnapshot(ctx, "book")
 	if err != nil {

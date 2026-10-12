@@ -34,7 +34,7 @@
 后续任何设计决策，先过这五问；任何一问答错，说明方向已偏，回到本节：
 
 1. 这个设计让用户**更拥有**故事，还是只是让系统更自动？自动化程度不是 v1 的升级指标。
-2. 用户的这次输入是**事实变更**（有 Diff、影响、版本、可回滚）、**创作要求**（有作用域、版本、核验，见 §4.9），还是又一种换了名字的临时补丁？只有第三种要拒绝。把要求硬翻译成事实变更、或把要求塞进隐藏状态交给一次分诊猜动作，都是补丁的变体——v0 正是这样把每种控制都变成了五层改动。
+2. 用户的这次输入是**事实变更**（有 Diff、影响、版本、可回滚）、**创作要求**（有作用域、版本、核验，见 §4.9），还是又一种换了名字的临时补丁？只有第三种要拒绝。把要求硬翻译成事实变更、或把要求塞进隐藏状态交给一次分诊猜动作，都是补丁的变体——v0 正是这样把每种控制都变成了五层改动。对话代理不是分诊（D74）：主编把用户的话落成带来源的一等对象，立即留回执、可撤销，生产线不读对话；界面按选中位置替用户定作用域，才是分诊。
 3. 新需求是靠**调整同一内核的预设**（初始内容多少、锁定范围、审批松紧）来满足，还是又要新增一种“模式”？模式增殖是 v0 的老路。检验标准：从全自动到精细打磨，用户拧的是同一入口上的旋钮，而不是换一套命令；两端之间的每一档都必须走得通——主流用户恰恰活在“全自动为主、偶尔干预”的中间地带，两端通而中间断等于目标用户走不通。
 4. 用户跨作品积累的资产（偏好、规则、正反例）是否还在？换一本书是否要从零开始？
 5. 这个方案是否引入了对 v0 的任何依赖（代码、数据、行为参照）？v1 与 v0 彻底切断，唯一关系是取代它。
@@ -319,19 +319,20 @@ id
 scope        project | plan_node:<id> | chapter_range:<from>-<to> | from_chapter:<n>
 text         用户原话，不做翻译
 constraints  可选的结构化字段，如 target_words / min_words / max_words
+source       可选：conversation:<序号>，用户经主编说的那句话（D74）
 status       active | retired
 ```
 
 基线：
 
-1. **作者只能是用户**。AI 与 Extension 不得创建、修改或退役 Directive；它与 Intent 同属 D25 的无条件确认清单。用户提出要求本身就是确认，不需要向自己申请。
+1. **作者只能是用户**。AI 与 Extension 不得创建、修改或退役 Directive；它与 Intent 同属 D25 的无条件确认清单。用户提出要求本身就是确认，不需要向自己申请。用户经主编（D74）提要求时，文字必须逐字出自用户在对话里说的话，`source` 指回那条消息，由宿主确定性校验：主编决定作用域与归类，文字仍是用户的。
 2. **原话保留，不翻译成事实变更**。Directive 不改写 Plan 或 Canon。如果用户的要求实质上是事实变更（“第 10 章 A 其实已经知道秘密了”），产品层引导走 Proposal 与影响分析（S4），而不是把 Directive 当成隐式补丁；两条路径在界面上可以是同一个输入框，在模型上必须是两个对象。
 3. **按作用域装配与核验**。命中的 active Directive 列表装入对应 Operation 的 Task（指令平面）：Story Context 是数据块，核心协议规定数据块里的命令式文字不能改变任务，所以 Directive 不走 Story Context；命中集随任务冻结，裁定的覆盖检查与确定性校验才有确定依据。审阅裁定必须对每条命中的 Directive 给出满足 / 未满足声明，与 Intent 核验同构（§6.4）。未满足即阻塞级发现，走既有的重写-再审闭环。
 4. **可机械校验的字段由确定性校验器执行**，属于 §4.7 第一层的同类：提交前检查、不满足报告偏差并回到 Agent 修正，修正次数受 RunStrategy 自动修复预算约束（§6.3），预算用尽即等待用户。同一作用域内可机械发现的矛盾（如字数区间不相交）在 Directive 入账时就报告，由用户修改或退役，不交给模型撞墙。不可机械校验的文本只进语义核验；自然语言要求之间的语义冲突不承诺确定性消解，由审阅报告、用户裁决。
 5. **Coordinator 零分支**。Directive 只通过 Task 影响创作内容，不改变 Coordinator 的推导表（架构测试守护 `domain/creation/run.go` 不引用任何控制类文档常量）。新增或退役 Directive 是内容变化：章节任务的基线只钉住本章的要求作用域摘要（D48/D51），作用域与在途任务目标不相交时提案重定位、在途任务不 stale；相交时按 §5.5 第 4 条处理，后继继承工作区并按当前快照重算任务输入，带上新要求（已实现）。
 6. **退役不删除**。Directive 完成使命后由用户退役，或由作用域自然失效（章范围已全部批准且核验通过）；历史 Revision 仍可查它当时对哪些章生效。
 
-Directive 不是聊天记录，也不是 Overlay 的别名：Overlay 是全书级、长期的创作规则；Directive 有作用域与生命周期，且必须被核验。S10 的拒绝理由在语义上是作用域为被拒章节的 Directive，实现上由否决动作自动创建一条，不另建第二条回流通道。
+Directive 不是聊天记录，也不是 Overlay 的别名：对话里的话要影响写作，必须先落成 Directive 或其他一等对象，生产线不读对话（D74）；Overlay 是全书级、长期的创作规则；Directive 有作用域与生命周期，且必须被核验。S10 的拒绝理由在语义上是作用域为被拒章节的 Directive，实现上由否决动作自动创建一条，不另建第二条回流通道。
 
 ## 5. 统一变更协议
 
@@ -521,7 +522,7 @@ Creation Coordinator 位于独立的 `creation` 包，通过公开 Goal 契约�
 
 `work` 驱动一个 Operation（槽位 ID、种类、类型化输入与等待/失败/卡死文案），`wait` 转 `waiting_user`，`done` 绑定所检查的 Revision 完成，`fail` 是确定性失败；同一槽位成功后再次出现即卡死判定，绝不无限重试。小说适配器负责读取审阅裁定和预算，小说 `Policy.Next` 是纯函数；完成契约、先审后扩和重写目标都在小说包内。驱动不加载小说快照、审阅或媒体证据，新目标实现通过公开构造接口注册，测试不访问注册表私有字段。
 
-小说的推导方式是**缺口对账**而不是固定流程（D36）：小说规则从当前 Revision 与 Run 证据中枚举缺口——尚无已批准正文的章节、缺失或已失效的审阅裁定、未满足的 Directive、受影响待重写的章节、用户显式发起的任务——按确定性优先级填补；缺口清零且完成契约（§6.4）满足即 completed。用户发起的 Operation（点名重写某章、影响修复 `RewriteAffected`）是缺口的一种来源，必须进入同一推导链并由同一驱动循环执行，不得成为无人驱动的孤儿任务。新增一种用户控制形式不得为 Coordinator 增加分支：控制通过权威文档改变“缺口是什么”与“Story Context 里有什么”，Coordinator 只对缺口做对账。
+小说的推导方式是**缺口对账**而不是固定流程（D36）：小说规则从当前 Revision 与 Run 证据中枚举缺口——尚无已批准正文的章节、缺失或已失效的审阅裁定、未满足的 Directive、受影响待重写的章节、用户显式发起的任务——按确定性优先级填补；缺口清零且完成契约（§6.4）满足即 completed。用户发起的 Operation（点名重写某章、影响修复 `RewriteAffected`）是缺口的一种来源，必须进入同一推导链并由同一驱动循环执行，不得成为无人驱动的孤儿任务。主编（D74）不创建 Operation：它改的是作品与运行目标，下一步仍由缺口对账推出。新增一种用户控制形式不得为 Coordinator 增加分支：控制通过权威文档改变“缺口是什么”与“Story Context 里有什么”，Coordinator 只对缺口做对账。
 
 任务的创作指导语（“如何设计卷弧”“如何按审阅意见重写”）属于 Prompt Slot（§7.2）。Coordinator 与 Operation Task 只提供事实：目标节点、窗口、命中的 Directive、审阅意见与基线 Revision；不得在 Coordinator 里硬编码创作方法文本，否则 Overlay / Profile / Pack 的分层覆盖对它无效。
 
@@ -622,6 +623,7 @@ writer.chapter_draft
 writer.rewrite
 editor.story_review
 editor.style_review
+chief.converse          # 主编对话（D74），不属于任何 Operation
 ```
 
 基线：每个 Slot 必须有内置的基线文本，作为官方 Novel Pack 封装（§9.1）并参与 Execution Profile Digest；Slot 不是只供 Overlay 追加的空位。Coordinator 与 Operation Task 不提供创作方法指导（§6.3），只提供事实；Overlay / Profile / Pack 对 Slot 的覆盖因此对每一种任务都真实生效。
@@ -836,12 +838,13 @@ internal/
 │   ├── profile/            # LLM 上下文与执行配置编译
 │   ├── task/               # 任务启动、重启、执行器路由与用户控制
 │   ├── decision/           # 候选审批、拒绝、回退与受影响内容重写
+│   ├── chief/              # 主编：对话会话、工具、书况、引用校验与这本书的创作推进（D74）
 │   ├── evidence/           # 有效工件与检查证据查询
 │   └── workbench/          # 工作台只读模型、展示数据与活动订阅
 ├── infra/                  # 技术适配与持久化实现
-│   ├── store/              # SQLite 权威版本、任务、运行、派生数据与事务
+│   ├── store/              # SQLite 权威版本、任务、运行、派生数据、对话记录与事务
 │   ├── workspace/          # 所属 Operation 的工作区访问
-│   ├── capability/         # Agent Runtime、Worker、工具与执行适配
+│   ├── capability/         # Agent Runtime、Worker、主编对话、工具与执行适配
 │   │   ├── prompt/         # Prompt 编译、来源与摘要
 │   │   └── pack/           # Novel Pack 安装、加载与合并
 │   ├── llm/                # 单次结构化调用、严格解码与 usage 回传
@@ -880,7 +883,7 @@ infra/capability → 领域契约、工作区、模型与提示词适配
 核心机制不导入具体 Store，也不通过全能 Repository 转移耦合；接口仅包含该机制实际调用的方法。`app/task` 实现 `creation` 所需的任务驱动契约，`bootstrap` 连接两者，因而新增执行配置不会让推进驱动反向依赖应用。
 依赖方向的五条硬规则（与 §11 的模块纪律是两组清单）：
 
-1. capability 对 Authority Store 只读，只能写所属 Operation Workspace；Agent 的正式产出经 change 提交，不存在“工具直写事实”的旁路。
+1. capability 对 Authority Store 只读，只能写所属 Operation Workspace；Agent 的正式产出经 change 提交，不存在“工具直写事实”的旁路。主编对话的消息由 Conversation 追加到对话表，对话不是权威（D74）。
 2. entry 显式调用具名用例组件；不得 import change / operation / store。bootstrap 只装配，不新增业务方法或以转发方式重新建立全能门面。
 3. store 不理解 Prompt 与模型；llm 不理解故事。
 4. operation 可以编排 capability 和 change，但不能自行提交 Authority，也不能做文学判断。
@@ -1532,3 +1535,70 @@ v0 由 AI 定篇幅：指南针加滚动续卷，模型宣布完结，确定性�
 - `TestOutlineHierarchyAndUnexpandedArcs`：层级缩进、卷序号、待展开的弧不可折叠、选中行不移位。
 
 **未验证**：真实模型下首次规划的卷弧尺度与篇幅估计，需要新书重跑确认。
+
+### D74：主编——对话是用户驾驶一本书的入口（2026-10-12）
+
+**实证**：
+- 输入框不是对话。回车后的文字由界面按目录选中行定作用域、落成要求；有稿件等决定时，同一段文字又当修改意见。真机：运行中输入“第二章的标题换一个长一点的”，当时选中第 21 章，于是落成第 21 章的要求；第 21 章被判过期重写、改了标题，第 2 章没动。
+- 根因不在作用域算错。§0.1 第二问反对“一次分诊猜动作”，界面层自己造了一个，而且没有模型。系统有规划、写手、审阅三个 Agent，没有一个代表用户。
+
+**决定**：一个面孔、一块黑板、两条回路（方案见 [主编 RFC](v1-chief-editor-rfc.md)）。
+1. **主编是用户在一本书里唯一的对话对象**。每本书一条对话，消息落盘，重开作品还在。它把用户的话落成作品里的一等对象（要求、退稿、运行控制），回话说明做了什么。
+2. **三条硬边界**：
+   - 主编不写正文。
+   - 主编不创建 Operation、不批准提案、不接受审阅意见。批准与接受只认按键；下一步做什么仍由缺口对账推出，Coordinator 零改动。
+   - 生产线不读对话：Worker 的上下文只来自当前 Revision，对话不进 Revision、导出投影与任何任务上下文。
+3. **引用即署名**。以用户名义写入的文字（要求原话、退稿理由）必须逐字出自用户在这本书里说过的话。宿主确定性校验子串，取最近那句，`source` 记为 `conversation:<序号>`；不符即工具错误，作品不变。§4.9 第 1、2 条由此可机器检查。
+4. **作用域由主编按用户的话定**。用户正在看的章只作为书况里的参考。回执由宿主按工具结果渲染（`✓ 记下要求 · 第 2 章 ·「…」`），错了说一句话退掉重记。
+5. **书况**：每条用户消息前，宿主附一段确定性渲染的书况，包括作品、进度、创作状态、待用户决定的事、用户正在看的章和生效要求数。书况随消息走，不进系统提示，稳定前缀照常缓存（§7.4）。
+6. **主编只在用户说话时说话**。生产的等待、失败与完成不叫醒主编，用户下次开口时书况里带上。主编回合中用户再发消息，作为 steering 送进当前回合。
+7. **推进归会话**。一本书的创作推进由主编会话持有，界面只读快照、调按键。
+   - 回合收尾与送话在同一把锁里，送出的话一定有人答：回合中途送到的在本回合答；打断只停下主编正在说的，没读到的话开新回合答。对话只载入一次，与回合不交错。
+   - 按键暂停后跟主编说一句话，回合正常结束就接着写。
+   - 主编应用户要求暂停（`pause_creation`）后保持暂停，直到回车或主编继续。
+   - 改篇幅、退稿之后都接着写。
+8. **工具（第 1 期）**：
+   - 读：`book_outline`、`book_read`（章、弧、卷、实体四选一）、`book_requirements`、`book_reviews`、`book_draft`（等用户决定的稿件：改了什么，候选章节通过后的规划、全文与设定）。
+   - 写：`note_requirement`、`retire_requirement`、`reject_draft`、`set_length`、`pause_creation`、`resume_creation`（卡在修订预算的章即“再改一次”）。
+   - 工具集固定，按序编译进稳定前缀。参数用故事语言（D66），由宿主解析成 ID。
+9. **数据**：
+   - 新表 `conversation_messages`，只追加，带用量与模型列。
+   - 压缩用 agentcore 的 `CompactAt` 加 `compact.Summarizer`：摘要写成一条新消息，`carried` 记它之前仍随它带进会话的条数。载入时取最新摘要、它之前的 `carried` 条，以及之后的全部。
+   - Directive 与否决命令新增 `source`。
+   - schema 8 → 9，按 D38 不迁移。
+10. **Prompt 与模型**：官方包 v3 新增 Slot `chief.converse`，只写方法；主编经同一 Prompt Compiler 叠加 Creator Profile 与 Pack。书级创作规则（Project Overlay）是写作方法，主编不写正文，不叠加。模型角色新增 `chief`，可单独绑定；它的用量按书计入创作团队。
+11. **模块**：
+   - `app/chief`：会话、工具、书况、引用校验与推进。只经具名用例改作品（project、decision、novel），直接访问 store 的只有对话表。
+   - `infra/capability.Conversation`：封装 agentcore Agent（绑定、缓存键、压缩、落盘），不理解主编工具的语义。
+   - 对话表归 `infra/store`。
+12. **界面**：
+   - 输入框只通往主编；`y` 是唯一的文字批准。
+   - 删除输入分诊（按选中行定作用域、首字锁定、稿件绑定）与 `/goal`。
+   - 工作台标签为 对话 / 正文 / 活动（F1 / F2 / F3）；Esc 先打断主编回话。
+
+**与 RFC 的出入**：
+- 推进从界面移入会话。RFC 只把对话放进会话，那样主编的运行控制够不到界面里的驱动。
+- 对话是独立视图，生产里程碑尚未与对话交织（RFC §6.6）。
+- `reject_draft` 提前到第 1 期：删除决定卡上的文字输入后，退稿必须另有路径。
+- `renew_repair` 并入 `resume_creation`；`book_chapter`、`book_facts` 合为 `book_read`；新增 `book_draft`：等用户决定时正是用户最想和主编谈稿件的时候；`book_history` 随 `revert_change` 放到第 2 期。
+- 主编前缀不叠加 Project Overlay（见第 10 条）。
+- 压缩用 `carried` 而不是 epoch：表只追加，摘要自己说明接上多少条。
+
+**待做**：
+- 第 2 期：`propose_change`、`revert_change`，对话内的确认卡（含 S4 三选一），标题只存一处。§5.1“AI 作者包括主编、提案带来源”随之写入。
+- 第 3 期：返工要求（`rework` 缺口）。
+- 第 4 期：用真实模型经对话跑通 S4、S10–S12。
+
+**守护**：
+- `TestChiefNotesARequirementQuotingTheUser`：作用域照用户说的章号，不按正在看的章；来源指回原话；书况在用户的话之前；重开作品对话还在。
+- `TestChiefCannotPutWordsInTheUsersMouth`：改写过的原话被拒，作品不变。
+- `TestChiefRemembersTheConversation`：第二回合带着第一回合的话与工具结果。
+- `TestTalkingAfterAPauseResumesWriting`、`TestChiefPauseHoldsUntilAskedToResume`、`TestChiefSetsTheLengthAndKeepsWriting`：按键暂停后说话就接着写；主编的暂停跨回合保持；改篇幅后按新篇幅写完。
+- `TestWordsSentMidAnswerJoinTheTurn`：主编回话时再说的话进同一个回合，按先后答。
+- `TestInterruptKeepsWordsSentMeanwhile`：打断后、回合收尾前送出的话不丢，开新回合答。
+- `TestChiefReadsTheDraftAndRejectsItInTheUsersWords`：先看待定稿件，再按原话退回；理由入账带来源，随即按意见重写。
+- `TestConversationHistoryResumesFromTheLatestSummary`：压缩后的载入；摘要不展示。
+- `BenchmarkLongTalk`：长对话（900 条）里主编回话时每帧约 1 ms，定下的条目沿用排好的行。
+- `TestConversationAppendsPerBookAndSumsUsage`，以及 TUI 的 `TestTypingTalksToTheChief`，archtest 的 `app/chief` 白名单。
+
+**未验证**：真实模型下主编的归类与作用域判断、回话质量与成本。

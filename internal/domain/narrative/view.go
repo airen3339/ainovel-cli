@@ -224,7 +224,7 @@ func (s *Story) Read(query Query) (any, error) {
 		}
 		return detail, nil
 	case query.Arc != 0:
-		arc, err := s.planNode(model.PlanArc, query.Arc)
+		arc, err := s.PlanNode(model.PlanArc, query.Arc)
 		if err != nil {
 			return nil, err
 		}
@@ -236,7 +236,7 @@ func (s *Story) Read(query Query) (any, error) {
 		}
 		return detail, nil
 	case query.Volume != 0:
-		volume, err := s.planNode(model.PlanVolume, query.Volume)
+		volume, err := s.PlanNode(model.PlanVolume, query.Volume)
 		if err != nil {
 			return nil, err
 		}
@@ -274,7 +274,8 @@ func (s *Story) Read(query Query) (any, error) {
 	}
 }
 
-func (s *Story) planNode(kind model.PlanNodeKind, number int) (model.PlanNode, error) {
+// PlanNode 是某种计划节点按序号的那一个：第 number 卷、第 number 个故事弧或第 number 章。
+func (s *Story) PlanNode(kind model.PlanNodeKind, number int) (model.PlanNode, error) {
 	nodes := s.ordered[kind]
 	if number < 1 || number > len(nodes) {
 		return model.PlanNode{}, fmt.Errorf("第 %d 个%s不存在（共 %d 个）: %w", number, kindName(kind), len(nodes), model.ErrNotFound)

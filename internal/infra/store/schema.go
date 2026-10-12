@@ -7,8 +7,8 @@ import (
 
 // schemaVersion 是当前唯一支持的库结构版本。v1 没有历史数据，结构演进直接改
 // schema 并升版本号；不保留迁移阶梯，版本不符即拒绝打开。存储的 JSON 载荷格式变化同样
-// 升版本（v8：执行记录拆成尝试摘要与对话记录，D72）。
-const schemaVersion = 8
+// 升版本（v8：执行记录拆成尝试摘要与对话记录，D72；v9：主编对话，D74）。
+const schemaVersion = 9
 
 // unsupportedSchema 说明库结构版本不符以及怎样重新开始：v1 不迁移旧库（D38），旧库改名
 // 保留备查，程序在原位置新建空库。
@@ -293,6 +293,21 @@ var schema = []string{
 		created_at_unix_ms INTEGER NOT NULL,
 		PRIMARY KEY (run_id, sequence),
 		FOREIGN KEY (run_id) REFERENCES creation_runs (id)
+	) STRICT`,
+	// 主编对话（D74）：每本书一条只追加的记录，交互状态而非权威。用量随消息落盘，团队栏
+	// 按书汇总；carried 只在压缩摘要上非零，是会话从摘要前带过来的消息条数。
+	`CREATE TABLE conversation_messages (
+		project_id TEXT NOT NULL,
+		sequence INTEGER NOT NULL CHECK (sequence > 0),
+		payload BLOB NOT NULL,
+		carried INTEGER NOT NULL DEFAULT 0 CHECK (carried >= 0),
+		model TEXT NOT NULL DEFAULT '',
+		input_tokens INTEGER NOT NULL DEFAULT 0,
+		output_tokens INTEGER NOT NULL DEFAULT 0,
+		cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+		cost REAL NOT NULL DEFAULT 0,
+		created_at_unix_ms INTEGER NOT NULL,
+		PRIMARY KEY (project_id, sequence)
 	) STRICT`,
 	fmt.Sprintf("PRAGMA user_version = %d", schemaVersion),
 }

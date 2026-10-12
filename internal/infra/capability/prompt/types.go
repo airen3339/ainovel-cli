@@ -19,6 +19,8 @@ const (
 	SlotWriterRewrite        Slot = "writer.rewrite"
 	SlotEditorStoryReview    Slot = "editor.story_review"
 	SlotEditorStyleReview    Slot = "editor.style_review"
+	// SlotChiefConverse 是主编的对话方法（D74）：主编不是 Worker，不经任务编译。
+	SlotChiefConverse Slot = "chief.converse"
 )
 
 type ToolSchema struct {
@@ -38,8 +40,12 @@ type WorkerProfile struct {
 	StopCondition  string          `json:"stop_condition"`
 }
 
-// ModelRoles 是 worker profile 可声明的模型角色；配置的角色映射按这些键覆盖默认模型。
-var ModelRoles = []string{"architect", "writer", "editor"}
+// ModelRoles 是可单独绑定模型的角色：Worker Profile 声明前三个，主编用 ChiefRole；配置的
+// 角色映射按这些键覆盖默认模型。
+var ModelRoles = []string{"architect", "writer", "editor", ChiefRole}
+
+// ChiefRole 是主编的模型角色（D74）。
+const ChiefRole = model.ChiefRole
 
 func KnownModelRole(role string) bool {
 	for _, known := range ModelRoles {

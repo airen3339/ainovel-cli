@@ -51,12 +51,15 @@ var allowedImports = map[string][]string{
 	"app/novel":       {"domain/model", "domain/narrative", "domain/derive", "infra/store", "domain/change", "domain/creation", "app/project", "app/resource", "app/task", "infra/export"},
 	"app/decision":    {"domain/model", "infra/store", "domain/change", "app/project", "app/resource", "app/task"},
 	"app/workbench":   {"infra/activity", "domain/model", "domain/narrative", "infra/store", "domain/creation", "app/decision", "app/novel", "app/project"},
+	// 主编（D74）经各具名用例改书与推进，经 capability 跑会话；不碰引擎。
+	"app/chief": {"domain/model", "domain/narrative", "domain/creation", "infra/store", "infra/capability", "infra/capability/prompt", "infra/llm/models",
+		"app/decision", "app/novel", "app/profile", "app/project", "app/workbench"},
 	// 模型绑定用例只认配置与模型适配器，不认任务与作品。
 	"app/binding":    {"infra/config", "infra/llm", "infra/llm/models", "infra/capability/prompt"},
-	"bootstrap":      {"assets", "app/binding", "app/diag", "domain/model", "infra/store", "domain/change", "domain/creation", "app/decision", "app/evidence", "app/novel", "domain/operation", "app/profile", "app/project", "app/resource", "app/task", "app/workbench", "infra/activity", "infra/capability"},
+	"bootstrap":      {"assets", "app/binding", "app/chief", "app/diag", "domain/model", "infra/store", "domain/change", "domain/creation", "app/decision", "app/evidence", "app/novel", "domain/operation", "app/profile", "app/project", "app/resource", "app/task", "app/workbench", "infra/activity", "infra/capability"},
 	"infra/config":   {},
 	"entry/headless": {"app/binding", "app/diag", "domain/model", "bootstrap", "domain/creation", "app/decision", "app/novel", "app/profile", "app/project", "app/resource", "app/task", "infra/jsonc"},
-	"entry/tui":      {"app/binding", "app/diag", "infra/activity", "domain/model", "bootstrap", "app/decision", "app/novel", "app/project", "app/workbench", "infra/config", "infra/jsonc"},
+	"entry/tui":      {"app/binding", "app/chief", "app/diag", "infra/activity", "domain/model", "bootstrap", "app/decision", "app/novel", "app/project", "app/workbench", "infra/config", "infra/jsonc"},
 }
 
 // Tests may open a real store for assembly; entry production code may not.

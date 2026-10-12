@@ -70,7 +70,7 @@ func (s *Review) ResolveProposal(ctx context.Context, command ResolveProposalCom
 	}
 	result := ResolveProposalResult{Strategy: command.Strategy}
 	if strategy == model.ResolutionAbandon {
-		rejected, err := s.Reject(ctx, proposal.ID, command.UserID, command.Reason, command.CreatedAt)
+		rejected, err := s.Reject(ctx, RejectCommand{ProposalID: proposal.ID, UserID: command.UserID, Reason: command.Reason, At: command.CreatedAt})
 		if err != nil {
 			return ResolveProposalResult{}, err
 		}
@@ -236,8 +236,19 @@ func (s *Review) Relocate(ctx context.Context, proposal model.Proposal) (model.P
 
 // Reject 否决提案并把理由入账为要求。等待审批的任务随之失败；已被取代（stale）或取消的
 // 任务只否决旧稿、不再转移状态。
-func (s *Review) Reject(ctx context.Context, proposalID, userID, reason string, at time.Time) (model.Proposal, error) {
-	proposal, err := s.store.GetProposal(ctx, proposalID)
+// RejectCommand 否决一份提案；Reason 入账为要求（S10），Source 是主编代录这句理由时用户
+// 说它的那条对话消息（D74）。
+type RejectCommand struct {
+	ProposalID string
+	UserID     string
+	Reason     string
+	Source     string
+	At         time.Time
+}
+
+func (s *Review) Reject(ctx context.Context, command RejectCommand) (model.Proposal, error) {
+	userID, at := command.UserID, command.At
+	proposal, err := s.store.GetProposal(ctx, command.ProposalID)
 	if err != nil {
 		return model.Proposal{}, err
 	}
@@ -259,7 +270,7 @@ func (s *Review) Reject(ctx context.Context, proposalID, userID, reason string, 
 	case model.ApprovalPending:
 		rejected, err = change.Decide(proposal, model.ApprovalRejected, model.Author{Kind: model.AuthorUser, ID: userID}, at)
 		if err == nil {
-			rejected.DecisionReason = strings.TrimSpace(reason)
+			rejected.DecisionReason = strings.TrimSpace(command.Reason)
 			rejected, err = s.changes.Reject(ctx, rejected)
 		}
 		if err != nil {
@@ -276,7 +287,7 @@ func (s *Review) Reject(ctx context.Context, proposalID, userID, reason string, 
 			return model.Proposal{}, err
 		}
 	}
-	if err := s.rejectionDirective(ctx, rejected, operation, userID, at); err != nil {
+	if err := s.rejectionDirective(ctx, rejected, operation, userID, command.Source, at); err != nil {
 		return model.Proposal{}, err
 	}
 	return rejected, nil
@@ -289,7 +300,7 @@ func (s *Review) rejectionDirective(
 	ctx context.Context,
 	rejected model.Proposal,
 	operation model.Operation,
-	userID string,
+	userID, source string,
 	at time.Time,
 ) error {
 	if rejected.DecisionReason == "" || rejected.Target.Kind != model.AuthorityProject {
@@ -301,7 +312,7 @@ func (s *Review) rejectionDirective(
 	}
 	_, err = s.projects.AddDirective(ctx, projectdoc.AddDirectiveCommand{
 		ProjectID: rejected.Target.ID, ChangeID: rejected.ID + ":directive", UserID: userID,
-		DirectiveID: rejected.ID + ":directive", Scope: scope, Text: rejected.DecisionReason,
+		DirectiveID: rejected.ID + ":directive", Scope: scope, Text: rejected.DecisionReason, Source: source,
 		Reason: "否决候选 " + rejected.ID + " 的理由", CreatedAt: at,
 	})
 	return err

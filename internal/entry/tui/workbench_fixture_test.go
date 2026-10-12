@@ -20,7 +20,7 @@ func studioModel(t *testing.T, width, height int) model {
 	deps, _ := newTestDeps(t, true)
 	m := newModel(context.Background(), deps)
 	m.page, m.width, m.height = pageWorkbench, width, height
-	m.bench = newWorkbenchState("letters", 1)
+	m.bench = testBench(m, "letters")
 	m.bench.loaded, m.bench.writing = true, true
 	m.bench.snap = workbench.WorkbenchSnapshot{
 		ProjectID: "letters", Intent: domainmodel.Intent{Premise: "亡者来信"}, Length: novel.Length{Fixed: 8, Final: 8},
@@ -110,7 +110,7 @@ func longWorkbench(tb testing.TB, count int) model {
 	deps, _ := newTestDeps(tb, true)
 	m := newModel(context.Background(), deps)
 	m.width, m.height, m.page = 150, 40, pageWorkbench
-	m.bench = newWorkbenchState("long", 1)
+	m.bench = testBench(m, "long")
 	m.bench.loaded, m.bench.writing = true, true
 	m.bench.snap.Length = novel.Length{Fixed: count + 500, Final: count + 500}
 	m.bench.snap.Run = &domainmodel.CreationRun{ID: "run", State: domainmodel.RunRunning}

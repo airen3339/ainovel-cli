@@ -8,43 +8,40 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/voocel/ainovel-cli/internal/app/chief"
 	domainmodel "github.com/voocel/ainovel-cli/internal/domain/model"
 )
 
-// 退出时先取消再等在途创作：跟踪的命令没结束 wait 就超时，结束后立刻返回。
-func TestInflightWaitsForTrackedCommands(t *testing.T) {
-	var f inflight
-	release := make(chan struct{})
-	cmd := f.track(func() tea.Msg { <-release; return nil })
-	go cmd()
-	if f.wait(20 * time.Millisecond) {
-		t.Fatal("wait must time out while the command is still running")
+// 退出时先取消再等在途创作：会话的推进收到取消、把任务放回队列后，等待才返回。
+func TestQuitWaitsForTheDriveToReleaseItsTask(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	executor := &testExecutor{started: make(chan struct{}, 1)}
+	deps, api := testDeps(t, executor)
+	m := newModel(ctx, deps)
+	m = typeText(t, m, "一个失忆的邮差替亡者送完最后一封信")
+	m, _ = press(t, m, tea.KeyEnter)
+	<-executor.started
+	if api.Chief.Wait(20 * time.Millisecond) {
+		t.Fatal("waiting must not return while the drive is still running")
 	}
-	close(release)
-	if !f.wait(time.Second) {
-		t.Fatal("wait must return once tracked commands finish")
+	cancel()
+	if !api.Chief.Wait(5 * time.Second) {
+		t.Fatal("the drive must stop once the interface quits")
 	}
-}
-
-// 创作驱动命令必须被跟踪：否则退出时无人等它把任务放回队列。
-func TestQuickWriteCommandIsTrackedUntilItReturns(t *testing.T) {
-	m := studioModel(t, 150, 40)
-	cmd := m.startQuickWriteCmd(quickParams{projectID: "letters", premise: "亡者来信", chapters: 8})
-	if m.inflight.wait(10 * time.Millisecond) {
-		t.Fatal("quick write must be tracked before it runs")
+	run, _, err := api.Runs.LatestCreationRun(context.Background(), m.bench.projectID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	done := make(chan tea.Msg, 1)
-	go func() { done <- cmd() }()
-	<-done
-	if !m.inflight.wait(time.Second) {
-		t.Fatal("quick write must be released once it returns")
+	operations, err := api.Runs.RunOperations(context.Background(), run.ID)
+	if err != nil || len(operations) != 1 || operations[0].State != domainmodel.OperationQueued {
+		t.Fatalf("the interrupted task must go back to the queue: %+v %v", operations, err)
 	}
 }
 
 // 被占用的租约用创作语言解释，不露原始英文。
 func TestHeldLeaseIsExplainedInCreationLanguage(t *testing.T) {
 	m := studioModel(t, 150, 40)
-	updated, _ := m.Update(quickDoneMsg{gen: m.bench.gen, err: fmt.Errorf("op: %w", domainmodel.ErrOperationHeld)})
+	updated, _ := m.handleDriveEnd(chief.DriveEnd{Err: fmt.Errorf("op: %w", domainmodel.ErrOperationHeld)})
 	m = updated.(model)
 	if !strings.Contains(m.bench.err, "租约") || !strings.Contains(m.bench.err, "回车继续") || strings.Contains(m.bench.err, "held") {
 		t.Fatalf("held lease must be explained: %q", m.bench.err)
@@ -82,10 +79,7 @@ func TestEscapePausesAndInterruptsTheModelCall(t *testing.T) {
 	deps, api := testDeps(t, executor)
 	m := newModel(ctx, deps)
 	m = typeText(t, m, "一个失忆的邮差替亡者送完最后一封信")
-	m, cmd := press(t, m, tea.KeyEnter)
-	done := make(chan tea.Msg, 1)
-	drive := cmd().(tea.BatchMsg)[0]
-	go func() { done <- drive() }()
+	m, _ = press(t, m, tea.KeyEnter)
 	<-executor.started
 	run, ok, err := api.Runs.LatestCreationRun(ctx, m.bench.projectID)
 	if err != nil || !ok || run.State != domainmodel.RunRunning {
@@ -93,19 +87,12 @@ func TestEscapePausesAndInterruptsTheModelCall(t *testing.T) {
 	}
 	m.bench.snap.Run, m.bench.loaded = &run, true
 
-	m, cmd = press(t, m, tea.KeyEsc)
+	m, cmd := press(t, m, tea.KeyEsc)
 	if m.page != pageWorkbench || cmd == nil {
 		t.Fatal("Esc while writing must pause, not leave")
 	}
 	updated, _ := m.Update(findMsg[runControlMsg](t, cmd))
-	var finished tea.Msg
-	select {
-	case finished = <-done:
-	case <-time.After(5 * time.Second):
-		t.Fatal("pausing must interrupt the model call in flight")
-	}
-	updated, _ = updated.(model).Update(finished)
-	m = updated.(model)
+	m = syncSession(t, updated.(model))
 	if m.bench.writing || m.bench.err != "" {
 		t.Fatalf("an interrupted drive is not an error: writing=%v err=%q", m.bench.writing, m.bench.err)
 	}

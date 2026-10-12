@@ -16,7 +16,7 @@ func diagnosticModel(t *testing.T) model {
 	deps, _ := newTestDeps(t, true)
 	m := newModel(context.Background(), deps)
 	m.page = pageWorkbench
-	m.bench = newWorkbenchState("book", 1)
+	m.bench = testBench(m, "book")
 	updated, _ := m.openDiagnostics()
 	return updated.(model)
 }

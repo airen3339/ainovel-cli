@@ -11,49 +11,10 @@ import (
 	domainmodel "github.com/voocel/ainovel-cli/internal/domain/model"
 )
 
-// reviewing 表示有稿件等你裁决：输入框里的文字是修改意见，y 是通过。
+// reviewing 表示有稿件等你裁决：y 是通过，不满意跟主编说理由。
 func (m model) reviewing() bool {
 	d := m.bench.decision
 	return d != nil && d.hasProposal && !m.bench.writing
-}
-
-// directiveScope 按目录选中行定要求的作用域（§4.9）：章行只管该章，卷/弧行管整个子树，
-// 全书行、占位行或尚无目录时从下一章起生效——不回头覆盖已写章节，免得全书重审。方案里
-// 尚未生效的节点不能被引用：章行按章号，卷/弧行从下一章起。target 是给人看的短语。
-func (m model) directiveScope() (scope, target string) {
-	next := len(m.bench.snap.Manuscript) + 1
-	rows := m.outlineRows()
-	if cursor := m.bench.cursor; cursor >= 0 && cursor < len(rows) {
-		row := rows[cursor]
-		switch {
-		case row.placeholder:
-			return scopeFromChapter(row.chapter)
-		case row.isBook():
-			return scopeFromChapter(next)
-		case row.node.Proposed && row.isChapter():
-			return domainmodel.DirectiveScopeChapters(row.chapter, row.chapter), fmt.Sprintf("第 %d 章", row.chapter)
-		case row.node.Proposed:
-			return scopeFromChapter(next)
-		case row.isChapter():
-			return domainmodel.DirectiveScopePlanNode(row.node.Node.ID), fmt.Sprintf("第 %d 章", row.chapter)
-		default:
-			return domainmodel.DirectiveScopePlanNode(row.node.Node.ID), "「" + row.node.Node.Title + "」"
-		}
-	}
-	return scopeFromChapter(next)
-}
-
-// scopeFromChapter 是从第 number 章起生效的作用域；短语接得上「给……提一个要求」。
-func scopeFromChapter(number int) (scope, target string) {
-	return domainmodel.DirectiveScopeFromChapter(number), fmt.Sprintf("第 %d 章起的章节", number)
-}
-
-// composerScope 草稿在第一个字时锁定作用域，之后切章不改变它的语义。
-func (m model) composerScope() (string, string) {
-	if m.bench.inputScope != "" {
-		return m.bench.inputScope, m.bench.inputLabel
-	}
-	return m.directiveScope()
 }
 
 func (m model) directiveScopeLabel(scope string) string {
@@ -233,11 +194,11 @@ func (m model) decisionActions() string {
 	manuscript := func(patch domainmodel.Patch) bool { return patch.Document.Kind == domainmodel.DocumentManuscript }
 	switch {
 	case d.stale:
-		return "写下修改意见后回车，让它基于最新内容重写"
+		return "跟主编说修改意见，让它基于最新内容重写"
 	case slices.ContainsFunc(d.proposal.Patches, manuscript):
-		return "y 通过 · 写下修改意见后回车重写"
+		return "y 通过 · 不满意跟主编说理由，按意见重写"
 	default:
-		return "y 通过 · 写下修改意见后回车重新规划（意见留作后续章节的要求）"
+		return "y 通过 · 不满意跟主编说理由，重新规划（意见留作后续章节的要求）"
 	}
 }
 

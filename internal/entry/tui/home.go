@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/voocel/ainovel-cli/internal/app/chief"
 	projectdoc "github.com/voocel/ainovel-cli/internal/app/project"
 	"github.com/voocel/ainovel-cli/internal/app/workbench"
 	domainmodel "github.com/voocel/ainovel-cli/internal/domain/model"
@@ -474,14 +475,9 @@ func (m model) createProject() (tea.Model, tea.Cmd) {
 		chapters = home.chapters
 	}
 	projectID := projectdoc.NewID("book", time.Now())
-	params := quickParams{
-		projectID: projectID, premise: premise,
-		chapters: chapters, approval: home.approval, intent: home.intent(premise),
-	}
+	params := chief.WriteParams{Premise: premise, Chapters: chapters, Approval: home.approval, Intent: home.intent(premise)}
 	watch := m.openBench(projectID)
-	m.bench.writing = true
-	drive := m.startQuickWriteCmd(params)
-	return m, tea.Batch(drive, pollTick(m.bench.gen), m.bench.pulse.start(m.bench.gen), watch)
+	return m, tea.Batch(m.write(params), watch)
 }
 
 // openProject 打开作品库中的既有作品并恢复落点；上次没停就退出的创作接着写。

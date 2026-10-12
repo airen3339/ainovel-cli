@@ -84,7 +84,7 @@ type modelPanel struct {
 }
 
 // roleNames 是模型角色的名字，与配置键同词；有哪些角色、按什么顺序以 Models.Roles 为准。
-var roleNames = map[string]string{"": "默认", "architect": "Architect", "writer": "Writer", "editor": "Editor"}
+var roleNames = map[string]string{"": "默认", "architect": "Architect", "writer": "Writer", "editor": "Editor", "chief": "Chief"}
 
 func (p *modelPanel) role() string       { return p.roles[p.roleIdx] }
 func (p *modelPanel) connection() string { return pick(p.connections, p.connIdx) }

@@ -218,7 +218,7 @@ func TestModelCommandsSwitchBindingsAndPersist(t *testing.T) {
 		t.Fatalf("model effort = %+v %v", selection, err)
 	}
 	var all []binding.Selection
-	if err := json.Unmarshal([]byte(run("model")), &all); err != nil || len(all) != 4 || all[0].Model != "gpt-5" {
+	if err := json.Unmarshal([]byte(run("model")), &all); err != nil || len(all) != 5 || all[0].Model != "gpt-5" {
 		t.Fatalf("model = %+v %v", all, err)
 	}
 	if err := json.Unmarshal([]byte(run("model", "use", "--role", "writer", "--inherit")), &selection); err != nil || !selection.Inherited {

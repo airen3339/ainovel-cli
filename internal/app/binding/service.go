@@ -31,6 +31,8 @@ type Service struct {
 	config appconfig.Config
 	binder Binder
 	facts  *models.Facts
+	// bound 是最近一次生效的整套绑定：Runtime 之外的模型使用者（主编）按角色从这里取。
+	bound *models.Bindings
 }
 
 // New 装配绑定用例，并读本地的模型清单：绑定时据此给模型附上标价，用量随之计花费。
@@ -92,7 +94,7 @@ func (s *Service) switchLocked(config appconfig.Config) error {
 		return err
 	}
 	s.binder.Bind(bindings)
-	s.config = config
+	s.config, s.bound = config, &bindings
 	return nil
 }
 
@@ -102,7 +104,18 @@ func (s *Service) bindLocked(config appconfig.Config) error {
 		return err
 	}
 	s.binder.Bind(bindings)
+	s.bound = &bindings
 	return nil
+}
+
+// Binding 取角色此刻生效的模型，未覆盖的角色落到默认；还没有成功绑定时 ok=false。
+func (s *Service) Binding(role string) (models.Binding, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.bound == nil {
+		return models.Binding{}, false
+	}
+	return s.bound.For(role), true
 }
 
 // Use 让角色改用指定连接的模型；role 为空是默认绑定，connection 为空表示沿用当前

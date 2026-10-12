@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/voocel/ainovel-cli/internal/app/decision"
 	novelapp "github.com/voocel/ainovel-cli/internal/app/novel"
 	projectdoc "github.com/voocel/ainovel-cli/internal/app/project"
 	"github.com/voocel/ainovel-cli/internal/domain/model"
@@ -171,7 +172,7 @@ func TestQuickWriteRejectedChapterIsRewrittenBySuccessor(t *testing.T) {
 	// 否决候选后再次发起：后继带着工作区与否决理由重写，而不是原地续跑或直接失败。
 	feedback := "结尾太仓促，请补全告别场景"
 	chapterOperationID := runQuickID(result.RunID, "chapter", "chapter-plan-1")
-	if _, err := api.Decisions.Reject(ctx, chapterOperationID+"-proposal", command.UserID, feedback, command.CreatedAt.Add(time.Hour)); err != nil {
+	if _, err := api.Decisions.Reject(ctx, decision.RejectCommand{ProposalID: chapterOperationID + "-proposal", UserID: command.UserID, Reason: feedback, At: command.CreatedAt.Add(time.Hour)}); err != nil {
 		t.Fatalf("reject chapter: %v", err)
 	}
 	command.CreatedAt = command.CreatedAt.Add(2 * time.Hour)
@@ -199,7 +200,7 @@ func TestQuickWriteRejectedChapterIsRewrittenBySuccessor(t *testing.T) {
 	if !strings.Contains(string(successorOperation.Input), feedback) {
 		t.Fatalf("successor input lacks rejection directive: %s", successorOperation.Input)
 	}
-	if _, err := api.Decisions.Reject(ctx, chapterOperationID+"-proposal", command.UserID, "另一条理由", command.CreatedAt.Add(time.Hour)); err != nil {
+	if _, err := api.Decisions.Reject(ctx, decision.RejectCommand{ProposalID: chapterOperationID + "-proposal", UserID: command.UserID, Reason: "另一条理由", At: command.CreatedAt.Add(time.Hour)}); err != nil {
 		t.Fatalf("repeat reject: %v", err)
 	}
 	if again, err := api.Projects.Project(ctx, command.ProjectID, 0); err != nil || again.Revision != 3 || len(again.Directives) != 1 {
@@ -1471,7 +1472,7 @@ func TestRejectingExtensionPlanKeepsWrittenReviews(t *testing.T) {
 		t.Fatalf("raise wait = %#v, reviews = %d, %v", result, len(executor.reviews), err)
 	}
 	feedback := "下一段放慢，先把邮差的身世交代清楚"
-	if _, err := api.Decisions.Reject(ctx, raise+"-proposal", command.UserID, feedback, command.CreatedAt.Add(time.Hour)); err != nil {
+	if _, err := api.Decisions.Reject(ctx, decision.RejectCommand{ProposalID: raise + "-proposal", UserID: command.UserID, Reason: feedback, At: command.CreatedAt.Add(time.Hour)}); err != nil {
 		t.Fatalf("reject raise: %v", err)
 	}
 	project, err := api.Projects.Project(ctx, command.ProjectID, 0)
@@ -1550,7 +1551,7 @@ func testFixingLengthSupersedesWaitingRaise(t *testing.T, paused bool) {
 	if _, err := api.Decisions.Approve(ctx, superseded.ID, "user-1", command.CreatedAt.Add(time.Minute)); err == nil {
 		t.Fatal("a superseded raise must not be approved")
 	}
-	if rejected, err := api.Decisions.Reject(ctx, superseded.ID, "user-1", "不再需要", command.CreatedAt.Add(time.Minute)); err != nil || rejected.ApprovalState != model.ApprovalRejected {
+	if rejected, err := api.Decisions.Reject(ctx, decision.RejectCommand{ProposalID: superseded.ID, UserID: "user-1", Reason: "不再需要", At: command.CreatedAt.Add(time.Minute)}); err != nil || rejected.ApprovalState != model.ApprovalRejected {
 		t.Fatalf("rejecting a superseded raise = %+v, %v", rejected, err)
 	}
 	// 固定篇幅后篇幅只有用户一个口径（D70）：罗盘撤下 AI 的上限与收官，只留终局。

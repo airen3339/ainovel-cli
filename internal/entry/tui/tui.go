@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"sync"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -63,36 +62,11 @@ func Run(parent context.Context, deps Deps) error {
 	)
 	_, err := program.Run()
 	cancel()
-	m.inflight.wait(shutdownGrace)
+	deps.API.Chief.Wait(shutdownGrace)
 	if errors.Is(err, tea.ErrProgramKilled) && parent.Err() != nil {
 		err = nil // 终止信号触发的退出是正常收束
 	}
 	return err
-}
-
-// inflight 跟踪进程内正在驱动创作的后台命令：退出时先取消再等它们把任务放回队列。
-type inflight struct{ wg sync.WaitGroup }
-
-func (f *inflight) track(cmd tea.Cmd) tea.Cmd {
-	f.wg.Add(1)
-	return func() tea.Msg {
-		defer f.wg.Done()
-		return cmd()
-	}
-}
-
-func (f *inflight) wait(grace time.Duration) bool {
-	done := make(chan struct{})
-	go func() {
-		f.wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return true
-	case <-time.After(grace):
-		return false
-	}
 }
 
 type page int
@@ -104,14 +78,13 @@ const (
 )
 
 type model struct {
-	ctx      context.Context
-	deps     Deps
-	api      *bootstrap.App
-	inflight *inflight // 进程内在途的创作驱动命令，退出时等它们释放任务
-	page     page
-	wizard   wizardState
-	home     homeState
-	bench    workbenchState
+	ctx    context.Context
+	deps   Deps
+	api    *bootstrap.App
+	page   page
+	wizard wizardState
+	home   homeState
+	bench  workbenchState
 	// gen 是工作台代际号：每次打开作品递增，异步消息携带发出时的代际，
 	// 消费前不匹配即丢弃，保证结果不会串到另一部作品（Codex 复审 #1）。
 	gen    int
@@ -122,7 +95,7 @@ type model struct {
 }
 
 func newModel(ctx context.Context, deps Deps) model {
-	m := model{ctx: ctx, deps: deps, api: deps.API, width: minWidth, height: minHeight, inflight: &inflight{}}
+	m := model{ctx: ctx, deps: deps, api: deps.API, width: minWidth, height: minHeight}
 	m.home = newHomeState(m.width)
 	if !deps.API.Models.Current("").Bound || deps.ConfigError != "" {
 		m.page = pageWizard
@@ -147,7 +120,7 @@ func (m *model) openBench(projectID string) tea.Cmd {
 		m.bench.activityOff()
 	}
 	m.gen++
-	m.bench = newWorkbenchState(projectID, m.gen)
+	m.bench = newWorkbenchState(projectID, m.gen, m.api.Chief.Open(m.ctx, projectID, m.deps.UserID))
 	// 布局偏好记忆（M3）：恢复本作品的大纲折叠；落点更新不得抹掉其他偏好，
 	// 偏好文件读不出来时不回写（否则等于用空状态覆盖全部偏好）。
 	state, err := appconfig.LoadState(m.deps.ConfigDir)
@@ -168,7 +141,7 @@ func (m *model) openBench(projectID string) tea.Cmd {
 		m.bench.activityCh, m.bench.activityOff = wake, cancel
 	}
 	m.page = pageWorkbench
-	return m.watchActivityCmd()
+	return tea.Batch(m.watchActivityCmd(), m.watchSessionCmd(), m.loadConversationCmd())
 }
 
 func (m model) Init() tea.Cmd {

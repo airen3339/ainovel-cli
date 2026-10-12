@@ -13,6 +13,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/voocel/agentcore"
+	"github.com/voocel/ainovel-cli/internal/app/chief"
 	"github.com/voocel/ainovel-cli/internal/app/novel"
 	projectdoc "github.com/voocel/ainovel-cli/internal/app/project"
 	"github.com/voocel/ainovel-cli/internal/app/workbench"
@@ -22,6 +24,8 @@ import (
 	appconfig "github.com/voocel/ainovel-cli/internal/infra/config"
 	"github.com/voocel/ainovel-cli/internal/infra/llm/models"
 	"github.com/voocel/ainovel-cli/internal/infra/store"
+	"github.com/voocel/litellm"
+	"github.com/voocel/litellm/litellmtest"
 )
 
 // testExecutor 是测试里的 LLM 执行器：接受绑定但不调模型，执行一律失败；设了 started 时
@@ -52,8 +56,29 @@ func newTestDeps(tb testing.TB, configured bool) (Deps, *bootstrap.App) {
 	return testDeps(tb, &testExecutor{})
 }
 
+// scriptedChief 让主编用脚本化的模型回话。
+type scriptedChief struct{ provider *litellmtest.Provider }
+
+func (c scriptedChief) Binding(string) (models.Binding, bool) {
+	client, err := litellm.New(c.provider)
+	if err != nil {
+		panic(err)
+	}
+	return models.Binding{Provider: "test", Model: "model", Digest: "model", Chat: agentcore.Model{Client: client, Request: litellm.Request{Model: "model"}}}, true
+}
+
+// chiefDeps 是带脚本化主编的已配置测试应用。
+func chiefDeps(tb testing.TB, provider *litellmtest.Provider) (Deps, *bootstrap.App) {
+	return assemble(tb, &testExecutor{}, scriptedChief{provider})
+}
+
 // testDeps 用给定的执行器装配测试应用；没有执行器时是未配置的应用。
 func testDeps(tb testing.TB, executor *testExecutor) (Deps, *bootstrap.App) {
+	return assemble(tb, executor, nil)
+}
+
+// assemble 装配测试应用；chiefModels 为空时主编用应用自己的模型绑定。
+func assemble(tb testing.TB, executor *testExecutor, chiefModels chief.Models) (Deps, *bootstrap.App) {
 	tb.Helper()
 	ctx := context.Background()
 	authorityStore, err := store.Open(ctx, filepath.Join(tb.TempDir(), "ainovel.db"))
@@ -62,7 +87,7 @@ func testDeps(tb testing.TB, executor *testExecutor) (Deps, *bootstrap.App) {
 	}
 	tb.Cleanup(func() { authorityStore.Close() })
 	configDir := tb.TempDir()
-	options := bootstrap.Options{ConfigDir: configDir, Interactive: true}
+	options := bootstrap.Options{ConfigDir: configDir, Interactive: true, ChiefModels: chiefModels}
 	if executor != nil {
 		options.Executors.LLM = executor
 	}
@@ -213,10 +238,8 @@ func TestHomeCreateEntersWorkbenchAndSurfacesRunError(t *testing.T) {
 	if strings.Contains(m.bench.projectID, "book-") == false {
 		t.Fatalf("project id = %q, want generated book id", m.bench.projectID)
 	}
-	// 执行异步命令：执行器每次都失败，重试预算耗尽后停下等用户，原因进决定卡。
-	message := findMsg[quickDoneMsg](t, cmd)
-	updated, _ := m.Update(message)
-	m = updated.(model)
+	// 推进在会话里进行：执行器每次都失败，重试预算耗尽后停下等用户，原因进决定卡。
+	m = syncSession(t, m)
 	if m.bench.writing || m.bench.decision == nil || !strings.Contains(m.bench.decision.reason, "test executor does not call models") {
 		t.Fatalf("run failure not surfaced: writing=%v err=%q decision=%+v", m.bench.writing, m.bench.err, m.bench.decision)
 	}
@@ -249,9 +272,7 @@ func TestStaleAsyncMessageFromPreviousBookIsDropped(t *testing.T) {
 	if m.bench.gen == staleGen {
 		t.Fatalf("generation not advanced: %d", m.bench.gen)
 	}
-	updated, _ = m.Update(quickDoneMsg{gen: staleGen, result: novel.QuickWriteResult{
-		RunState: domainmodel.RunWaitingUser, RunReason: "A 的稿件等你确认",
-	}})
+	updated, _ = m.Update(sessionMsg{gen: staleGen})
 	m = updated.(model)
 	if m.bench.decision != nil || m.bench.err != "" || m.bench.projectID != "book-b" {
 		t.Fatalf("stale message leaked into new bench: %#v", m.bench)
@@ -379,14 +400,14 @@ func TestOpenWaitingProjectRestoresDecisionCard(t *testing.T) {
 	}
 }
 
-func TestDecisionRequiresExplicitApproveAndReasonRejects(t *testing.T) {
-	// 页面设计 §2：批准必须输入 y 回车；空回车不提交并回以指引；
-	// 其他文字回车即修改意见，拒绝并按意见重写。
+func TestDecisionRequiresExplicitApproveAndOtherWordsGoToTheChief(t *testing.T) {
+	// 页面设计 §2：批准必须输入 y 回车；空回车不提交、打开全部内容；其他文字交给主编
+	// （不满意的理由由主编转成退稿），决定卡原样留着。
 	deps, _ := newTestDeps(t, true)
 	m := newModel(context.Background(), deps)
 	m.gen = 1
 	m.page = pageWorkbench
-	m.bench = newWorkbenchState("book-1", 1)
+	m.bench = testBench(m, "book-1")
 	m.bench.loaded = true
 	present := func() {
 		m.bench.presentDecision(&decisionState{
@@ -395,7 +416,7 @@ func TestDecisionRequiresExplicitApproveAndReasonRejects(t *testing.T) {
 		})
 	}
 	present()
-	if !strings.Contains(ansi.Strip(m.View()), "等你决定") || !strings.Contains(ansi.Strip(m.View()), "输入 y 通过") {
+	if !strings.Contains(ansi.Strip(m.View()), "等你决定") || !strings.Contains(ansi.Strip(m.View()), "y 通过") {
 		t.Fatal("决定卡或输入指引未出现在视图中")
 	}
 	// 空回车：不提交，打开全部内容。
@@ -413,16 +434,13 @@ func TestDecisionRequiresExplicitApproveAndReasonRejects(t *testing.T) {
 	if m.bench.decision != nil || cmd == nil || m.bench.input.Value() != "" {
 		t.Fatal("y 回车未派发批准")
 	}
-	// 文字回车 = 拒绝重写；单独的 n 只给指引。
+	// 文字回车交给主编：切到对话，决定卡不动，由主编按理由退稿。
 	present()
-	m, cmd = submit(t, m, "n")
-	if m.bench.decision == nil || cmd != nil || !strings.Contains(m.bench.notice, "修改意见") {
-		t.Fatalf("n 应回以指引：decision=%v notice=%q", m.bench.decision, m.bench.notice)
-	}
 	m, cmd = submit(t, m, "开头太平淡")
-	if m.bench.decision != nil || m.bench.input.Value() != "" || cmd == nil {
-		t.Fatalf("带意见回车未派发拒绝：decision=%v input=%q", m.bench.decision, m.bench.input.Value())
+	if m.bench.decision == nil || m.bench.input.Value() != "" || cmd == nil || m.bench.view != viewTalk {
+		t.Fatalf("文字应交给主编：decision=%v input=%q view=%v", m.bench.decision, m.bench.input.Value(), m.bench.view)
 	}
+	m.bench.presentDecision(nil)
 	// 没有待裁决稿件时，y 不是批准，是提醒。
 	m, cmd = submit(t, m, "y")
 	if cmd != nil || !strings.Contains(m.bench.notice, "没有等你决定") {
@@ -449,7 +467,7 @@ func TestHomeSettingsCreateProjectWithFullIntent(t *testing.T) {
 	if m.page != pageWorkbench || !m.bench.writing || cmd == nil {
 		t.Fatalf("form create: page=%v writing=%v", m.page, m.bench.writing)
 	}
-	findMsg[quickDoneMsg](t, cmd) // 执行异步命令：CreateProject 成功，QuickWrite 因无执行器报错
+	m = syncSession(t, m) // 会话推进：CreateProject 成功，QuickWrite 因执行器失败停下
 	snapshot, err := api.Projects.Project(context.Background(), m.bench.projectID, domainmodel.InitialRevision)
 	if err != nil || snapshot.Intent.Audience != "都市悬疑读者" || snapshot.Intent.Premise == "" {
 		t.Fatalf("project intent = %#v, %v", snapshot.Intent, err)
@@ -515,7 +533,7 @@ func TestWorkbenchTwoPaneOutlineDetailAndCandidateReading(t *testing.T) {
 	m := newModel(context.Background(), deps)
 	m.gen = 1
 	m.page = pageWorkbench
-	m.bench = newWorkbenchState("book-1", 1)
+	m.bench = testBench(m, "book-1")
 	m.bench.loaded = true
 	m.width, m.height = 180, 40
 	run := domainmodel.CreationRun{ID: "run:book-1", State: domainmodel.RunWaitingUser}
@@ -574,7 +592,7 @@ func TestOutlineFoldingCollapsesSubtreeAndAnchorsCursor(t *testing.T) {
 	m := newModel(context.Background(), deps)
 	m.gen = 1
 	m.page = pageWorkbench
-	m.bench = newWorkbenchState("book-fold", 1)
+	m.bench = testBench(m, "book-fold")
 	m.bench.loaded = true
 	m.width, m.height = 180, 40
 	outline := []workbench.OutlineNode{
@@ -638,7 +656,7 @@ func TestOutlineHierarchyAndUnexpandedArcs(t *testing.T) {
 	m := newModel(context.Background(), deps)
 	m.gen = 1
 	m.page = pageWorkbench
-	m.bench = newWorkbenchState("book-rolling", 1)
+	m.bench = testBench(m, "book-rolling")
 	m.bench.loaded = true
 	m.width, m.height = 180, 40
 	m.bench.snap = workbench.WorkbenchSnapshot{
@@ -715,7 +733,7 @@ func TestFoldPreferencePersistsAcrossReopen(t *testing.T) {
 	m := newModel(context.Background(), deps)
 	m.gen = 1
 	m.page = pageWorkbench
-	m.bench = newWorkbenchState("book-pref", 1)
+	m.bench = testBench(m, "book-pref")
 	m.bench.loaded = true
 	m.width, m.height = 180, 40
 	m.bench.snap = workbench.WorkbenchSnapshot{
@@ -752,7 +770,7 @@ func TestMouseWheelScrollsAndClickSelectsOutline(t *testing.T) {
 	m := newModel(context.Background(), deps)
 	m.gen = 1
 	m.page = pageWorkbench
-	m.bench = newWorkbenchState("book-mouse", 1)
+	m.bench = testBench(m, "book-mouse")
 	m.bench.loaded = true
 	m.width, m.height = 180, 40
 	m.bench.snap = workbench.WorkbenchSnapshot{
@@ -811,7 +829,7 @@ func TestMouseWheelScrollsAndClickSelectsOutline(t *testing.T) {
 	updated, _ := m.Update(activityMsg{gen: m.bench.gen, open: true})
 	m = updated.(model)
 	tabs := m.benchTabs(l)
-	click(tabs[1].x0, l.tabsY)
+	click(tabs[2].x0, l.tabsY)
 	if m.bench.view != viewActivity {
 		t.Fatalf("tab click must switch view: %d", m.bench.view)
 	}
@@ -826,37 +844,10 @@ func TestMouseWheelScrollsAndClickSelectsOutline(t *testing.T) {
 		t.Fatal("wheel down to the bottom must resume following")
 	}
 	// 正文视图里滚轮只动正文，不碰目录。
-	click(tabs[0].x0, l.tabsY)
+	click(tabs[1].x0, l.tabsY)
 	wheel(l.mainX+5, l.contentY+3, true)
 	if m.bench.cursor != 4 || m.bench.view != viewProse {
 		t.Fatalf("wheel over prose leaked: cursor=%d view=%d", m.bench.cursor, m.bench.view)
-	}
-}
-
-func TestWorkbenchTargetPromptContinuesWithNewGoal(t *testing.T) {
-	deps, _ := newTestDeps(t, true)
-	m := newModel(context.Background(), deps)
-	m.gen = 1
-	m.page = pageWorkbench
-	m.bench = newWorkbenchState("book-1", 1)
-	m.bench.loaded = true
-	m.bench.snap = workbench.WorkbenchSnapshot{
-		ProjectID: "book-1", Intent: domainmodel.Intent{Premise: "写书"}, Length: novel.Length{Fixed: 3, Final: 3},
-	}
-	m, cmd := submit(t, m, "/goal")
-	if cmd != nil || !strings.Contains(m.bench.err, "当前固定 3 章") || m.bench.input.Value() != "/goal" {
-		t.Fatalf("缺参应报用法并保留输入: err=%q input=%q", m.bench.err, m.bench.input.Value())
-	}
-	m, _ = press(t, m, tea.KeyEsc)
-	m, cmd = submit(t, m, "/g 5")
-	if m.bench.input.Value() != "" || !m.bench.writing || cmd == nil {
-		t.Fatalf("/goal did not continue run: input=%q writing=%v", m.bench.input.Value(), m.bench.writing)
-	}
-	// /goal auto 把篇幅交回 AI（D63）。
-	m.bench.writing = false
-	m, cmd = submit(t, m, "/goal auto")
-	if m.bench.input.Value() != "" || !m.bench.writing || cmd == nil {
-		t.Fatalf("/goal auto did not continue run: input=%q writing=%v err=%q", m.bench.input.Value(), m.bench.writing, m.bench.err)
 	}
 }
 
@@ -900,11 +891,15 @@ func TestCompassSummaryDescribesTheChange(t *testing.T) {
 	}
 }
 
-func TestWorkbenchDirectivePromptRecordsRequirement(t *testing.T) {
-	// §4.9：直接在底栏写要求，作用域跟随大纲选中行；文字回车入账为 Directive，
-	// 创作停着时（这本书还没开始）同时接着写。
-	deps, api := newTestDeps(t, true)
+func TestTypingTalksToTheChief(t *testing.T) {
+	// D74：输入框里的话交给主编；主编按用户说的范围记下要求，对话视图里是用户的话、
+	// 回执与回话，不再按大纲选中行猜作用域。
 	ctx := context.Background()
+	provider := litellmtest.New(
+		litellmtest.Respond(litellm.ToolUseBlock{ID: "note", Name: "note_requirement", Arguments: `{"text":"每章结尾留钩子","scope":{"volume":1}}`}),
+		litellmtest.Text("记下了，第一卷每章结尾都会留钩子。"),
+	)
+	deps, api := chiefDeps(t, provider)
 	plan := []domainmodel.PlanNode{
 		{ID: "volume-1", Kind: domainmodel.PlanVolume, Title: "第一卷", Summary: "入道"},
 		{ID: "arc-1", Kind: domainmodel.PlanArc, ParentID: "volume-1", Title: "山门", Summary: "入门"},
@@ -917,30 +912,26 @@ func TestWorkbenchDirectivePromptRecordsRequirement(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 	m := newModel(ctx, deps)
-	m.gen = 1
-	m.page = pageWorkbench
-	m.bench = newWorkbenchState("book-1", 1)
+	m.gen, m.page, m.width, m.height = 1, pageWorkbench, 150, 40
+	m.bench = testBench(m, "book-1")
 	m.bench.loaded = true
 	m.bench.snap = workbench.WorkbenchSnapshot{
 		ProjectID: "book-1", Intent: domainmodel.Intent{Premise: "写书"}, Length: novel.Length{Fixed: 1, Final: 1},
 		Outline: []workbench.OutlineNode{{Node: plan[0]}, {Node: plan[1]}, {Node: plan[2], Number: 1}},
 	}
-	// 全书行只管后续章节：不回头覆盖已写章节。
-	if scope, label := m.directiveScope(); scope != "from_chapter:1" || label != "第 1 章起的章节" {
-		t.Fatalf("book row scopes from the next chapter: %s %s", scope, label)
+	m, cmd := submit(t, m, "第一卷每章结尾留钩子")
+	if m.bench.input.Value() != "" || cmd == nil || m.bench.view != viewTalk {
+		t.Fatalf("words must go to the chief: input=%q view=%v", m.bench.input.Value(), m.bench.view)
 	}
-	m.bench.cursor = 1
-	if scope, label := m.directiveScope(); scope != "plan_node:volume-1" || label != "「第一卷」" {
-		t.Fatalf("scope follows the selected outline row: %s %s", scope, label)
+	if sent := cmd().(chiefSentMsg); sent.err != nil {
+		t.Fatalf("send: %v", sent.err)
 	}
-	m, cmd := submit(t, m, "每章结尾留钩子")
-	if m.bench.input.Value() != "" || cmd == nil {
-		t.Fatalf("directive did not submit: input=%q", m.bench.input.Value())
+	for m.bench.session.Busy() {
+		time.Sleep(5 * time.Millisecond)
 	}
-	message := findMsg[runControlMsg](t, cmd)
-	if message.err != nil || message.next != "continue" || message.echo != "你提了要求 · 「第一卷」：每章结尾留钩子" {
-		t.Fatalf("add directive message = %#v", message)
-	}
+	updated, _ := m.Update(sessionMsg{gen: m.bench.gen})
+	m = updated.(model)
+	requireContains(t, ansi.Strip(m.View()), "› 第一卷每章结尾留钩子", "✓ 记下要求 · 第 1 卷《第一卷》 ·「每章结尾留钩子」", "记下了，第一卷每章结尾都会留钩子。")
 	project, err := api.Projects.Project(ctx, "book-1", 0)
 	if err != nil || len(project.Directives) != 1 || project.Directives[0].Scope != "plan_node:volume-1" ||
 		project.Directives[0].Text != "每章结尾留钩子" {
@@ -1062,7 +1053,7 @@ func TestWorkbenchRendersStreamingProsePreview(t *testing.T) {
 			t.Fatalf("scene missing %q:\n%s", want, view)
 		}
 	}
-	m, _ = press(t, m, tea.KeyF2)
+	m, _ = press(t, m, tea.KeyF3)
 	view = ansi.Strip(m.View())
 	for _, want := range []string{"正文预览 · 未入稿", "少年在山野间奔跑，晨雾未散。"} {
 		if !strings.Contains(view, want) {
@@ -1188,7 +1179,7 @@ func TestActivityFeedScrollPausesFollowAndResumes(t *testing.T) {
 	updated, _ = m.Update(activityMsg{gen: m.bench.gen, open: true})
 	m = updated.(model)
 
-	m, _ = press(t, m, tea.KeyF2) // 活动视图
+	m, _ = press(t, m, tea.KeyF3) // 活动视图
 	m = pressTimes(t, m, tea.KeyUp, 3)
 	if m.bench.activityHeld == nil {
 		t.Fatal("scrolling up must hold the timeline")
@@ -1320,8 +1311,8 @@ func TestManualSelectionPinsMainPaneDuringWriting(t *testing.T) {
 	}
 }
 
-func TestWritingStateAllowsDiagnosticsAndBlocksDriving(t *testing.T) {
-	// 创作进行中诊断照常可用；会驱动创作的命令（/goal）屏蔽，避免并发驱动同一轮创作。
+func TestWritingStateKeepsDiagnosticsAndTalk(t *testing.T) {
+	// 创作进行中诊断照常可用；说的话交给主编（D74），不被当成快捷键。
 	deps, _ := newTestDeps(t, true)
 	m := newModel(context.Background(), deps)
 	m = typeText(t, m, "创作中控制测试")
@@ -1334,13 +1325,28 @@ func TestWritingStateAllowsDiagnosticsAndBlocksDriving(t *testing.T) {
 	if _, cmd := submit(t, m, "/diag"); cmd == nil {
 		t.Fatal("/diag must load diagnostics during writing")
 	}
-	if blocked, cmd := submit(t, m, "/goal 10"); cmd != nil || !strings.Contains(blocked.bench.notice, "先按 Esc 暂停") {
-		t.Fatalf("/goal must stay blocked during writing: notice=%q", blocked.bench.notice)
+	if typed, cmd := submit(t, m, "p 开头的话也只是文字"); cmd == nil || typed.bench.input.Value() != "" || typed.bench.view != viewTalk {
+		t.Fatal("plain text during writing must go to the chief")
 	}
-	// 写作中提要求照常入账（S12），不被当成快捷键。
-	if typed, cmd := submit(t, m, "p 开头的要求也只是文字"); cmd == nil || typed.bench.input.Value() != "" {
-		t.Fatal("plain text during writing must become a directive")
+}
+
+// testBench 是测试直接摆好的工作台：与打开作品一样带着这本书的主编会话。
+func testBench(m model, projectID string) workbenchState {
+	return newWorkbenchState(projectID, 1, m.api.Chief.Open(m.ctx, projectID, m.deps.UserID))
+}
+
+// syncSession 等会话的推进停下，把会话快照交给界面（相当于收到一次会话唤醒）。
+func syncSession(t *testing.T, m model) model {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for m.bench.session.Production().Writing {
+		if time.Now().After(deadline) {
+			t.Fatal("the drive did not stop")
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
+	updated, _ := m.Update(sessionMsg{gen: m.bench.gen})
+	return updated.(model)
 }
 
 func findMsg[T tea.Msg](t *testing.T, cmd tea.Cmd) T {

@@ -8,7 +8,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/infra/capability/prompt"
 )
 
-// §7.2：每个内置 Worker 用到的 Slot 都必须有官方基线文本，官方包也不声明无人使用的 Slot。
+// §7.2：每个内置 Worker 与主编用到的 Slot 都必须有官方基线文本，官方包也不声明无人使用的 Slot。
 func TestOfficialPackCoversEveryBuiltinSlot(t *testing.T) {
 	loaded, err := pack.LoadFS(OfficialPack())
 	if err != nil {
@@ -18,7 +18,7 @@ func TestOfficialPackCoversEveryBuiltinSlot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("builtin capabilities: %v", err)
 	}
-	used := make(map[string]bool)
+	used := map[string]bool{string(prompt.SlotChiefConverse): true}
 	for _, definition := range definitions {
 		for _, slot := range definition.Worker.PromptSlots {
 			used[string(slot)] = true

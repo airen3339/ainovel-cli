@@ -271,6 +271,7 @@ func (s *Store) DeleteProject(ctx context.Context, projectID string) error {
 		{`DELETE FROM creation_run_events WHERE run_id IN (SELECT id FROM creation_runs WHERE project_id = ?)`, []any{projectID}},
 		{`DELETE FROM creation_runs WHERE project_id = ?`, []any{projectID}},
 		{`DELETE FROM derived_documents WHERE project_id = ?`, []any{projectID}},
+		{`DELETE FROM conversation_messages WHERE project_id = ?`, []any{projectID}},
 		{`DELETE FROM execution_profiles WHERE project_id = ?`, []any{projectID}},
 		{`DELETE FROM preference_candidates WHERE profile_scope = ?`, []any{"book:" + projectID}},
 		{`DELETE FROM authority_streams WHERE target_kind = ? AND target_id = ?`, []any{model.AuthorityProject, projectID}},

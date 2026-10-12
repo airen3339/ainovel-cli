@@ -67,7 +67,7 @@ func runProposal(ctx context.Context, api *bootstrap.App, args []string, stdout,
 		if *userID == "" {
 			return fmt.Errorf("proposal reject 需要 --user")
 		}
-		proposal, err := api.Decisions.Reject(ctx, *id, *userID, *reason, time.Now().UTC())
+		proposal, err := api.Decisions.Reject(ctx, decision.RejectCommand{ProposalID: *id, UserID: *userID, Reason: *reason, At: time.Now().UTC()})
 		return writeResult(stdout, proposal, err)
 	default:
 		return fmt.Errorf("未知 proposal 子命令 %q", args[0])

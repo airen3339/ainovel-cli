@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/voocel/ainovel-cli/internal/app/binding"
+	"github.com/voocel/ainovel-cli/internal/app/chief"
 	"github.com/voocel/ainovel-cli/internal/app/decision"
 	"github.com/voocel/ainovel-cli/internal/app/diag"
 	"github.com/voocel/ainovel-cli/internal/app/evidence"
@@ -39,6 +40,8 @@ type App struct {
 	Evidence  *evidence.Reader
 	// Models 是模型绑定用例：常驻 capability Runtime 随时重绑，不重建应用。
 	Models *binding.Service
+	// Chief 是主编（D74）：一本书打开时的对话与创作推进。
+	Chief *chief.Service
 }
 
 type Options struct {
@@ -51,6 +54,8 @@ type Options struct {
 	// 同一 Hub），脚本入口保持零活动开销。
 	ConfigDir   string
 	Interactive bool
+	// ChiefModels 替换主编取模型的来源；为空时用模型绑定用例的当前绑定。
+	ChiefModels chief.Models
 }
 
 // New 装配应用。未注入 LLM 执行器时装配常驻的 capability Runtime：模型绑定是运行时
@@ -101,6 +106,11 @@ func New(s *store.Store, options Options) *App {
 		Evidence:  evidence.New(s, changes, engine),
 		Models:    binding.New(options.ConfigDir, binder),
 	}
+	chiefModels := options.ChiefModels
+	if chiefModels == nil {
+		chiefModels = app.Models
+	}
+	app.Chief = chief.New(s, projects, decisions, app.Novels, runs, app.Workbench, prompts, chiefModels)
 	if runtime != nil && options.Interactive {
 		tasks.SetActivitySink(runtime.ActivityHub())
 		app.Workbench.AttachActivityFeed(runtime.ActivityHub())

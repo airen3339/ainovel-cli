@@ -20,8 +20,10 @@ type AddDirectiveCommand struct {
 	Scope       string
 	Text        string
 	Constraints *model.DirectiveConstraints
-	Reason      string
-	CreatedAt   time.Time
+	// Source 是主编代录时用户说这句话的对话消息（D74），用户直接录入为空。
+	Source    string
+	Reason    string
+	CreatedAt time.Time
 }
 
 type RetireDirectiveCommand struct {
@@ -51,7 +53,7 @@ func (s *Repository) AddDirective(ctx context.Context, command AddDirectiveComma
 	}
 	directive := model.Directive{
 		ID: id, Scope: strings.TrimSpace(command.Scope), Text: strings.TrimSpace(command.Text),
-		Constraints: command.Constraints, Status: model.DirectiveActive,
+		Constraints: command.Constraints, Status: model.DirectiveActive, Source: command.Source,
 	}
 	if err := directive.Validate(); err != nil {
 		return DirectiveResult{}, err

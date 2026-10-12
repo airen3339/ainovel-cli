@@ -12,11 +12,12 @@ import (
 type TeamUsage struct {
 	Total  model.Usage          `json:"total"`
 	Worked time.Duration        `json:"worked"`
-	Roles  map[string]RoleUsage `json:"roles,omitempty"` // 键是 Worker 的模型角色
+	Roles  map[string]RoleUsage `json:"roles,omitempty"` // 键是模型角色：Worker 的与主编的
 }
 
 // RoleUsage 是一个角色名下全部执行尝试的累计：Model 是它最近一次实际用的模型，State 是
-// 它最近一项任务此刻的状态。任务里的语义合规核对计入该任务的角色。
+// 它最近一项任务此刻的状态。任务里的语义合规核对计入该任务的角色。主编不经任务执行，
+// 只有用量与模型。
 type RoleUsage struct {
 	Usage  model.Usage          `json:"usage"`
 	Worked time.Duration        `json:"worked"`

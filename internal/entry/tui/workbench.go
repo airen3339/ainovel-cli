@@ -12,6 +12,8 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/voocel/ainovel-cli/internal/app/chief"
+	"github.com/voocel/ainovel-cli/internal/app/decision"
 	"github.com/voocel/ainovel-cli/internal/app/novel"
 	projectdoc "github.com/voocel/ainovel-cli/internal/app/project"
 	"github.com/voocel/ainovel-cli/internal/app/workbench"
@@ -33,6 +35,7 @@ type benchView int
 const (
 	viewProse benchView = iota
 	viewActivity
+	viewTalk
 )
 
 type workbenchState struct {
@@ -43,6 +46,7 @@ type workbenchState struct {
 	rowsCache            *outlineCache
 	proseCache           *wrappedText
 	sceneCache           *outputLayoutCache // 现场条里输出块的紧凑排版，按块 ID/版本/宽度缓存
+	talkCache            *talkCache         // 对话各条排好的行，条目与宽度不变就沿用
 	wordCache            *wordCache
 	outputCache          *outputLayoutCache
 	search               string
@@ -69,21 +73,23 @@ type workbenchState struct {
 	body           viewport.Model
 	bodyText       string
 	writing        bool
-	// interrupt 打断进程内的创作驱动：暂停时立即停下在途的模型调用，任务放回队列，
-	// 续跑接着已有的对话与草稿。
-	interrupt context.CancelFunc
+	// session 是这本书的主编会话：对话与创作推进都在它那里，界面只读快照、调方法。
+	// driveSeen 是已处理过落点的推进次数；thread 是对话的最新快照。
+	session   *chief.Session
+	driveSeen int
+	thread    chief.Thread
+	// talkHeld 表示对话视图上滚、暂停跟随；talkOffset 是其行偏移。
+	talkHeld   bool
+	talkOffset int
 	// resumeOnLoad 表示刚打开作品：首份快照里创作还标着进行中（上次没停就退出），就自动接着写。
 	resumeOnLoad bool
 	exporting    bool
-	pulse        pulseState // 创作中的动画节拍
+	pulse        pulseState // 创作与主编回话时的动画节拍
 	decision     *decisionState
-	// input 是常驻聚焦的底栏输入框：文字是要求或修改意见，`/` 是命令，`y` 回车通过。
-	input         textinput.Model
-	inputScope    string
-	inputLabel    string
-	inputDecision string
-	notice        string
-	err           string
+	// input 是常驻聚焦的底栏输入框：文字交给主编，`/` 是命令，`y` 回车通过。
+	input  textinput.Model
+	notice string
+	err    string
 	// activity 是实时活动快照：被唤醒后整读，不逐条回放；activityOff 只退订，绝不取消创作。
 	activity    activity.Snapshot
 	activityCh  <-chan struct{}
@@ -94,7 +100,8 @@ type workbenchState struct {
 	echoes  []activity.Entry
 }
 
-// close 退订活动并释放本次工作台的作品与排版缓存。
+// close 退订活动、合上主编会话（打断回合与推进，任务放回队列），释放本次工作台的作品与
+// 排版缓存。
 func (b *workbenchState) close() {
 	if b.diag != nil {
 		b.diag.cancel()
@@ -102,7 +109,10 @@ func (b *workbenchState) close() {
 	if b.activityOff != nil {
 		b.activityOff()
 	}
-	*b = newWorkbenchState(b.projectID, b.gen)
+	if b.session != nil {
+		b.session.Close()
+	}
+	*b = newWorkbenchState(b.projectID, b.gen, nil)
 }
 
 func (b *workbenchState) hasRun() bool { return b.snap.Run != nil }
@@ -179,8 +189,8 @@ func (b *workbenchState) situation() benchSituation {
 	return situationRunning
 }
 
-// resumable 报告创作停着、可以接着写：回车或提要求就继续。正在写、有稿件等你裁决、
-// 完本（续写要明说 /goal）都不算。
+// resumable 报告创作停着、可以接着写：回车就继续。正在写、有稿件等你裁决、完本（续写要
+// 跟主编说篇幅）都不算。
 func (b *workbenchState) resumable() bool {
 	switch b.situation() {
 	case situationNoRun, situationPaused, situationFailed, situationCancelled, situationDeciding, situationRunning:
@@ -208,23 +218,6 @@ func (b *workbenchState) presentDecision(decision *decisionState) {
 	b.decision = decision
 }
 
-type quickParams struct {
-	projectID string
-	premise   string
-	chapters  int
-	extend    bool // 续写：篇幅交给 AI 并撤回收官承诺
-	renew     bool // 修订预算用尽时继续：预算重新起算
-	approval  domainmodel.ApprovalPolicy
-	// intent 非空时（完善设定入口）先以完整 Intent 初始化作品。
-	intent *domainmodel.Intent
-}
-
-type quickDoneMsg struct {
-	gen    int
-	result novel.QuickWriteResult
-	err    error
-}
-
 type benchRefreshedMsg struct {
 	gen  int
 	snap workbench.WorkbenchSnapshot
@@ -238,8 +231,7 @@ type decisionDoneMsg struct {
 	echo          string
 }
 
-// runControlMsg 是运行控制（暂停/取消/调预算/记要求）的统一回执；echo 是成功后留在
-// 时间线上的那句"你做了什么"。
+// runControlMsg 是运行控制（暂停）的回执；echo 是成功后留在时间线上的那句"你做了什么"。
 type runControlMsg struct {
 	gen  int
 	err  error
@@ -256,11 +248,11 @@ type activityMsg struct {
 	open bool
 }
 
-func newWorkbenchState(projectID string, gen int) workbenchState {
+func newWorkbenchState(projectID string, gen int, session *chief.Session) workbenchState {
 	return workbenchState{
-		projectID: projectID, gen: gen, input: newBenchInput(),
+		projectID: projectID, gen: gen, session: session, input: newBenchInput(),
 		collapsed: make(map[string]bool),
-		refresh:   &benchRefresh{}, rowsCache: &outlineCache{}, proseCache: &wrappedText{}, sceneCache: &outputLayoutCache{},
+		refresh:   &benchRefresh{}, rowsCache: &outlineCache{}, proseCache: &wrappedText{}, sceneCache: &outputLayoutCache{}, talkCache: &talkCache{},
 		wordCache: &wordCache{}, outputCache: &outputLayoutCache{},
 	}
 }
@@ -298,33 +290,21 @@ func (m model) watchActivityCmd() tea.Cmd {
 	}
 }
 
-// startQuickWriteCmd 异步驱动创作：QuickWrite 会一直推进到完成或需要等待；驱动的取消
-// 留在工作台上，暂停时用它打断。
-func (m *model) startQuickWriteCmd(params quickParams) tea.Cmd {
-	api, user := m.api, m.deps.UserID
-	ctx, cancel := context.WithCancel(m.ctx)
-	gen := m.bench.gen
-	m.bench.interrupt = cancel
-	return m.inflight.track(func() tea.Msg {
-		defer cancel()
-		now := time.Now().UTC()
-		if params.intent != nil {
-			if _, err := api.Projects.CreateProject(ctx, projectdoc.CreateProjectCommand{
-				ProjectID: params.projectID, ChangeID: params.projectID + ":create",
-				UserID: user, Reason: "完善设定后创建作品",
-				Draft:     projectdoc.ProjectDraft{Intent: *params.intent, Approval: params.approval},
-				CreatedAt: now,
-			}); err != nil {
-				return quickDoneMsg{gen: gen, err: err}
-			}
-		}
-		result, err := api.Novels.QuickWrite(ctx, novel.QuickWriteCommand{
-			ProjectID: params.projectID, UserID: user,
-			Premise: params.premise, Chapters: params.chapters, Extend: params.extend, RenewRepairBudget: params.renew, Approval: params.approval,
-			WorkerID: "tui-" + user, CreatedAt: now,
-		})
-		return quickDoneMsg{gen: gen, result: result, err: err}
-	})
+// write 让会话开始推进（直到完成或需要等待），界面跟上直播；落点经会话唤醒送回。
+func (m *model) write(params chief.WriteParams) tea.Cmd {
+	m.bench.session.Write(params)
+	m.startedWriting()
+	return tea.Batch(pollTick(m.bench.gen), m.bench.pulse.start(m.bench.gen))
+}
+
+// startedWriting 新一轮推进开始：清掉决定卡与上一轮的活动快照，等新事件流入。
+func (m *model) startedWriting() {
+	bench := &m.bench
+	bench.writing = true
+	bench.presentDecision(nil)
+	bench.notice, bench.err = "", ""
+	bench.activity = activity.Snapshot{}
+	bench.activityHeld, bench.activityOffset = nil, 0
 }
 
 type benchRefresh struct {
@@ -394,7 +374,7 @@ func (m model) applyWorkbench(message tea.Msg) (tea.Model, tea.Cmd) {
 		if message.gen != bench.gen {
 			return m, nil
 		}
-		if !bench.writing {
+		if !bench.writing && !bench.thread.Busy {
 			bench.pulse.running = false
 			return m, nil
 		}
@@ -458,11 +438,24 @@ func (m model) applyWorkbench(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 		return m, nil
-	case quickDoneMsg:
+	case sessionMsg:
 		if message.gen != bench.gen {
 			return m, nil
 		}
-		return m.handleQuickDone(message)
+		return m.applySession()
+	case chiefSentMsg:
+		if message.gen != bench.gen {
+			return m, nil
+		}
+		if message.err != nil {
+			// 话没送出去：放回输入框，别让用户重打。
+			bench.err = message.err.Error()
+			if bench.input.Value() == "" {
+				bench.input.SetValue(message.text)
+				bench.input.CursorEnd()
+			}
+		}
+		return m, nil
 	case decisionDoneMsg:
 		if message.gen != bench.gen {
 			return m, nil
@@ -507,22 +500,23 @@ func (m model) applyWorkbench(message tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) handleQuickDone(message quickDoneMsg) (tea.Model, tea.Cmd) {
+// handleDriveEnd 处理一次推进的落点：完成、等待、失败，或被暂停打断。
+func (m model) handleDriveEnd(message chief.DriveEnd) (tea.Model, tea.Cmd) {
 	bench := &m.bench
-	bench.writing, bench.interrupt = false, nil
+	bench.writing = false
 	bench.pinned = false
 	bench.presentDecision(nil)
 	bench.err = ""
 	switch {
-	case errors.Is(message.err, context.Canceled):
+	case errors.Is(message.Err, context.Canceled):
 		// 暂停打断了在途任务：引擎已把它放回队列，不是错误。
-	case errors.Is(message.err, domainmodel.ErrOperationHeld):
+	case errors.Is(message.Err, domainmodel.ErrOperationHeld):
 		// 正常退出会释放任务；还被占着说明上一个进程崩溃后租约未到期，或另一个窗口在写。
 		bench.err = "这项任务还在上一个进程的租约里（最多 1 分钟），稍后回车继续；如果另一个窗口正在写这本书，请先关掉它"
-	case message.err != nil:
-		bench.err = message.err.Error()
+	case message.Err != nil:
+		bench.err = message.Err.Error()
 	}
-	result := message.result
+	result := message.Result
 	switch result.RunState {
 	case domainmodel.RunCompleted:
 		bench.notice = fmt.Sprintf("全书完成：%d 章都写好了，在目录里选章阅读吧", len(result.Chapters))
@@ -536,26 +530,6 @@ func (m model) handleQuickDone(message quickDoneMsg) (tea.Model, tea.Cmd) {
 		bench.err = result.RunReason
 	}
 	return m, m.refreshBenchCmd()
-}
-
-// addDirectiveCmd 把要求原话按作用域入账；之后的任务按当前快照装配到它。创作停着时
-// 提要求也是让它接着写。
-func (m model) addDirectiveCmd(scope, label, text string) tea.Cmd {
-	api, ctx, user := m.api, m.ctx, m.deps.UserID
-	gen, projectID := m.bench.gen, m.bench.projectID
-	next := "refresh"
-	if m.bench.resumable() {
-		next = "continue"
-	}
-	return func() tea.Msg {
-		now := time.Now().UTC()
-		_, err := api.Projects.AddDirective(ctx, projectdoc.AddDirectiveCommand{
-			ProjectID: projectID, ChangeID: projectdoc.NewID("directive", now), UserID: user,
-			Scope: scope, Text: text, Reason: "工作台提出创作要求", CreatedAt: now,
-		})
-		return runControlMsg{gen: gen, err: err, next: next, note: "要求已记录 · 对应范围的后续任务会采用并核验；现有正文尚未修改",
-			echo: "你提了要求 · " + label + "：" + oneLine(text)}
-	}
 }
 
 // acceptHeld 接受卡住那一章的现状：把它的阻塞意见逐条入账为用户裁决（D43），之后不再为
@@ -599,49 +573,35 @@ func (m model) decideCmd(approve bool, reason string) (tea.Model, tea.Cmd) {
 		if approve {
 			_, err = api.Decisions.Approve(ctx, proposal.ID, user, time.Now().UTC())
 		} else {
-			_, err = api.Decisions.Reject(ctx, proposal.ID, user, reason, time.Now().UTC())
+			_, err = api.Decisions.Reject(ctx, decision.RejectCommand{ProposalID: proposal.ID, UserID: user, Reason: reason, At: time.Now().UTC()})
 		}
 		return decisionDoneMsg{gen: gen, continueAfter: continueAfter, err: err, echo: echo}
 	}
 }
 
-// pauseRunCmd 先落盘暂停，再打断进程内的驱动：在途的模型调用立即停下、任务放回队列，
-// 继续时接着已有的对话与草稿写，不等这一步写完。
+// pauseRunCmd 暂停创作：会话先落盘暂停，再打断在途的模型调用、任务放回队列，继续时接着
+// 已有的对话与草稿写，不等这一步写完。暂停后跟主编说句话，说完就接着写。
 func (m model) pauseRunCmd() tea.Cmd {
-	api, ctx, interrupt := m.api, m.ctx, m.bench.interrupt
-	gen, runID := m.bench.gen, m.bench.run().ID
+	session, ctx, gen := m.bench.session, m.ctx, m.bench.gen
 	return func() tea.Msg {
-		_, err := api.Runs.PauseCreationRun(ctx, runID, time.Now().UTC())
-		if err == nil && interrupt != nil {
-			interrupt()
-		}
-		return runControlMsg{gen: gen, err: err, next: "refresh", note: "已暂停 · 回车继续，或写下要求", echo: "你暂停了创作"}
+		err := session.Pause(ctx)
+		return runControlMsg{gen: gen, err: err, next: "refresh", note: "已暂停 · 回车继续，或跟主编说说想法", echo: "你暂停了创作"}
 	}
 }
 
-// continueRun 是统一续跑入口：同一命令从落点继续，篇幅沿用上一轮设定。卡在某章的修订预算
+// continueRun 是统一续跑入口：同一推进从落点继续，篇幅沿用上一轮设定。卡在某章的修订预算
 // 上时，继续就是让它再改：预算重新起算（D63）。
 func (m model) continueRun() (tea.Model, tea.Cmd) {
 	held := m.bench.decision != nil && m.bench.decision.held != ""
-	return m.continueRunWith(quickParams{chapters: novel.KeepChapters, renew: held})
+	return m.continueRunWith(chief.WriteParams{Chapters: novel.KeepChapters, Renew: held})
 }
 
-// continueRunWith 按篇幅设定续跑：chapters 正数固定章数，0 交给 AI，novel.KeepChapters 沿用
-// （由 app/novel 解析）；extend 为续写。作品与梗概取当前工作台。
-func (m model) continueRunWith(params quickParams) (tea.Model, tea.Cmd) {
-	bench := &m.bench
-	if !bench.loaded {
+// continueRunWith 按篇幅设定续跑：Chapters 正数固定章数，0 交给 AI，novel.KeepChapters 沿用。
+func (m model) continueRunWith(params chief.WriteParams) (tea.Model, tea.Cmd) {
+	if !m.bench.loaded {
 		return m, m.refreshBenchCmd()
 	}
-	bench.writing = true
-	bench.presentDecision(nil)
-	bench.notice, bench.err = "", ""
-	// 新一轮驱动开始：上一轮的活动快照不再呈现，等新事件流入。
-	bench.activity = activity.Snapshot{}
-	bench.activityHeld, bench.activityOffset = nil, 0
-	params.projectID, params.premise = bench.projectID, bench.snap.Intent.Premise
-	drive := m.startQuickWriteCmd(params)
-	return m, tea.Batch(drive, pollTick(bench.gen), bench.pulse.start(bench.gen))
+	return m, m.write(params)
 }
 
 // openBody 用整屏视口展示长文本，Esc 关闭。
