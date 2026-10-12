@@ -217,14 +217,16 @@ func (m model) submitInput() (tea.Model, tea.Cmd) {
 	return updated, cmd
 }
 
-// enterPane 空回车：目录焦点折叠卷弧，主区全屏阅读当前内容；批准必须由 y 明确确认。
+// enterPane 空回车：目录焦点折叠卷弧（尚未展开的空弧无动作），主区全屏阅读当前内容；批准必须由 y 明确确认。
 func (m model) enterPane() (tea.Model, tea.Cmd) {
 	b := &m.bench
 	if b.pane == benchPaneOutline {
 		rows := m.outlineRows()
 		if b.cursor >= 0 && b.cursor < len(rows) && rows[b.cursor].header() {
 			b.pinned = true
-			b.notice = m.toggleFold(rows[b.cursor].node.Node.ID)
+			if rows[b.cursor].foldable() {
+				b.notice = m.toggleFold(rows[b.cursor].node.Node.ID)
+			}
 			return m, nil
 		}
 	}

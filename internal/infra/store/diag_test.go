@@ -98,6 +98,15 @@ func TestDiagScopePaginationAndPayloadBudget(t *testing.T) {
 	if _, err := s.FailOperation(ctx, "op-054", claimed.Attempt, "", "boom", operationTime().Add(time.Second)); err != nil {
 		t.Fatal(err)
 	}
+	// 正常任务更晚有进展：尝试仍跟随任务的先后，失败任务的尝试不被挤到后面。
+	later := operationTime().Add(2 * time.Second)
+	normal, err := s.ClaimOperationForExecutor(ctx, "op-001", "worker", testExecutor, time.Minute, later)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ConcludeOperation(ctx, "op-001", normal.Attempt, model.OperationSucceeded, "", later.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
 	prioritized, err := s.ReadDiagSnapshot(ctx, DiagRequest{ProjectID: "book-1", ForShare: true})
 	if err != nil {
 		t.Fatal(err)

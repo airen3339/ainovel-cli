@@ -50,6 +50,7 @@ const (
 type OutlineNode struct {
 	Node   model.PlanNode `json:"node"`
 	Number int            `json:"number,omitempty"` // 章节序号，仅 chapter
+	Volume int            `json:"volume,omitempty"` // 卷序号，仅 volume
 	State  ChapterState   `json:"state,omitempty"`
 	Detail string         `json:"detail,omitempty"` // 进行中细分：正在落笔/正在按意见重写
 	// Proposed 表示节点来自等你确认的方案（新增或修订），尚未入库：大纲按方案生效后的
@@ -356,11 +357,15 @@ func buildOutline(
 	}
 
 	var outline []OutlineNode
-	chapterNumber := 0
+	chapterNumber, volumeNumber := 0, 0
 	var walk func(parentID string)
 	walk = func(parentID string) {
 		for _, node := range children[parentID] {
 			entry := OutlineNode{Node: node, Proposed: hasKey(proposed, node.ID)}
+			if node.Kind == model.PlanVolume {
+				volumeNumber++
+				entry.Volume = volumeNumber
+			}
 			if node.Kind == model.PlanChapter {
 				chapterNumber++
 				entry.Number = chapterNumber

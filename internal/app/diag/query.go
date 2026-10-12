@@ -169,12 +169,12 @@ func (q *Query) inspect(ctx context.Context, request Request, share bool) (Repor
 	if s.AttemptsTruncated {
 		status = "truncated"
 	}
-	r.Coverage = append(r.Coverage, Coverage{"attempts", status, "所列任务的尝试摘要，最近有进展的在前，最多 200 条。"})
+	r.Coverage = append(r.Coverage, Coverage{"attempts", status, "所列任务的尝试摘要，按任务的先后排列，最多 200 条。"})
 	switch {
 	case local && (s.TranscriptTruncated || request.TranscriptAfter > 0):
 		r.Coverage = append(r.Coverage, Coverage{"transcript", "truncated", "对话记录按序号分页，每页最多 100 条；本页之外的记录需翻页查看。"})
 	case local:
-		r.Coverage = append(r.Coverage, Coverage{"transcript", "complete", "已回收对话记录的任务只剩尝试摘要。"})
+		r.Coverage = append(r.Coverage, Coverage{"transcript", "complete", "已读取该任务现存的全部对话记录；经 operation prune 回收过的任务只剩尝试摘要。"})
 	default:
 		r.Coverage = append(r.Coverage, Coverage{"transcript", "not_collected", "对话记录只在本地选定单个任务后读取。"})
 	}

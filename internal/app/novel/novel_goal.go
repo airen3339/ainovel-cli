@@ -340,10 +340,10 @@ func (item novelItem) work(run model.CreationRun, premise string, length Length)
 		work.ID, work.Kind = runQuickID(run.ID, "plan", length.inputID()), model.OperationDevelopPlan
 		work.Input = model.DevelopPlanInput{
 			Intent: premise, FixedChapters: length.Fixed,
-			Goal: "设计可直接用于连续创作的卷、故事弧与章节大纲：卷与故事弧的骨架看得清多远就搭多远，这次只为第一个故事弧展开章节，这一弧多少章由你按故事走向决定，每章挂在所属故事弧下；" + length.planningGoal(),
+			Goal: "设计可直接用于连续创作的卷、故事弧与章节大纲：只搭近处——第一卷的故事弧骨架（看得清时可再搭下一卷），更远的卷写到时按已发生的故事再定，终局只作为方向写进罗盘；这次只为第一个故事弧展开章节，这一弧多少章由你按故事走向决定，每章挂在所属故事弧下；" + length.planningGoal(),
 		}
 	case workExtendPlan:
-		goal := "展开下一个故事弧的章节：已有章节保持不变，只在末尾追加并挂在所属故事弧下；下一弧已有骨架就按已发生的故事修订后展开，没有就新建（需要时新建卷），这一弧多少章由你按故事走向决定；结合审阅意见调整后续走向，为 pending_requirements 中尚未兑现的要求安排落点；" + length.planningGoal()
+		goal := "展开下一个故事弧的章节：已有章节保持不变，只在末尾追加并挂在所属故事弧下；下一弧已有骨架就按已发生的故事修订后展开，没有就新建；本卷的故事弧都已写完时先判断故事是否到了终点，未到终点才新开一卷，新卷只搭它自己的故事弧骨架；这一弧多少章由你按故事走向决定；结合审阅意见调整后续走向，为 pending_requirements 中尚未兑现的要求安排落点；" + length.planningGoal()
 		parts := []string{"plan", "extend", strconv.Itoa(item.covered), length.inputID()}
 		if item.concluded {
 			goal += fmt.Sprintf("；第 %d 章已作为全书结局写成，这是续写：在这个结局之后开启新的篇章、接住已完成的故事，不重复收尾，并在 compass.ending 写下续写部分的终局方向", item.covered)
@@ -425,7 +425,7 @@ func (item novelItem) reasons() creation.WorkReasons {
 		return creation.WorkReasons{
 			Start:   start,
 			Done:    "后续章节的蓝图已生效",
-			Waiting: "后续章节的蓝图已拟好（可能含篇幅上限调整），等你确认后继续",
+			Waiting: "后续章节的蓝图已拟好（可能含预计篇幅调整），等你确认后继续",
 			Failure: "后续章节的蓝图这次没能扩展完成",
 			Stuck:   "蓝图扩展任务已结束但章节数没有增加，需要人工检查规划",
 		}

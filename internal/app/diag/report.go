@@ -109,7 +109,7 @@ type Report struct {
 	Metrics    Metrics     `json:"metrics"`
 	Coverage   []Coverage  `json:"coverage"`
 	Operations []Operation `json:"operations"`
-	// Attempts 是所列任务的尝试摘要，最近有进展的在前；原始错误只在选定任务后保留。
+	// Attempts 是所列任务的尝试摘要，按任务的先后排列；原始错误只在选定任务后保留。
 	Attempts               []model.OperationAttempt `json:"attempts"`
 	Transcript             []TranscriptEntry        `json:"transcript,omitempty"`
 	NextOperationID        string                   `json:"next_operation_id,omitempty"`

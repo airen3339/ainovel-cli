@@ -611,6 +611,65 @@ func TestOutlineFoldingCollapsesSubtreeAndAnchorsCursor(t *testing.T) {
 	}
 }
 
+// 目录按层级缩进：卷标序号，弧在卷下、章在弧下各缩进一级。滚动规划只展开当前故事弧
+// （D67/D73）：还没展开的弧没有折叠箭头、注明待展开，回车与点击都不折叠它；下面只有
+// 空弧的卷照常可折叠。选中行与未选中行对齐在同一列。
+func TestOutlineHierarchyAndUnexpandedArcs(t *testing.T) {
+	deps, _ := newTestDeps(t, true)
+	m := newModel(context.Background(), deps)
+	m.gen = 1
+	m.page = pageWorkbench
+	m.bench = newWorkbenchState("book-rolling", 1)
+	m.bench.loaded = true
+	m.width, m.height = 180, 40
+	m.bench.snap = workbench.WorkbenchSnapshot{
+		ProjectID: "book-rolling", Intent: domainmodel.Intent{Premise: "滚动规划"},
+		Outline: []workbench.OutlineNode{
+			{Node: domainmodel.PlanNode{ID: "v1", Kind: domainmodel.PlanVolume, Title: "漏根"}, Volume: 1},
+			{Node: domainmodel.PlanNode{ID: "a1", Kind: domainmodel.PlanArc, ParentID: "v1", Title: "残页"}},
+			{Node: domainmodel.PlanNode{ID: "c1", Kind: domainmodel.PlanChapter, ParentID: "a1", Title: "第一章"}, Number: 1, State: workbench.ChapterConfirmed},
+			{Node: domainmodel.PlanNode{ID: "c2", Kind: domainmodel.PlanChapter, ParentID: "a1", Title: "第二章"}, Number: 2, State: workbench.ChapterInProgress},
+			{Node: domainmodel.PlanNode{ID: "a2", Kind: domainmodel.PlanArc, ParentID: "v1", Title: "清辉楼"}},
+			{Node: domainmodel.PlanNode{ID: "v2", Kind: domainmodel.PlanVolume, Title: "入山"}, Volume: 2},
+			{Node: domainmodel.PlanNode{ID: "a3", Kind: domainmodel.PlanArc, ParentID: "v2", Title: "云麓外门"}},
+		},
+	}
+	rows := m.outlineRows()
+	line := func(index int, selected bool) string { return ansi.Strip(m.outlineRowLine(rows[index], selected, 40)) }
+	column := func(text, symbol string) int { return ansi.StringWidth(text[:strings.Index(text, symbol)]) }
+	for index, want := range map[int]string{0: "▾ 第 1 卷 · 漏根", 1: "▾ 残页", 4: "清辉楼 · 待展开", 5: "▾ 第 2 卷 · 入山", 6: "云麓外门 · 待展开"} {
+		if !strings.Contains(line(index, false), want) {
+			t.Fatalf("row %d = %q, want %q", index, line(index, false), want)
+		}
+	}
+	if strings.Contains(line(4, false), "▾") || strings.Contains(line(6, false), "▾") {
+		t.Fatalf("unexpanded arcs have no fold arrow: %q %q", line(4, false), line(6, false))
+	}
+	if column(line(1, false), "▾") != column(line(0, false), "第") || column(line(2, false), "✓") != column(line(1, false), "残页") {
+		t.Fatalf("each level indents under its parent's title:\n%s\n%s\n%s", line(0, false), line(1, false), line(2, false))
+	}
+	if column(line(4, false), "清辉楼") != column(line(1, false), "残页") {
+		t.Fatalf("unexpanded arc title aligns with other arcs: %q %q", line(4, false), line(1, false))
+	}
+	if column(line(3, true), "◉") != column(line(2, false), "✓") || column(line(1, true), "▾") != column(line(1, false), "▾") {
+		t.Fatalf("selection shifts the row: %q %q", line(3, true), line(1, true))
+	}
+
+	m.bench.pane, m.bench.cursor = benchPaneOutline, 4
+	m, _ = press(t, m, tea.KeyEnter)
+	if m.bench.collapsed["a2"] || len(m.outlineRows()) != len(rows) {
+		t.Fatalf("enter on an unexpanded arc must not fold it: %v", m.bench.collapsed)
+	}
+	m.clickOutlineRow(6)
+	if m.bench.collapsed["a3"] || m.bench.cursor != 6 {
+		t.Fatalf("click on an unexpanded arc selects without folding: %v cursor=%d", m.bench.collapsed, m.bench.cursor)
+	}
+	m.clickOutlineRow(5)
+	if !m.bench.collapsed["v2"] {
+		t.Fatal("a volume holding unexpanded arcs still folds")
+	}
+}
+
 func TestFoldPreferencePersistsAcrossReopen(t *testing.T) {
 	// M3 布局偏好记忆：折叠随手写进用户级 state.json，重开同一作品恢复；
 	// 落点（LastProjectID）与偏好互不抹除。
@@ -771,7 +830,7 @@ func TestProgressLabelFollowsLength(t *testing.T) {
 	}{
 		{novel.Length{Fixed: 8, Final: 8}, "已入稿 3 / 8 章"},
 		{novel.Length{Compass: &domainmodel.Compass{ScaleMax: 60, Ending: "e", Final: 40}, Final: 40}, "已入稿 3 / 40 章 · 收官"},
-		{novel.Length{Compass: &domainmodel.Compass{ScaleMax: 60, Ending: "e"}}, "已入稿 3 章 · 上限 60"},
+		{novel.Length{Compass: &domainmodel.Compass{ScaleMax: 60, Ending: "e"}}, "已入稿 3 章 · 预计 60"},
 		{novel.Length{}, "已入稿 3 章 · 篇幅待定"},
 	} {
 		if got := progressLabel(3, c.length); got != c.want {
@@ -780,8 +839,8 @@ func TestProgressLabelFollowsLength(t *testing.T) {
 	}
 }
 
-// 决定卡把罗盘变化说成人话：AI 上调篇幅上限时这正是等你裁决的内容；固定篇幅下罗盘
-// 只有终局方向，不出现「上限 0 章」。
+// 决定卡把罗盘变化说成人话：AI 把预计篇幅定到护栏以上时这正是等你裁决的内容；固定篇幅下
+// 罗盘只有终局方向，不出现「预计 0 章」。
 func TestCompassSummaryDescribesTheChange(t *testing.T) {
 	current := &domainmodel.Compass{ScaleMax: 60, Ending: "称帝"}
 	for _, c := range []struct {
@@ -789,11 +848,11 @@ func TestCompassSummaryDescribesTheChange(t *testing.T) {
 		next    domainmodel.Compass
 		want    string
 	}{
-		{nil, domainmodel.Compass{ScaleMax: 60, Ending: "称帝"}, "篇幅上限 60 章 · 终局：称帝"},
+		{nil, domainmodel.Compass{ScaleMax: 60, Ending: "称帝"}, "预计篇幅 60 章 · 终局：称帝"},
 		{nil, domainmodel.Compass{Ending: "称帝"}, "终局：称帝"},
-		{current, domainmodel.Compass{ScaleMax: 120, Ending: "称帝"}, "篇幅上限 60 → 120 章"},
+		{current, domainmodel.Compass{ScaleMax: 120, Ending: "称帝"}, "预计篇幅 60 → 120 章"},
 		{current, domainmodel.Compass{ScaleMax: 60, Ending: "称帝", Final: 48}, "收官 48 章"},
-		{current, domainmodel.Compass{Ending: "归隐"}, "取消篇幅上限（原 60 章） · 终局：归隐"},
+		{current, domainmodel.Compass{Ending: "归隐"}, "取消预计篇幅（原 60 章） · 终局：归隐"},
 		{&domainmodel.Compass{ScaleMax: 60, Ending: "称帝", Final: 40}, domainmodel.Compass{ScaleMax: 60, Ending: "称帝"}, "撤回收官（原 40 章）"},
 		{current, *current, "故事罗盘未变"},
 	} {

@@ -284,7 +284,7 @@ func validateMachineAuthorship(base, projected story, proposal Proposal) error {
 //   - 篇幅只由规划任务改变（§6.3 D63）：非规划任务不得改罗盘、不得增删章节节点；固定
 //     篇幅时 AI 不得改罗盘。规划任务展开多少章由它决定（D67），边界只守进展与上界：
 //     至少追加一章（或以现有章数收官），固定篇幅不超过全书章数，AI 定篇幅时罗盘必填、
-//     收官后不超过收官章数、未收官时不得触及篇幅上限。
+//     收官后不超过收官章数、未收官时不得触及预计篇幅。
 //   - 章节任务只写它的目标章节，正文满足任务携带要求的字数约束（S13）。
 //   - 事实核验任务只动 Canon，确认或删除全部待核验事实（D41）。
 func validateTaskSubmission(task Operation, base, projected story, patches []Patch) error {
@@ -365,9 +365,9 @@ func validateBlueprint(input TaskInput, base, projected story, patches []Patch) 
 		}
 	case max(chapters, existing+1) >= compass.ScaleMax:
 		if existing > compass.ScaleMax {
-			return fmt.Errorf("the %d planned chapters already exceed the compass scale_max %d: raise scale_max for user approval: %w", existing, compass.ScaleMax, ErrInvalid)
+			return fmt.Errorf("the %d planned chapters already exceed the compass scale_max %d: raise scale_max: %w", existing, compass.ScaleMax, ErrInvalid)
 		}
-		return fmt.Errorf("plan reaches the compass scale_max %d: declare the final chapter count (not below the %d planned chapters), or raise scale_max for user approval: %w", compass.ScaleMax, existing, ErrInvalid)
+		return fmt.Errorf("plan reaches the compass scale_max %d: declare the final chapter count (not below the %d planned chapters), or raise scale_max if the story needs more: %w", compass.ScaleMax, existing, ErrInvalid)
 	case chapters <= existing:
 		return noProgress(existing)
 	}

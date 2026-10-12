@@ -35,7 +35,7 @@ type DiagSnapshot struct {
 	RunEventBoundary      int64
 	LastActivityAt        *time.Time
 	Operations            []DiagOperation
-	// Attempts 是所列任务的尝试摘要，最近有进展的在前，最多 diagAttemptLimit 条。
+	// Attempts 是所列任务的尝试摘要，按任务的先后排列，最多 diagAttemptLimit 条。
 	Attempts          []model.OperationAttempt
 	AttemptsTruncated bool
 	// Transcript 只在本地选定单个任务时读取，按序号分页。
@@ -315,19 +315,20 @@ func readDiagOperations(ctx context.Context, tx *sql.Tx, scope string, args []an
 	return nil
 }
 
-// readDiagAttempts 读所列任务的尝试摘要，最近有进展的在前。
+// readDiagAttempts 按所列任务的先后读它们的尝试摘要（分享时异常任务在前），同一任务按
+// attempt 先后；截断只丢排在后面的任务，所列异常任务的尝试不会被别的任务挤掉。
 func readDiagAttempts(ctx context.Context, tx *sql.Tx, out *DiagSnapshot) error {
 	if len(out.Operations) == 0 {
 		return nil
 	}
-	args := make([]any, 0, len(out.Operations)+1)
-	for _, op := range out.Operations {
-		args = append(args, op.ID)
+	args := make([]any, 0, 2*len(out.Operations)+1)
+	for position, op := range out.Operations {
+		args = append(args, op.ID, position)
 	}
 	args = append(args, diagAttemptLimit+1)
-	rows, err := tx.QueryContext(ctx, `SELECT `+attemptColumns+` FROM operation_attempts
-		WHERE operation_id IN (?`+strings.Repeat(",?", len(out.Operations)-1)+`)
-		ORDER BY active_at_unix_ms DESC,operation_id,attempt DESC LIMIT ?`, args...)
+	rows, err := tx.QueryContext(ctx, `WITH listed(id,position) AS (VALUES (?,?)`+strings.Repeat(",(?,?)", len(out.Operations)-1)+`)
+		SELECT `+attemptColumns+` FROM listed JOIN operation_attempts ON operation_id=listed.id
+		ORDER BY listed.position,attempt LIMIT ?`, args...)
 	if err != nil {
 		return err
 	}

@@ -21,22 +21,19 @@ type AttemptUsage struct {
 	ActiveAt    time.Time
 }
 
-// ProjectAttempts 按开始先后列出一本书里团队成员出过力的全部尝试。角色属于任务：只做收尾
-// （如崩溃恢复后的合规核对）的尝试没有 Agent 会话，按同一任务其他尝试的角色计；从没有
-// Agent 会话的任务（外部执行器）不是团队成员的工作，不列入。
+// ProjectAttempts 按开始先后列出一本书里团队成员出过力的全部尝试。角色属于任务，取自它
+// 第一次 Agent 会话：只做收尾（如崩溃恢复后的合规核对）的尝试没有 Agent 会话，按任务的
+// 角色计；从没有 Agent 会话的任务（外部执行器）不是团队成员的工作，不列入。
 func (s *Store) ProjectAttempts(ctx context.Context, projectID string, now time.Time) ([]AttemptUsage, error) {
 	rows, err := s.db.QueryContext(ctx, `
-		WITH roles AS (
-			SELECT operation_id, MAX(agent_role) AS role FROM operation_attempts
-			WHERE agent_role != '' GROUP BY operation_id
-		)
 		SELECT a.operation_id, a.attempt, o.state,
 			a.outcome = '' AND a.attempt = o.attempt AND o.state = ? AND o.lease_until_unix_ms > ?,
-			r.role, a.agent_model, a.input_tokens, a.output_tokens, a.cache_read_tokens, a.cost,
+			r.agent_role, a.agent_model, a.input_tokens, a.output_tokens, a.cache_read_tokens, a.cost,
 			a.started_at_unix_ms, a.active_at_unix_ms
-		FROM operation_attempts a
-		JOIN operations o ON o.id = a.operation_id
-		JOIN roles r ON r.operation_id = a.operation_id
+		FROM operations o
+		JOIN operation_attempts a ON a.operation_id = o.id
+		JOIN operation_attempts r ON r.operation_id = o.id AND r.attempt = (
+			SELECT MIN(attempt) FROM operation_attempts WHERE operation_id = o.id AND agent_role != '')
 		WHERE o.target_kind = ? AND o.target_id = ?
 		ORDER BY a.started_at_unix_ms, a.operation_id, a.attempt`,
 		model.OperationRunning, now.UnixMilli(), model.AuthorityProject, projectID)

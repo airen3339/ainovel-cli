@@ -235,7 +235,8 @@ func TestAIIntentChangesRequireUserApproval(t *testing.T) {
 
 // D63 篇幅护栏：AI 首次给出护栏内的罗盘、下调上限、声明收官直接放行；首次超护栏、
 // 上调上限与删除罗盘都必须用户裁决。
-func TestCompassAutonomyRequiresUserForScaleRaises(t *testing.T) {
+// D73：预计篇幅在护栏以内由 AI 自行修订；护栏以上只到用户已认可的值，再高或删除罗盘都要用户裁决。
+func TestCompassScaleBeyondAutonomyRequiresUser(t *testing.T) {
 	ctx := context.Background()
 	engine := New(openStore(t))
 	target := model.AuthorityTarget{Kind: model.AuthorityProject, ID: "book-1"}
@@ -275,8 +276,10 @@ func TestCompassAutonomyRequiresUserForScaleRaises(t *testing.T) {
 	}
 	commit("first-above-ceiling", put(model.CompassAutonomyCeiling+1, 0), true)
 	commit("lower", put(120, 0), false)
-	commit("raise", put(121, 0), true)
-	commit("finale", put(121, 90), false)
+	commit("raise-within-ceiling", put(model.CompassAutonomyCeiling, 0), false)
+	commit("raise-above-ceiling", put(model.CompassAutonomyCeiling+50, 0), true)
+	commit("within-approved", put(model.CompassAutonomyCeiling+20, 0), false)
+	commit("finale", put(model.CompassAutonomyCeiling+20, 90), false)
 	commit("delete", model.Patch{Document: ref, Operation: model.PatchDelete}, true)
 	commit("first-within-ceiling", put(model.CompassAutonomyCeiling, 0), false)
 	// 固定篇幅时罗盘只有终局（D70）：之后交回 AI 定篇幅，上限按护栏判，不按 0 判。

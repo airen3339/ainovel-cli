@@ -59,7 +59,7 @@ func TestDocumentDependenciesIncludeStableParentAndPlan(t *testing.T) {
 }
 
 // 蓝图不变量（§6.3 D63/D67）：规划任务至少追加一章（或以现有章数收官），固定篇幅不超过
-// 全书章数；AI 定篇幅时罗盘必填，收官后按收官章数封顶，未收官不得触及篇幅上限；罗盘
+// 全书章数；AI 定篇幅时罗盘必填，收官后按收官章数封顶，未收官不得触及预计篇幅；罗盘
 // 只能由规划任务修改。
 func TestValidateBlueprint(t *testing.T) {
 	chapters := func(ids ...int) []PlanNode {

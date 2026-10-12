@@ -242,15 +242,13 @@ func messageUsage(usage *agentcore.Usage) model.Usage {
 	return spent
 }
 
-// toolErrors 数一条消息里报错的工具结果，随记录并入尝试摘要；诊断只读这个计数（D59、D72）。
+// toolErrors 是这条消息计入尝试摘要的工具报错数：agentcore 的工具消息只回答一次调用，
+// 报错记 1；诊断只读这个计数（D59、D72）。
 func toolErrors(message agentcore.Message) int {
-	count := 0
-	for _, block := range message.Blocks {
-		if result, ok := block.(litellm.ToolResultBlock); ok && result.IsError {
-			count++
-		}
+	if result, ok := message.ToolResult(); ok && result.IsError {
+		return 1
 	}
-	return count
+	return 0
 }
 
 func taskActivityScope(task model.TaskInput) activity.Scope {

@@ -20,8 +20,10 @@ type outlineRow struct {
 	node        workbench.OutlineNode
 	endChapter  int
 	chapter     int // 章行与占位行的章节号
+	level       int // 目录层级：上方实际存在的卷、弧层数，每级缩进两列
 	placeholder bool
 	collapsed   bool // 头行且已折叠
+	empty       bool // 头行下面还没有节点（滚动规划尚未展开的故事弧）：不显示箭头、不可折叠
 	chapters    int  // 子树章节数
 	pending     int  // 子树待确认章数
 	confirmed   int
@@ -31,6 +33,7 @@ func (r outlineRow) isChapter() bool { return r.node.Node.Kind == domainmodel.Pl
 func (r outlineRow) header() bool {
 	return r.node.Node.Kind == domainmodel.PlanVolume || r.node.Node.Kind == domainmodel.PlanArc
 }
+func (r outlineRow) foldable() bool { return r.header() && !r.empty }
 
 // outlineDepth 卷→弧→章的层级深度；beat 是章内节拍，不入目录。
 func outlineDepth(kind domainmodel.PlanNodeKind) (int, bool) {
@@ -46,7 +49,7 @@ func outlineDepth(kind domainmodel.PlanNodeKind) (int, bool) {
 	}
 }
 
-type outlineNodeStats struct{ chapters, pending, confirmed int }
+type outlineNodeStats struct{ children, chapters, pending, confirmed int }
 
 func outlineStats(outline []workbench.OutlineNode) map[string]outlineNodeStats {
 	stats := make(map[string]outlineNodeStats)
@@ -55,6 +58,11 @@ func outlineStats(outline []workbench.OutlineNode) map[string]outlineNodeStats {
 		depth, ok := outlineDepth(entry.Node.Kind)
 		if !ok {
 			continue
+		}
+		if parent := min(depth, len(ancestors)); parent > 0 {
+			s := stats[ancestors[parent-1]]
+			s.children++
+			stats[ancestors[parent-1]] = s
 		}
 		if entry.Node.Kind == domainmodel.PlanChapter {
 			for _, id := range ancestors {
@@ -142,17 +150,23 @@ func (m model) buildOutlineRows() []outlineRow {
 				delete(ancestors, d)
 			}
 		}
+		level := 0
 		var context []string
 		for d := 0; d < depth; d++ {
-			if title := ancestors[d]; title != "" {
+			title, ok := ancestors[d]
+			if !ok {
+				continue
+			}
+			level++
+			if title != "" {
 				context = append(context, title)
 			}
 		}
-		row := outlineRow{node: entry, chapter: entry.Number, context: strings.Join(context, " / ")}
+		row := outlineRow{node: entry, chapter: entry.Number, level: level, context: strings.Join(context, " / ")}
 		if depth < 2 {
 			ancestors[depth] = entry.Node.Title
 			s := stats[entry.Node.ID]
-			row.chapters, row.pending, row.confirmed = s.chapters, s.pending, s.confirmed
+			row.chapters, row.pending, row.confirmed, row.empty = s.chapters, s.pending, s.confirmed, s.children == 0
 		}
 		if entry.Node.Kind != domainmodel.PlanChapter && bench.collapsed[entry.Node.ID] {
 			row.collapsed = true
@@ -429,14 +443,16 @@ func (m *model) toggleFold(id string) string {
 	return ""
 }
 
-// clickOutlineRow 与键盘选章同一入口：章行选中并固定，头行折叠/展开，占位行无动作。
+// clickOutlineRow 与键盘选章同一入口：章行选中并固定，头行折叠/展开（空头行只选中），占位行无动作。
 func (m *model) clickOutlineRow(index int) {
 	row := m.outlineRows()[index]
 	switch {
 	case row.placeholder:
 	case row.header():
 		m.bench.cursor, m.bench.pane, m.bench.pinned = index, benchPaneOutline, true
-		m.bench.notice = m.toggleFold(row.node.Node.ID)
+		if row.foldable() {
+			m.bench.notice = m.toggleFold(row.node.Node.ID)
+		}
 	default:
 		m.bench.pane = benchPaneOutline
 		m.selectOutline(index)
@@ -540,39 +556,45 @@ func (m model) directoryNote() []string {
 	return []string{benchTheme.Muted.Render(note), benchTheme.Muted.Render(" " + approvalLabel(snap.Approval))}
 }
 
+// outlineRowLine 一行目录：两列选中标记，每级缩进两列，两列行标（折叠箭头或章节状态），
+// 再接文字。卷标出序号；下面还没有节点的卷弧没有箭头，注明待展开（滚动规划，D67/D73）。
 func (m model) outlineRowLine(row outlineRow, selected bool, width int) string {
+	indent := strings.Repeat("  ", row.level)
 	switch {
 	case row.placeholder:
+		label := fmt.Sprintf("%02d", row.chapter)
 		if row.endChapter > row.chapter {
-			return benchTheme.Muted.Render(fmt.Sprintf("   ○ %02d–%02d  待规划", row.chapter, row.endChapter))
+			label = fmt.Sprintf("%02d–%02d", row.chapter, row.endChapter)
 		}
-		return benchTheme.Muted.Render(fmt.Sprintf("   ○ %02d  待规划", row.chapter))
+		return benchTheme.Muted.Render("  " + indent + "○ " + label + "  待规划")
 	case row.isChapter():
-		return m.outlineChapterLine(row.node, selected, width)
-	default:
-		fold, style, indent := "▾ ", benchTheme.Title, ""
-		if row.collapsed {
-			fold = "▸ "
-		}
-		if row.node.Node.Kind == domainmodel.PlanArc {
-			style, indent = styleSubtitle, " "
-		}
-		summary, pending := "", ""
-		if row.collapsed {
-			summary = fmt.Sprintf(" · %d/%d 章", row.confirmed, row.chapters)
-		}
-		if row.node.Proposed || row.collapsed && row.pending > 0 {
-			pending = " ◇"
-		}
-		text := indent + fold + truncate(row.node.Node.Title, max(1, width-3-lipgloss.Width(indent+fold+summary+pending)))
-		if selected {
-			return benchTheme.Selected.Render(fitLine("▎ "+text+summary+pending, width))
-		}
-		return "  " + style.Render(text) + benchTheme.Muted.Render(summary) + benchTheme.Warning.Render(pending)
+		return m.outlineChapterLine(row.node, indent, selected, width)
 	}
+	fold, style, title := "▾ ", benchTheme.Title, row.node.Node.Title
+	if row.node.Volume > 0 {
+		title = fmt.Sprintf("第 %d 卷 · %s", row.node.Volume, title)
+	}
+	if row.node.Node.Kind == domainmodel.PlanArc {
+		style = styleSubtitle
+	}
+	summary, pending := "", ""
+	switch {
+	case row.empty:
+		fold, summary = "  ", " · 待展开"
+	case row.collapsed:
+		fold, summary = "▸ ", fmt.Sprintf(" · %d/%d 章", row.confirmed, row.chapters)
+	}
+	if row.node.Proposed || row.collapsed && row.pending > 0 {
+		pending = " ◇"
+	}
+	text := indent + fold + truncate(title, max(1, width-3-lipgloss.Width(indent+fold+summary+pending)))
+	if selected {
+		return benchTheme.Selected.Render(fitLine("▎ "+text+summary+pending, width))
+	}
+	return "  " + style.Render(text) + benchTheme.Muted.Render(summary) + benchTheme.Warning.Render(pending)
 }
 
-func (m model) outlineChapterLine(entry workbench.OutlineNode, selected bool, width int) string {
+func (m model) outlineChapterLine(entry workbench.OutlineNode, indent string, selected bool, width int) string {
 	symbol, style, titleStyle := "○", benchTheme.Muted, benchTheme.Muted
 	switch {
 	case entry.State == workbench.ChapterConfirmed:
@@ -583,9 +605,9 @@ func (m model) outlineChapterLine(entry workbench.OutlineNode, selected bool, wi
 		symbol, style, titleStyle = "◉", benchTheme.Accent, benchTheme.Text
 	}
 	digits := max(2, len(strconv.Itoa(max(m.bench.snap.Length.Final, chapterCount(m.bench.snap)))))
-	label := fmt.Sprintf("%0*d  %s", digits, entry.Number, truncate(entry.Node.Title, max(1, width-digits-7)))
+	label := fmt.Sprintf("%0*d  %s", digits, entry.Number, truncate(entry.Node.Title, max(1, width-digits-6-len(indent))))
 	if selected {
-		return benchTheme.Selected.Render(fitLine("▎ "+symbol+" "+label, width))
+		return benchTheme.Selected.Render(fitLine("▎ "+indent+symbol+" "+label, width))
 	}
-	return "   " + style.Render(symbol) + " " + titleStyle.Render(label)
+	return "  " + indent + style.Render(symbol) + " " + titleStyle.Render(label)
 }

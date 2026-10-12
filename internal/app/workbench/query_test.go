@@ -108,6 +108,9 @@ func TestPendingProposalReadsAsStoryAndPreviewsInOutline(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("outline = %q\nwant %q", got, want)
 	}
+	if outline[0].Volume != 1 || slices.ContainsFunc(outline[1:], func(entry OutlineNode) bool { return entry.Volume != 0 }) {
+		t.Fatalf("only volumes carry their number: %+v", outline)
+	}
 	decision.Stale = true
 	if plan, proposed, err = proposedPlan(project.Plan, decision); err != nil || len(plan) != 3 || len(proposed) != 0 {
 		t.Fatalf("stale proposal must not project: plan=%d proposed=%d err=%v", len(plan), len(proposed), err)

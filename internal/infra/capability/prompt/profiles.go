@@ -308,9 +308,9 @@ func planEditSchema(number, parent, parentDescription string) map[string]any {
 }
 
 const compassSchema = `{"type":"object","description":"故事罗盘，只有规划任务可写。ending 是终局方向：故事最终要回答的问题或抵达的状态，` +
-	`首次规划必须给出，之后只在有变化时提交。scale_max 是全书篇幅上限（章），final 是收官承诺（全书章数，未收官时省略）：` +
+	`首次规划必须给出，之后只在有变化时提交。scale_max 是预计全书篇幅（章），随故事修订；final 是收官承诺（全书章数，未收官时省略）：` +
 	`任务有 fixed_chapters 时篇幅由用户固定，二者都不写；篇幅交给 AI 时首次规划必须给出 scale_max，未收官时蓝图章节总数必须小于它，` +
-	`临近上限就声明 final 收官，确需更长再上调 scale_max（需用户同意）；给出 final 后蓝图不超过第 final 章，可分次规划到它",` +
+	`临近时声明 final 收官，故事需要更长就上调 scale_max（超出任务说明的自主范围需用户同意）；给出 final 后蓝图不超过第 final 章，可分次规划到它",` +
 	`"properties":{"scale_max":{"type":"integer","minimum":1},"ending":{"type":"string"},"final":{"type":"integer","minimum":1}},` +
 	`"required":["ending"],"additionalProperties":false}`
 

@@ -307,7 +307,7 @@ const planPayload = `{"reason":"首次规划","compass":{"ending":"他终于寄�
 	`"remove_facts":[{"subject":"陈渡","predicate":"state.home"}]}`
 
 var planLines = []liveLine{
-	{sectionOutline, `故事罗盘 · 终局：他终于寄出那封"不该寄的信" · 篇幅上限 60 章`},
+	{sectionOutline, `故事罗盘 · 终局：他终于寄出那封"不该寄的信" · 预计 60 章`},
 	{sectionOutline, "第 1 卷 · 未寄出的信 —— 邮差替亡者送信。 他想起自己的过去。"},
 	{sectionOutline, "第 1 个故事弧 · 雨夜 —— 第一封 {信} 抵达]"},
 	{sectionOutline, "第 1 章 · 无人签收 —— 没有邮戳的信"},

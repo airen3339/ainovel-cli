@@ -45,7 +45,7 @@ func TestDiagRejectsInvalidScopeAndArguments(t *testing.T) {
 	api := bootstrap.NewDiagnostics(nil, "test")
 	for _, args := range [][]string{
 		{"--project", "missing-db"}, {"--run", "run"}, {"--operation", "task"},
-		{"--event-after", "-1"}, {"--event-after", "1"}, {"--after", "task"},
+		{"--transcript-after", "-1"}, {"--transcript-after", "1"}, {"--after", "task"},
 		{"--project", "book", "--operation", "task", "--after", "task"},
 		{"export"}, {"repair"}, {"--file", "unused"},
 	} {
