@@ -35,25 +35,34 @@ func (f *failingTasks) Run(_ context.Context, _ creation.WorkItem, operation mod
 
 func (f *failingTasks) Failures(context.Context, string) (int, error) { return f.calls, nil }
 
+// 需要人处理的失败（提交受阻、结果未知、模型服务拒绝）立即停下，其余在预算内自动重开。
+// 停下的原因说给用户听：模型服务的失败按类别说，不贴原始错误链，也不带内部任务号。
 func TestDriverDoesNotReopenFailuresRequiringIntervention(t *testing.T) {
-	for _, code := range []model.FailureCode{model.FailureSubmissionBlocked, model.FailureResultUnknown, ""} {
-		t.Run(string(code), func(t *testing.T) {
+	for _, c := range []struct {
+		code  model.FailureCode
+		calls int
+		cause string
+	}{
+		{model.FailureSubmissionBlocked, 1, "original failure"},
+		{model.FailureResultUnknown, 1, "original failure"},
+		{model.FailureModelRefused, 1, "模型服务拒绝了请求"},
+		{model.FailureModelUnreachable, 4, "连不上模型服务"},
+		{"", 4, "original failure"},
+	} {
+		t.Run(string(c.code), func(t *testing.T) {
 			st, run := fixture(t)
 			goal := goalFunc(func(context.Context, model.CreationRun) (creation.Decision, error) {
-				return creation.Decision{Revision: 1, Step: creation.Step{Work: &creation.WorkItem{ID: "write"}}}, nil
+				return creation.Decision{Revision: 1, Step: creation.Step{Work: &creation.WorkItem{ID: "write:c24"}}}, nil
 			})
-			tasks := &failingTasks{code: code}
+			tasks := &failingTasks{code: c.code}
 			driver := creation.New(st, map[model.GoalKind]creation.Goal{run.Goal.Kind: goal}, time.Now)
 			outcome, err := driver.Drive(context.Background(), run, tasks, creation.DriveCommand{})
-			wantCalls := 1
-			if code == "" {
-				wantCalls = 4
-			}
-			if err != nil || outcome.Run.State != model.RunWaitingUser || tasks.calls != wantCalls {
+			if err != nil || outcome.Run.State != model.RunWaitingUser || tasks.calls != c.calls {
 				t.Fatalf("failure policy: calls=%d outcome=%+v err=%v", tasks.calls, outcome, err)
 			}
-			if !strings.Contains(outcome.Run.StateReason, "original failure") {
-				t.Fatalf("diagnostic lost: %+v", outcome.Run)
+			reason := outcome.Run.StateReason
+			if !strings.Contains(reason, c.cause) || c.code.ModelService() && strings.Contains(reason, "original failure") || strings.Contains(reason, "write:c24") {
+				t.Fatalf("reason = %q", reason)
 			}
 		})
 	}

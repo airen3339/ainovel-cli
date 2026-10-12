@@ -12,6 +12,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain/model"
 	"github.com/voocel/ainovel-cli/internal/infra/activity"
 	"github.com/voocel/ainovel-cli/internal/infra/capability/prompt"
+	"github.com/voocel/ainovel-cli/internal/infra/llm/models"
 	"github.com/voocel/litellm"
 )
 
@@ -133,6 +134,7 @@ func (r *Runtime) Execute(ctx context.Context, operation model.Operation) (model
 		Tools:      tools,
 		Middleware: []agentcore.ToolMiddleware{submissionGuard(stopExecution)},
 		Cache:      &litellm.CacheControl{},
+		Retry:      models.Retry(),
 		// 每条进入会话的消息先落盘：落盘失败即停止本次执行，提交结果因此先于收尾持久化。
 		// 用量与工具报错在这里从消息取出，随同一次写入并入尝试摘要（D72）。
 		Emit: func(event agentcore.Event) error {
@@ -164,7 +166,7 @@ func (r *Runtime) Execute(ctx context.Context, operation model.Operation) (model
 	}
 	_, executionErr := agentcore.Run(executionCtx, config, recoveredMessages, agentcore.UserText(promptText))
 	if executionErr != nil {
-		return model.OperationOutcome{}, fmt.Errorf("capability agent failed: %w", executionErr)
+		return model.OperationOutcome{}, models.Classify(executionErr)
 	}
 	if wantsVerdict {
 		if verdict == nil {
@@ -400,6 +402,13 @@ func (f *judgmentFeed) observe(event litellm.Event) error {
 	return nil
 }
 
+// retried 与 Agent 循环的重试同一种事件：现场显示连接不稳定、第几次重试。
+func (f *judgmentFeed) retried(attempt int, _ time.Duration, err error) {
+	retry := f.event(activity.Retry)
+	retry.Attempt, retry.Err = attempt, clipActivityText(err.Error())
+	f.publish(retry)
+}
+
 func (f *judgmentFeed) finish(err error) {
 	end := f.call(activity.ToolEnd)
 	if err != nil {
@@ -433,7 +442,8 @@ func endedWithout(end agentcore.RunEnd, cause error) error {
 }
 
 // restoreMessages 把之前尝试的对话导回本次会话，并取出最近一次执行失败的原因（D56）。
-// 租约回收判的失败只说明执行者失联，模型无从修正，不带回。
+// 租约回收判的失败只说明执行者失联，模型服务一侧的失败与写作无关（D76），模型都无从
+// 修正，不带回。
 func (r *Runtime) restoreMessages(ctx context.Context, operation model.Operation) ([]agentcore.Message, string, error) {
 	if operation.Attempt <= 1 {
 		return nil, "", nil
@@ -444,7 +454,7 @@ func (r *Runtime) restoreMessages(ctx context.Context, operation model.Operation
 	}
 	var lastFailure string
 	for _, attempt := range attempts {
-		if attempt.Attempt < operation.Attempt && attempt.Outcome == model.OperationFailed && !attempt.LeaseExpired {
+		if attempt.Attempt < operation.Attempt && attempt.Outcome == model.OperationFailed && !attempt.LeaseExpired && !attempt.FailureCode.ModelService() {
 			lastFailure = attempt.Error
 		}
 	}

@@ -108,6 +108,7 @@ func NewConversation(config ConversationConfig) (*Conversation, error) {
 		Compactor:     compact.Summarizer{},
 		CompactAt:     conversationCompactAt,
 		MaxToolErrors: 3,
+		Retry:         models.Retry(),
 	}, history)
 	c.agent.Subscribe(c.record)
 	return c, nil
@@ -131,7 +132,7 @@ func (c *Conversation) Send(ctx context.Context, binding models.Binding, message
 	config := c.agent.Config()
 	config.Model = binding.Routed(cacheKey, "")
 	c.agent.SetConfig(config)
-	return c.agent.Prompt(ctx, messages...)
+	return models.Classify(c.agent.Prompt(ctx, messages...))
 }
 
 // Steer 把话送进正在进行的回合，在下一次模型调用前读到。

@@ -269,7 +269,7 @@ func (s *Session) run(ctx context.Context, cancel context.CancelFunc, conv *capa
 		s.reply.Reset()
 		s.thought = false
 		if err != nil && !interrupted {
-			s.turnErr = err.Error()
+			s.turnErr = model.FailureCodeFor(err).Explain(err.Error())
 		}
 		s.mu.Unlock()
 		s.notify()

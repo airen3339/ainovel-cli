@@ -1,8 +1,13 @@
 package models
 
 import (
+	"errors"
+	"fmt"
 	"slices"
 	"testing"
+
+	"github.com/voocel/ainovel-cli/internal/domain/model"
+	"github.com/voocel/litellm"
 )
 
 func TestDigestTracksExecutionConfigWithoutLeakingAPIKey(t *testing.T) {
@@ -94,5 +99,31 @@ func TestOpenAIFormatPicksTheAdapterByAddress(t *testing.T) {
 		if got := adapter(tc.config); got != tc.want {
 			t.Errorf("%+v: adapter = %q, want %q", tc.config, got, tc.want)
 		}
+	}
+}
+
+// 模型服务的失败按类别标记，文字原样保留给诊断；不属于这几类的失败不标。
+func TestClassifyTagsModelServiceFailuresWithoutRewording(t *testing.T) {
+	offline := litellm.NewNetworkError("compat", "request failed", errors.New(`Post "https://relay/v1/chat/completions": dial tcp: lookup relay: no such host`))
+	for _, c := range []struct {
+		err  error
+		want model.FailureCode
+	}{
+		{offline, model.FailureModelUnreachable},
+		{fmt.Errorf("stream: %w", offline), model.FailureModelUnreachable},
+		{&litellm.Error{Type: litellm.ErrorTypeAuth, Message: "invalid api key", StatusCode: 401}, model.FailureModelRefused},
+		{&litellm.Error{Type: litellm.ErrorTypeQuota, Message: "insufficient_quota", StatusCode: 429}, model.FailureModelRefused},
+		{&litellm.Error{Type: litellm.ErrorTypeRateLimit, Message: "slow down", StatusCode: 429, Temporary: true}, model.FailureModelBusy},
+		{&litellm.Error{Type: litellm.ErrorTypeProvider, Message: "bad gateway", StatusCode: 502, Temporary: true}, model.FailureModelBusy},
+		{&litellm.Error{Type: litellm.ErrorTypeContextOverflow, Message: "prompt is too long", StatusCode: 400}, ""},
+		{errors.New("store is closed"), ""},
+	} {
+		got := Classify(c.err)
+		if model.FailureCodeFor(got) != c.want || got.Error() != c.err.Error() || !errors.Is(got, c.err) {
+			t.Errorf("Classify(%v) = %q %q", c.err, model.FailureCodeFor(got), got)
+		}
+	}
+	if Classify(nil) != nil {
+		t.Fatal("Classify(nil) must stay nil")
 	}
 }

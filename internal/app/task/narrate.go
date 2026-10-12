@@ -41,8 +41,8 @@ func (s *Manager) settle(work creation.WorkItem, result operationengine.RunResul
 		s.notify(operation, activity.ToneWait, work.Reasons.Waiting)
 	case model.OperationFailed:
 		text := work.Reasons.Failure
-		if operation.Error != "" {
-			text += "：" + clip(operation.Error, 80)
+		if cause := operation.FailureCode.Explain(operation.Error); cause != "" {
+			text += "：" + clip(cause, 80)
 		}
 		s.notify(operation, activity.ToneFail, text)
 	case model.OperationStale:

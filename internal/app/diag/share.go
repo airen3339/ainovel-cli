@@ -150,7 +150,7 @@ func Share(report Report) ShareReport {
 	for _, op := range report.Operations {
 		s.Operations = append(s.Operations, ShareOperation{
 			ID: alias("task", op.ID), Kind: safeKind(string(op.Kind)), State: safeState(string(op.State)), Attempt: op.Attempt,
-			FailureCode: allowed(string(op.FailureCode), "", "result_unknown", "submission_blocked"), Executor: alias("executor", op.Executor), Configuration: alias("config", op.ConfigDigest),
+			FailureCode: allowed(string(op.FailureCode), "", "result_unknown", "submission_blocked", "model_unreachable", "model_busy", "model_refused"), Executor: alias("executor", op.Executor), Configuration: alias("config", op.ConfigDigest),
 			CreatedOffsetMS: offset(op.CreatedAt, report.Header.CapturedAt), UpdatedOffsetMS: offset(op.UpdatedAt, report.Header.CapturedAt)})
 	}
 	for _, f := range report.Findings {
@@ -187,7 +187,7 @@ func Share(report Report) ShareReport {
 		}
 		s.Attempts = append(s.Attempts, ShareAttempt{
 			Operation: alias("task", a.OperationID), Attempt: a.Attempt, Outcome: outcome,
-			FailureCode: allowed(string(a.FailureCode), "", "result_unknown", "submission_blocked"), LeaseExpired: a.LeaseExpired,
+			FailureCode: allowed(string(a.FailureCode), "", "result_unknown", "submission_blocked", "model_unreachable", "model_busy", "model_refused"), LeaseExpired: a.LeaseExpired,
 			ToolErrors: a.ToolErrors, Usage: a.Usage,
 			StartedOffsetMS: offset(a.StartedAt, report.Header.CapturedAt), ActiveOffsetMS: offset(a.ActiveAt, report.Header.CapturedAt)})
 	}

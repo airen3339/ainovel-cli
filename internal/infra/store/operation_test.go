@@ -114,16 +114,21 @@ func TestExpiredLeaseIsExplicitlyRecovered(t *testing.T) {
 	if _, err := s.ClaimNextOperation(ctx, "worker-1", time.Minute, now.Add(time.Second)); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if _, err := s.RenewOperationLease(ctx, operation.ID, "worker-1", 1, time.Minute, now.Add(2*time.Minute)); !errors.Is(err, model.ErrStateConflict) {
-		t.Fatalf("expired heartbeat error = %v, want model.ErrStateConflict", err)
+	// 租约过期而没人回收时任务仍归原执行者：续期接上（合盖睡眠醒来）。
+	revived, err := s.RenewOperationLease(ctx, operation.ID, "worker-1", 1, time.Minute, now.Add(2*time.Minute))
+	if err != nil || !revived.LeaseUntil.Equal(now.Add(3*time.Minute)) {
+		t.Fatalf("revived = %#v, %v", revived, err)
 	}
 
-	recovered, err := s.RecoverExpiredOperations(ctx, now.Add(2*time.Minute))
+	recovered, err := s.RecoverExpiredOperations(ctx, now.Add(4*time.Minute))
 	if err != nil {
 		t.Fatalf("recover: %v", err)
 	}
 	if len(recovered) != 1 || recovered[0] != operation.ID {
 		t.Fatalf("recovered = %v", recovered)
+	}
+	if _, err := s.RenewOperationLease(ctx, operation.ID, "worker-1", 1, time.Minute, now.Add(4*time.Minute)); !errors.Is(err, model.ErrStateConflict) {
+		t.Fatalf("heartbeat after recovery = %v, want model.ErrStateConflict", err)
 	}
 	stored, err := s.GetOperation(ctx, operation.ID)
 	if err != nil {
@@ -132,7 +137,7 @@ func TestExpiredLeaseIsExplicitlyRecovered(t *testing.T) {
 	if stored.State != model.OperationQueued || stored.Error == "" || stored.LeaseOwner != "" || stored.LeaseUntil != nil {
 		t.Fatalf("recovered operation = %#v", stored)
 	}
-	claimed, err := s.ClaimNextOperation(ctx, "worker-2", time.Minute, now.Add(3*time.Minute))
+	claimed, err := s.ClaimNextOperation(ctx, "worker-2", time.Minute, now.Add(5*time.Minute))
 	if err != nil {
 		t.Fatalf("reclaim: %v", err)
 	}

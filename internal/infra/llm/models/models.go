@@ -2,17 +2,48 @@ package models
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"maps"
 	"net/url"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/domain/model"
 	"github.com/voocel/litellm"
 	"github.com/voocel/litellm/provider"
+	"github.com/voocel/litellm/retry"
 )
+
+// Retry 是模型调用唯一的重试策略（§6.2）：断网、域名解析失败、连接中断、限流、服务暂时
+// 不可用这类暂时性失败，退避后重发同一次调用，间隔从 2 秒翻倍到 1 分钟，约三分钟内恢复
+// 就接着写，不算任务失败；其余失败原样交给调用方。合盖睡眠时计时随进程暂停，醒来接着等。
+func Retry() retry.Policy {
+	return retry.Policy{MaxAttempts: 8, InitialDelay: 2 * time.Second, MaxDelay: time.Minute, Multiplier: 2}
+}
+
+// Classify 给模型调用的失败标上类别（D76），文字不变：连不上、繁忙（重试已用尽）、拒绝
+// （密钥、额度、模型名，重试无用）。其余失败原样返回。
+func Classify(err error) error {
+	e, ok := errors.AsType[*litellm.Error](err)
+	if !ok {
+		return err
+	}
+	var code model.FailureCode
+	switch {
+	case e.Type == litellm.ErrorTypeNetwork || e.Type == litellm.ErrorTypeTimeout:
+		code = model.FailureModelUnreachable
+	case e.Type == litellm.ErrorTypeAuth || e.Type == litellm.ErrorTypeQuota || e.Type == litellm.ErrorTypeModel:
+		code = model.FailureModelRefused
+	case e.Temporary:
+		code = model.FailureModelBusy
+	default:
+		return err
+	}
+	return &model.Failure{Code: code, Err: err}
+}
 
 // ThinkingLevels 是全部思考强度，空串是自动（沿用模型默认）。某个模型可选的见 Levels。
 var ThinkingLevels = []string{"", "off", "minimal", "low", "medium", "high", "xhigh", "max"}

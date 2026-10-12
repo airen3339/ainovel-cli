@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/infra/llm"
@@ -107,5 +108,32 @@ func TestStructuredStreamsEventsToObserver(t *testing.T) {
 	}
 	if got := strings.Join(kinds, ","); got != "reasoning:先看约束,text,usage,done" {
 		t.Fatalf("observed events = %s", got)
+	}
+}
+
+// 断网这类暂时性失败退避后重发同一次调用，并告诉调用方第几次重发；不是暂时性的失败原样返回。
+func TestStructuredRetriesTemporaryFailures(t *testing.T) {
+	offline := &litellm.Error{Type: litellm.ErrorTypeNetwork, Message: "dial tcp: lookup relay: no such host", Temporary: true, RetryAfter: time.Millisecond}
+	p := litellmtest.New(litellmtest.Fail(offline), litellmtest.Text(`{"status":"pass"}`))
+	retried := call
+	var notices []int
+	retried.Retried = func(attempt int, _ time.Duration, err error) {
+		if !strings.Contains(err.Error(), "no such host") {
+			t.Errorf("retry cause = %v", err)
+		}
+		notices = append(notices, attempt)
+	}
+	var out struct {
+		Status string `json:"status"`
+	}
+	if _, err := llm.Structured(context.Background(), binding(t, p), retried, &out); err != nil || out.Status != "pass" {
+		t.Fatalf("structured call: err=%v out=%+v", err, out)
+	}
+	if len(p.Requests()) != 2 || len(notices) != 1 || notices[0] != 2 {
+		t.Fatalf("requests = %d, notices = %v", len(p.Requests()), notices)
+	}
+	denied := litellmtest.New(litellmtest.Fail(&litellm.Error{Type: litellm.ErrorTypeAuth, Message: "bad key"}))
+	if _, err := llm.Structured(context.Background(), binding(t, denied), call, &out); err == nil || len(denied.Requests()) != 1 {
+		t.Fatalf("auth failure = %v after %d requests", err, len(denied.Requests()))
 	}
 }

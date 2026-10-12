@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"maps"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -327,7 +328,8 @@ func (s transcriptStore) ListTranscript(context.Context, string) ([]domainmodel.
 }
 
 // 连接中途断开的回合以 StopError 记下，可以一个字都没有：续跑照常恢复；判断不是会话消息，
-// 不带回；租约回收判的失败只说明执行者失联，不当作失败原因告诉模型。
+// 不带回；租约回收判的失败只说明执行者失联、模型服务的失败与写作无关，都不当作失败原因
+// 告诉模型。
 func TestRestoreKeepsFailedTurnsAndExecutionFailures(t *testing.T) {
 	task := json.RawMessage(`{"role":"user","blocks":[{"type":"text","text":"写第 1 章"}]}`)
 	failed := json.RawMessage(`{"role":"assistant","blocks":null,"stop":"error","provider":"openai","model":"m"}`)
@@ -335,6 +337,7 @@ func TestRestoreKeepsFailedTurnsAndExecutionFailures(t *testing.T) {
 		attempts: []domainmodel.OperationAttempt{
 			{Attempt: 1, Outcome: domainmodel.OperationFailed, Error: "提交被拒：章节字数不足"},
 			{Attempt: 2, Outcome: domainmodel.OperationFailed, Error: "worker lease expired", LeaseExpired: true},
+			{Attempt: 3, Outcome: domainmodel.OperationFailed, Error: "compat: request failed: no such host", FailureCode: domainmodel.FailureModelUnreachable},
 		},
 		transcript: []domainmodel.TranscriptEntry{
 			{Sequence: 3, Attempt: 1, Kind: domainmodel.TranscriptMessage, Payload: task},
@@ -342,7 +345,7 @@ func TestRestoreKeepsFailedTurnsAndExecutionFailures(t *testing.T) {
 			{Sequence: 8, Attempt: 1, Kind: domainmodel.TranscriptJudgment, Payload: json.RawMessage(`{"model":"judge"}`)},
 		},
 	}}
-	messages, lastFailure, err := runtime.restoreMessages(context.Background(), domainmodel.Operation{ID: "op", Attempt: 3})
+	messages, lastFailure, err := runtime.restoreMessages(context.Background(), domainmodel.Operation{ID: "op", Attempt: 4})
 	if err != nil || len(messages) != 2 || messages[1].Stop != agentcore.StopError || lastFailure != "提交被拒：章节字数不足" {
 		t.Fatalf("restore = %d messages, failure %q, err = %v", len(messages), lastFailure, err)
 	}
@@ -525,6 +528,76 @@ func delta(event litellm.Event) agentcore.Event { return agentcore.MessageDelta{
 // TestPublishActivityTranslatesStreamingToolDeltas 守卫真实事件时序（agentcore
 // 在整条回复完成后才执行工具）：参数流阶段就要有带工具名的进行中条目
 // 与字节进度，ToolStart 不重复建条、ToolEnd 收尾。
+// 断网、域名解析失败这类暂时性失败由模型调用就地退避重发：任务照常完成，不算失败，
+// 现场留下第几次重试（§6.2）。
+func TestRuntimeRidesOutTemporaryModelFailures(t *testing.T) {
+	ctx := context.Background()
+	authorityStore, operation := claimedReview(t, "book-offline")
+	review, _ := json.Marshal(map[string]any{"key": "review/findings", "findings": []map[string]any{}})
+	verdict, _ := json.Marshal(map[string]any{"status": "pass", "review_key": "review/findings"})
+	offline := &litellm.Error{Type: litellm.ErrorTypeNetwork, Message: "dial tcp: lookup relay: no such host", Temporary: true, RetryAfter: time.Millisecond}
+	runtime := boundRuntime(authorityStore, testChat(litellmtest.New(
+		litellmtest.Fail(offline), callReply("put-review", "workspace_put_review", review), callReply("verdict", "verdict_submit", verdict),
+	)))
+	hub := activity.NewHub()
+	runtime.SetActivitySink(hub)
+	outcome, err := runtime.Execute(ctx, operation)
+	if err != nil || len(outcome.Verdict) == 0 {
+		t.Fatalf("execute through an outage: outcome=%#v err=%v", outcome, err)
+	}
+	feed, _ := hub.Snapshot("book-offline")
+	if !slices.ContainsFunc(feed.Entries, func(entry activity.Entry) bool {
+		return entry.Kind == activity.Retry && entry.Attempt == 2 && strings.Contains(entry.Err, "no such host")
+	}) {
+		t.Fatalf("retry not shown: %#v", feed.Entries)
+	}
+}
+
+// 模型服务拒绝（密钥失效）重试无用：执行立即失败，失败带上类别，错误文字原样不另加包装。
+func TestRuntimeTagsRefusedModelCalls(t *testing.T) {
+	authorityStore, operation := claimedReview(t, "book-refused")
+	refused := &litellm.Error{Type: litellm.ErrorTypeAuth, Provider: "compat", Message: "invalid api key", StatusCode: 401}
+	provider := litellmtest.New(litellmtest.Fail(refused))
+	_, err := boundRuntime(authorityStore, testChat(provider)).Execute(context.Background(), operation)
+	if domainmodel.FailureCodeFor(err) != domainmodel.FailureModelRefused || err.Error() != refused.Error() || len(provider.Requests()) != 1 {
+		t.Fatalf("refused call: code=%q err=%v requests=%d", domainmodel.FailureCodeFor(err), err, len(provider.Requests()))
+	}
+}
+
+// claimedReview 是写好第 1 章的书上一个已领取的审阅任务。
+func claimedReview(t *testing.T, projectID string) (*store.Store, domainmodel.Operation) {
+	t.Helper()
+	ctx := context.Background()
+	now := time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC)
+	authorityStore, err := store.Open(ctx, filepath.Join(t.TempDir(), "ainovel.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { authorityStore.Close() })
+	worker, err := prompt.BuiltinWorkerProfile("editor.review")
+	if err != nil {
+		t.Fatal(err)
+	}
+	task := json.RawMessage(`{"chapter_ids":["chapter-1"],"basis":{"documents":[{"ref":{"kind":"manuscript","id":"chapter-1"},"revision":1}]}}`)
+	target := domainmodel.AuthorityTarget{Kind: domainmodel.AuthorityProject, ID: projectID}
+	seedWrittenChapters(t, ctx, authorityStore, target, now, 1)
+	operation := domainmodel.Operation{
+		ID: "review-" + projectID, Kind: domainmodel.OperationReviewRange, Target: target, State: domainmodel.OperationQueued,
+		RunID: createRuntimeTestRun(t, ctx, authorityStore, projectID, now),
+		Snapshot: runtimeSnapshot(task, 1, domainmodel.ApprovalAuto,
+			seedRuntimeProfile(t, ctx, authorityStore, projectID, worker, task, 1)),
+		Input: task, CreatedAt: now, UpdatedAt: now,
+	}
+	if _, err := authorityStore.CreateOperation(ctx, operation); err != nil {
+		t.Fatal(err)
+	}
+	claimed, err := authorityStore.ClaimNextOperation(ctx, "worker-1", time.Minute, now.Add(time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return authorityStore, claimed
+}
+
 func TestPublishActivityTranslatesStreamingToolDeltas(t *testing.T) {
 	now := time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC)
 	hub := activity.NewHub()

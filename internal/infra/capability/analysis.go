@@ -220,7 +220,7 @@ func (r *Runtime) AnalyzeSemanticCompliance(
 			},
 		},
 		CacheKey: cacheKey, SessionID: operation.ID + ":semantic-compliance",
-		Observe: feed.observe,
+		Observe: feed.observe, Retried: feed.retried,
 	}, &report)
 	feed.finish(err)
 	// 判断用的是默认绑定、不在 Agent 会话里：对话记录记下实际模型与结论，用量按同一价目

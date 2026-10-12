@@ -125,6 +125,9 @@ func (s *Store) claimOperation(
 	return operation, nil
 }
 
+// RenewOperationLease 续期执行者的租约。任务还归它（仍在执行、执行者与 attempt 都没变）
+// 就续得上：租约过期只给别人回收的权利，回收之前原执行者照常持有（合盖睡眠醒来接着写）；
+// 一旦被回收或接替，attempt 围栏让续期与之后的写入都被拒绝（D42）。
 func (s *Store) RenewOperationLease(ctx context.Context, id, workerID string, attempt int, leaseDuration time.Duration, now time.Time) (model.Operation, error) {
 	if strings.TrimSpace(id) == "" || strings.TrimSpace(workerID) == "" || attempt <= 0 || leaseDuration <= 0 || now.IsZero() {
 		return model.Operation{}, fmt.Errorf("operation, worker, positive attempt, lease duration and time are required: %w", model.ErrInvalid)
@@ -133,9 +136,9 @@ func (s *Store) RenewOperationLease(ctx context.Context, id, workerID string, at
 	row := s.db.QueryRowContext(ctx, `
 		UPDATE operations
 		SET lease_until_unix_ms = ?, updated_at_unix_ms = ?
-		WHERE id = ? AND state = ? AND lease_owner = ? AND attempt = ? AND lease_until_unix_ms >= ?
+		WHERE id = ? AND state = ? AND lease_owner = ? AND attempt = ?
 		RETURNING `+operationColumns,
-		leaseUntil.UnixMilli(), now.UnixMilli(), id, model.OperationRunning, workerID, attempt, now.UnixMilli())
+		leaseUntil.UnixMilli(), now.UnixMilli(), id, model.OperationRunning, workerID, attempt)
 	operation, err := scanOperation(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return model.Operation{}, model.ErrStateConflict

@@ -37,19 +37,55 @@ const (
 
 // FailureCode 给失败一个机器可判读的原因（D46）。result_unknown 表示外部结果不可知：
 // 任务已提交但拿不到结论，不自动重试；用户对账（Resume）或重提（Restart）都是显式决定。
-// submission_blocked 表示提交自纠已受阻，保留草稿，等待显式续跑。
+// submission_blocked 表示提交自纠已受阻，保留草稿，等待显式续跑。model_* 是模型服务一侧
+// 的失败（D76）：连不上、繁忙在重试用尽后才落到这里；拒绝（密钥、额度、模型名）不自动重开。
 type FailureCode string
 
 const (
 	FailureResultUnknown     FailureCode = "result_unknown"
 	FailureSubmissionBlocked FailureCode = "submission_blocked"
+	FailureModelUnreachable  FailureCode = "model_unreachable"
+	FailureModelBusy         FailureCode = "model_busy"
+	FailureModelRefused      FailureCode = "model_refused"
 )
 
 var ErrResultUnknown = errors.New("external result is unknown")
 var ErrSubmissionBlocked = errors.New("提交受阻")
 
+// Failure 给外部错误标上失败类别而不改它的文字：原始错误照原样进诊断，用户看到的原因
+// 按类别说（D76）。
+type Failure struct {
+	Code FailureCode
+	Err  error
+}
+
+func (f *Failure) Error() string { return f.Err.Error() }
+func (f *Failure) Unwrap() error { return f.Err }
+
+// ModelService 报告失败出在模型服务一侧：与写作内容无关，模型无从修正。
+func (c FailureCode) ModelService() bool {
+	return c == FailureModelUnreachable || c == FailureModelBusy || c == FailureModelRefused
+}
+
+// Explain 是失败给用户看的原因：模型服务的失败按类别说清楚，其余就是原始错误（多是本
+// 程序自己写的说明）。
+func (c FailureCode) Explain(raw string) string {
+	switch c {
+	case FailureModelUnreachable:
+		return "连不上模型服务（网络中断或连接超时）"
+	case FailureModelBusy:
+		return "模型服务繁忙或临时故障"
+	case FailureModelRefused:
+		return "模型服务拒绝了请求（密钥、额度或模型名有问题）"
+	}
+	return raw
+}
+
 // FailureCodeFor 保留跨执行层传递的失败类别，供协调器决定是否自动续跑。
 func FailureCodeFor(cause error) FailureCode {
+	if failure, ok := errors.AsType[*Failure](cause); ok {
+		return failure.Code
+	}
 	if errors.Is(cause, ErrResultUnknown) {
 		return FailureResultUnknown
 	}
@@ -265,7 +301,7 @@ func (o Operation) Validate() error {
 	}
 	switch o.FailureCode {
 	case "":
-	case FailureResultUnknown, FailureSubmissionBlocked:
+	case FailureResultUnknown, FailureSubmissionBlocked, FailureModelUnreachable, FailureModelBusy, FailureModelRefused:
 		if o.State != OperationFailed {
 			return fmt.Errorf("failure code %q requires the failed state: %w", o.FailureCode, ErrInvalid)
 		}

@@ -3,6 +3,7 @@ package bootstrap_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"strings"
 	"sync"
@@ -431,5 +432,21 @@ func TestChiefReadsTheDraftAndRejectsItInTheUsersWords(t *testing.T) {
 	}
 	if rewritten := driven(t, session, 3); rewritten.Err != nil || rewritten.Result.RunState != model.RunWaitingUser {
 		t.Fatalf("rewrite = %+v", rewritten)
+	}
+}
+
+// 主编连不上模型服务时，对话里说清楚出了什么事，不贴原始错误链。
+func TestChiefExplainsAnUnreachableModelService(t *testing.T) {
+	offline := litellm.NewNetworkError("compat", "request failed", errors.New("dial tcp: lookup relay: no such host"))
+	offline.Temporary = false // 不等退避：直接看重试用尽之后的样子
+	api, _ := newChiefApp(t, litellmtest.Fail(offline))
+	ctx := context.Background()
+	session := api.Chief.Open(ctx, "chief-book", "user-1")
+	defer session.Close()
+	if err := session.Send(ctx, "接着写", chief.View{}); err != nil {
+		t.Fatal(err)
+	}
+	if thread := settle(t, session); thread.Err != model.FailureModelUnreachable.Explain("") {
+		t.Fatalf("turn error = %q", thread.Err)
 	}
 }

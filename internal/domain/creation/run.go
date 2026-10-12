@@ -127,15 +127,13 @@ type Outcome struct {
 // 写第几章），内核说明"这轮运行发生了什么"（被暂停、被取消、重试了几次）。两边各写
 // 自己那半，拼成用户看到的一句话；内核不猜工作内容，应用不描述运行机制。
 const (
-	reasonResumed   = "继续创作"
-	reasonRunning   = "持续创作中"
-	reasonPausedRun = "创作已暂停，随时可以继续"
-	reasonPausedJob = "创作已暂停，恢复该任务后再继续"
-	reasonCancelled = "创作已停止"
-	reasonCancelJob = "创作任务被取消"
-	// reasonDiagnostics 接在失败文案后面，指向执行记录里的原始诊断。
-	reasonDiagnostics = "可展开 %s 的执行记录查看原始诊断"
-	reasonSuperseded  = "已被新的推导取代，这份待审批稿件作废"
+	reasonResumed    = "继续创作"
+	reasonRunning    = "持续创作中"
+	reasonPausedRun  = "创作已暂停，随时可以继续"
+	reasonPausedJob  = "创作已暂停，恢复该任务后再继续"
+	reasonCancelled  = "创作已停止"
+	reasonCancelJob  = "创作任务被取消"
+	reasonSuperseded = "已被新的推导取代，这份待审批稿件作废"
 )
 
 // Drive 推进一轮创作直到落点。开始前回收过期租约：崩溃留下的 running 任务放回队列，
@@ -318,11 +316,12 @@ func (s *Coordinator) failRun(
 // 这么多次。重开走 ensureChainedOperation 的 Resume/后继路径，对话、工作区与失败
 // 原因全部带回给模型；用尽落 waiting_user，用户续跑再授予一次尝试，绝不无限重跑。
 // 预算按失败次数计（Tasks.Failures），不按 attempt：进程退出释放的执行不算失败。
-// 结果未知与提交受阻不自动重开；provider 的调用级重试不在此计数。
+// 结果未知、提交受阻与模型服务拒绝不自动重开；provider 的调用级重试不在此计数。
 const autoReopenBudget = 3
 
 // reopenOrWait 决定失败任务的去向：预算内返回 reopen=true 让驱动循环下一轮重开；
-// 用尽则把 Run 停在 waiting_user 并说明原因，草稿与上下文保留。
+// 用尽则把 Run 停在 waiting_user 并说明原因，草稿与上下文保留。原因按失败类别说给用户，
+// 原始错误留在任务与尝试摘要里供诊断（D76）。
 func (s *Coordinator) reopenOrWait(
 	ctx context.Context,
 	tasks Tasks,
@@ -332,9 +331,10 @@ func (s *Coordinator) reopenOrWait(
 	operation model.Operation,
 	at time.Time,
 ) (Outcome, bool, error) {
-	if operation.FailureCode == model.FailureSubmissionBlocked || operation.FailureCode == model.FailureResultUnknown {
-		reason := fmt.Sprintf("%s：%s。已停止自动重试并保留工作区，请处理原因后显式续跑；"+reasonDiagnostics,
-			work.Reasons.Failure, operation.Error, operation.ID)
+	cause := operation.FailureCode.Explain(operation.Error)
+	switch operation.FailureCode {
+	case model.FailureSubmissionBlocked, model.FailureResultUnknown, model.FailureModelRefused:
+		reason := fmt.Sprintf("%s：%s。已停止自动重试并保留工作区，请处理原因后显式续跑", work.Reasons.Failure, cause)
 		settled, err := s.settleRun(ctx, run, model.RunTransition{To: model.RunWaitingUser, Reason: reason}, at)
 		return Outcome{Run: settled, Revision: revision}, false, err
 	}
@@ -345,8 +345,8 @@ func (s *Coordinator) reopenOrWait(
 	if failures <= autoReopenBudget {
 		return Outcome{}, true, nil
 	}
-	reason := fmt.Sprintf("%s：已自动重试 %d 次仍未成功，停下等你处理（最近一次原因：%s）。续跑会带着已有草稿再试一次；"+reasonDiagnostics,
-		work.Reasons.Failure, failures-1, operation.Error, operation.ID)
+	reason := fmt.Sprintf("%s：%s，已自动重试 %d 次仍未成功。续跑会带着已有草稿再试一次",
+		work.Reasons.Failure, cause, failures-1)
 	settled, err := s.settleRun(ctx, run, model.RunTransition{To: model.RunWaitingUser, Reason: reason}, at)
 	return Outcome{Run: settled, Revision: revision}, false, err
 }
