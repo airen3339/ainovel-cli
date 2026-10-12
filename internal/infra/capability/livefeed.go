@@ -262,11 +262,10 @@ func toolDetail(tool string, args json.RawMessage) string {
 		if json.Unmarshal(args, &input) != nil {
 			return ""
 		}
-		title := "《" + input.Chapter.Title + "》"
 		if input.Chapter.Number > 0 {
-			title = fmt.Sprintf("第 %d 章", input.Chapter.Number) + title
+			return fmt.Sprintf("第 %d 章 · %d 字", input.Chapter.Number, input.Chapter.Runes())
 		}
-		return fmt.Sprintf("%s · %d 字", title, input.Chapter.Runes())
+		return fmt.Sprintf("%d 字", input.Chapter.Runes())
 	case prompt.ToolWorkspaceReplaceBlock:
 		var input struct {
 			BlockID string `json:"block_id"`

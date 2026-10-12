@@ -133,6 +133,40 @@ func (s *Store) GetProposal(ctx context.Context, id string) (model.Proposal, err
 	return proposal, err
 }
 
+// PendingProposals 列出作品上不属于任何任务、等用户裁决的提案，新的在前（D77）：主编
+// 提出的修改与导入的草案。
+func (s *Store) PendingProposals(ctx context.Context, target model.AuthorityTarget) ([]model.Proposal, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT id FROM proposals
+		WHERE target_kind = ? AND target_id = ? AND target_scope = ? AND state = ? AND operation_id IS NULL
+		ORDER BY created_at_unix_ms DESC, id DESC`,
+		target.Kind, target.ID, target.Scope, model.ApprovalPending)
+	if err != nil {
+		return nil, fmt.Errorf("list pending proposals: %w", err)
+	}
+	var ids []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("scan pending proposal: %w", err)
+		}
+		ids = append(ids, id)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return nil, fmt.Errorf("iterate pending proposals: %w", err)
+	}
+	proposals := make([]model.Proposal, 0, len(ids))
+	for _, id := range ids {
+		proposal, err := s.GetProposal(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		proposals = append(proposals, proposal)
+	}
+	return proposals, nil
+}
+
 func (s *Store) GetProposalByOperation(ctx context.Context, operationID string) (model.Proposal, error) {
 	var id string
 	err := s.db.QueryRowContext(ctx, `SELECT id FROM proposals WHERE operation_id = ?`, operationID).Scan(&id)

@@ -21,7 +21,7 @@ func TestNovelExportUsesAcceptedRevisionAndNumericOrder(t *testing.T) {
 	for _, n := range []int{10, 2, 1} {
 		id := fmt.Sprint(n)
 		projection.Plan = append(projection.Plan, model.PlanNode{ID: "p" + id, ParentID: "a", Kind: model.PlanChapter, Order: n, Title: "章" + id, Summary: "章"})
-		projection.Manuscript = append(projection.Manuscript, model.ManuscriptChapter{ID: "c" + id, PlanNodeID: "p" + id, Number: n, Title: "章" + id, Author: model.AuthorUser, Blocks: []model.ManuscriptBlock{{ID: "b" + id, Text: "已确认正文" + id}}})
+		projection.Manuscript = append(projection.Manuscript, model.ManuscriptChapter{ID: "c" + id, PlanNodeID: "p" + id, Number: n, Author: model.AuthorUser, Blocks: []model.ManuscriptBlock{{ID: "b" + id, Text: "已确认正文" + id}}})
 	}
 	proposal, err := api.Projects.ImportNewProject(ctx, "import", "user", "test", projection, testTime())
 	if err != nil {

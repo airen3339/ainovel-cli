@@ -11,11 +11,11 @@ import (
 
 func TestExportPreservesChapterHeadingsAndParagraphs(t *testing.T) {
 	for _, title := range []string{"第一章 雨夜", "第1章 雨夜"} {
-		if chapterHeading(model.ManuscriptChapter{Number: 1, Title: title}) != title {
+		if chapterHeading(1, title) != title {
 			t.Fatal("duplicated chapter heading")
 		}
 	}
-	book := exportBook{ID: "book", Title: "来信", Author: "作者", Revision: 2, Chapters: []model.ManuscriptChapter{{Number: 5, Title: "回信", Blocks: []model.ManuscriptBlock{{Text: "第一段\n继续。\r\n\r\n第二段。"}, {Text: "第三段。"}}}}}
+	book := exportBook{ID: "book", Title: "来信", Author: "作者", Revision: 2, Chapters: []exportChapter{{Heading: chapterHeading(5, "回信"), Blocks: []model.ManuscriptBlock{{Text: "第一段\n继续。\r\n\r\n第二段。"}, {Text: "第三段。"}}}}}
 	var text bytes.Buffer
 	if err := writeTXT(context.Background(), &text, book); err != nil {
 		t.Fatal(err)

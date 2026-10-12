@@ -23,6 +23,9 @@ type ConversationMessage struct {
 // ChiefRole 是主编的模型角色：绑定模型与团队用量都按它归属。
 const ChiefRole = "chief"
 
+// ChiefAuthor 是主编提出的修改的作者（D77）：AI 作者，按审批策略放行或等用户确认。
+var ChiefAuthor = Author{Kind: AuthorAI, ID: ChiefRole}
+
 // conversationSource 是对话消息引用的前缀：要求的 Source 指回用户说这句话的那条消息。
 const conversationSource = "conversation:"
 

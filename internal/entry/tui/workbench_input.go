@@ -19,6 +19,9 @@ const benchHelp = `创作控制台
 创作现场：正文下方常驻，显示上一步、当前步（或等待计时）与最新输出的尾部。
 决定卡：等你决定时出现在正文下方。有稿件时回车看全部内容，y 通过，不满意就跟主编说理由；
 某章自动修订多次仍有阻塞意见时，y 接受现状，回车让它再改。
+确认卡：主编提出的修改要你确认时出现在同一位置，创作随之停下。回车看全部改动，y 确认，不要了
+跟主编说；修改与已写章节有出入时，输入序号选怎么处理（重写受影响的章、只改设定后文按新的写、
+不改了）。改错了跟主编说，它会查修改记录并撤销。
 
 /view                     全屏查看选中章（或全书）的完整依据
 /export <路径>            导出已确认正文（.txt 或 .epub）
@@ -192,6 +195,9 @@ func (m model) submitInput() (tea.Model, tea.Cmd) {
 	case text == "y":
 		bench.input.SetValue("")
 		return m.approve()
+	case m.changeChoice(text) > 0:
+		bench.input.SetValue("")
+		return m.resolveChange(m.changeChoice(text))
 	}
 	bench.input.SetValue("")
 	return m.sendCmd(text)
@@ -210,6 +216,9 @@ func (m model) enterPane() (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
+	}
+	if b.pane == benchPaneMain && b.snap.Change != nil {
+		return m.openChange(), nil
 	}
 	if b.pane == benchPaneMain && m.reviewing() {
 		return m.openReview(), nil
@@ -244,6 +253,8 @@ func (m model) enterPane() (tea.Model, tea.Cmd) {
 func (m model) approve() (tea.Model, tea.Cmd) {
 	bench := &m.bench
 	switch {
+	case bench.snap.Change != nil:
+		return m.confirmChange()
 	case bench.decision != nil && bench.decision.held != "":
 		return m.acceptHeld()
 	case bench.decision == nil || !bench.decision.hasProposal:
@@ -392,6 +403,9 @@ func (m model) handleBenchMouse(mouse tea.MouseMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	if l.cardY >= 0 && mouse.Y >= l.cardY && mouse.Y < l.cardY+benchCardRows && mouse.X >= l.mainX {
+		if bench.snap.Change != nil {
+			return m.openChange(), nil
+		}
 		if bench.decision.hasProposal {
 			return m.revealCandidate(), nil
 		}

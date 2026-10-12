@@ -74,10 +74,12 @@ type workbenchState struct {
 	bodyText       string
 	writing        bool
 	// session 是这本书的主编会话：对话与创作推进都在它那里，界面只读快照、调方法。
-	// driveSeen 是已处理过落点的推进次数；thread 是对话的最新快照。
-	session   *chief.Session
-	driveSeen int
-	thread    chief.Thread
+	// driveSeen 是已处理过落点的推进次数；changeSeen 是已跟上的主编改动回执数；thread 是
+	// 对话的最新快照。
+	session    *chief.Session
+	driveSeen  int
+	changeSeen int
+	thread     chief.Thread
 	// talkHeld 表示对话视图上滚、暂停跟随；talkOffset 是其行偏移。
 	talkHeld   bool
 	talkOffset int

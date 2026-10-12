@@ -36,8 +36,14 @@ type ExportResult struct {
 type exportBook struct {
 	ID, Title, Author string
 	Revision          model.Revision
-	Chapters          []model.ManuscriptChapter
+	Chapters          []exportChapter
 	Modified          time.Time
+}
+
+// exportChapter 是一章的标题行与段落：标题取自章节计划（D77）。
+type exportChapter struct {
+	Heading string
+	Blocks  []model.ManuscriptBlock
 }
 
 // Export renders one immutable revision of accepted manuscript content. Pending
@@ -70,23 +76,17 @@ func (s *Application) Export(ctx context.Context, command ExportCommand) (Export
 	if book.Title == "" {
 		book.Title = project.ID
 	}
-	for _, chapter := range project.Manuscript {
+	chapters := slices.Clone(project.Manuscript)
+	slices.SortFunc(chapters, func(a, b model.ManuscriptChapter) int { return a.Number - b.Number })
+	plans := model.IndexPlan(project.Plan)
+	for _, chapter := range chapters {
 		if chapter.Number >= command.From && (command.To == 0 || chapter.Number <= command.To) {
-			book.Chapters = append(book.Chapters, chapter)
+			book.Chapters = append(book.Chapters, exportChapter{Heading: chapterHeading(chapter.Number, plans[chapter.PlanNodeID].Title), Blocks: chapter.Blocks})
 		}
 	}
 	if len(book.Chapters) == 0 {
 		return ExportResult{}, fmt.Errorf("所选范围内没有已确认正文，候选稿需先批准")
 	}
-	slices.SortFunc(book.Chapters, func(a, b model.ManuscriptChapter) int {
-		if a.Number < b.Number {
-			return -1
-		}
-		if a.Number > b.Number {
-			return 1
-		}
-		return 0
-	})
 	path, err := filepath.Abs(command.Path)
 	if err != nil {
 		return ExportResult{}, err
@@ -112,9 +112,9 @@ func (s *Application) Export(ctx context.Context, command ExportCommand) (Export
 
 var numberedChapterTitle = regexp.MustCompile(`^第[0-9零一二三四五六七八九十百千两〇]+章(?:[\s：:、.．]|$)`)
 
-func chapterHeading(chapter model.ManuscriptChapter) string {
-	prefix := fmt.Sprintf("第%d章", chapter.Number)
-	title := strings.TrimSpace(chapter.Title)
+func chapterHeading(number int, title string) string {
+	prefix := fmt.Sprintf("第%d章", number)
+	title = strings.TrimSpace(title)
 	if numberedChapterTitle.MatchString(title) {
 		return title
 	}
@@ -135,7 +135,7 @@ func writeTXT(ctx context.Context, w io.Writer, book exportBook) error {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if _, err := fmt.Fprintf(out, "\n\n%s\n\n", chapterHeading(chapter)); err != nil {
+		if _, err := fmt.Fprintf(out, "\n\n%s\n\n", chapter.Heading); err != nil {
 			return err
 		}
 		for _, block := range chapter.Blocks {
@@ -156,7 +156,7 @@ func epubBook(book exportBook) export.EPUB {
 		for _, block := range chapter.Blocks {
 			paragraphs = append(paragraphs, strings.Split(strings.ReplaceAll(block.Text, "\r\n", "\n"), "\n\n")...)
 		}
-		doc.Chapters = append(doc.Chapters, export.EPUBChapter{Title: chapterHeading(chapter), Paragraphs: paragraphs})
+		doc.Chapters = append(doc.Chapters, export.EPUBChapter{Title: chapter.Heading, Paragraphs: paragraphs})
 	}
 	return doc
 }

@@ -63,7 +63,7 @@ func (m model) benchLayout() benchLayout {
 	l.tabsY = l.bodyY
 	l.contentY = l.bodyY + benchTabRows
 	bottom := l.footerY
-	if m.bench.decision != nil {
+	if m.bench.decision != nil || m.bench.snap.Change != nil {
 		bottom -= benchCardRows
 		l.cardY = bottom
 	}
@@ -176,7 +176,11 @@ func (m model) mainColumn(l benchLayout) []string {
 		lines = append(lines, padMain(m.sceneLines(l.inner), l, benchSceneRows)...)
 	}
 	if l.cardY >= 0 {
-		lines = append(lines, padMain(m.decisionCard(l.inner), l, benchCardRows)...)
+		card := m.decisionCard
+		if m.bench.snap.Change != nil {
+			card = m.changeCard
+		}
+		lines = append(lines, padMain(card(l.inner), l, benchCardRows)...)
 	}
 	overlay := m.commandOverlay(l.inner)
 	if m.bench.modelPanel != nil {
@@ -392,6 +396,9 @@ type benchAction struct {
 func (m model) primaryAction() benchAction {
 	if m.bench.thread.Busy {
 		return benchAction{key: "Esc", label: "打断主编", do: model.escape}
+	}
+	if m.bench.snap.Change != nil && !m.bench.writing {
+		return benchAction{key: "Enter", label: "查看修改", do: func(m model) (tea.Model, tea.Cmd) { return m.openChange(), nil }}
 	}
 	switch m.bench.situation() {
 	case situationWriting:

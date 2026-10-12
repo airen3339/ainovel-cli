@@ -97,6 +97,10 @@ type WorkbenchSnapshot struct {
 	// CurrentPhase 是进行中的环节（创作语言），仅 Run 非终态时非空。
 	CurrentPhase string           `json:"current_phase,omitempty"`
 	Decision     *PendingDecision `json:"decision,omitempty"`
+	// Change 是主编提出、等用户确认的修改（D77）；创作在它确认或撤回前停着。
+	Change *PendingChange `json:"change,omitempty"`
+	// Milestones 是生产里程碑，按时间先后（D77）。
+	Milestones []Milestone `json:"milestones,omitempty"`
 	// Findings 是基线仍成立的最新审阅发现（D48）中尚未被用户接受的部分；
 	// Adjudications 是仍然有效的接受记录（D43）。
 	Findings      []WorkbenchFinding   `json:"findings,omitempty"`
@@ -155,6 +159,12 @@ func (s *Query) snapshotFromProject(ctx context.Context, project projectdoc.Snap
 			return WorkbenchSnapshot{}, err
 		}
 	}
+	if snapshot.Change, err = s.pendingChange(ctx, project); err != nil {
+		return WorkbenchSnapshot{}, err
+	}
+	if snapshot.Milestones, err = s.milestones(ctx, project, snapshot.Run); err != nil {
+		return WorkbenchSnapshot{}, err
+	}
 	verdicts, err := s.reviews.ListVerdicts(ctx, project)
 	if err != nil {
 		return WorkbenchSnapshot{}, err
@@ -163,7 +173,14 @@ func (s *Query) snapshotFromProject(ctx context.Context, project projectdoc.Snap
 	if snapshot.Findings, snapshot.Adjudications, err = s.validFindings(ctx, project, current); err != nil {
 		return WorkbenchSnapshot{}, err
 	}
-	plan, proposed, err := proposedPlan(project.Plan, snapshot.Decision)
+	var pending []model.Proposal
+	if decision := snapshot.Decision; decision != nil && decision.HasProposal && !decision.Stale {
+		pending = append(pending, decision.Proposal)
+	}
+	if change := snapshot.Change; change != nil && !change.Stale {
+		pending = append(pending, change.Proposal)
+	}
+	plan, proposed, err := proposedPlan(project.Plan, pending)
 	if err != nil {
 		return WorkbenchSnapshot{}, err
 	}
@@ -180,7 +197,7 @@ func (s *Query) DescribeProposal(ctx context.Context, projectID string, proposal
 	if err != nil {
 		return ProposalView{}, err
 	}
-	return proposalView(project, proposal)
+	return proposalView(project, proposal.Patches)
 }
 
 // workbenchDecision 提取待确认候选与决定卡：Run 等待用户时才有。
@@ -209,7 +226,7 @@ func (s *Query) workbenchDecision(
 		return nil, nil, err
 	}
 	// 过期稿件也照实描述它提了什么，只是不再解出候选、不投到大纲。
-	if decision.View, err = proposalView(project, proposal); err != nil {
+	if decision.View, err = proposalView(project, proposal.Patches); err != nil {
 		return nil, nil, err
 	}
 	if decision.Stale {
@@ -410,28 +427,30 @@ func buildOutline(
 
 // proposedPlan 把等你确认的方案里的大纲改动投到当前大纲上，确认前就能在大纲里逐章
 // 浏览；过期稿件不投。
-func proposedPlan(plan []model.PlanNode, decision *PendingDecision) ([]model.PlanNode, map[string]struct{}, error) {
+func proposedPlan(plan []model.PlanNode, pending []model.Proposal) ([]model.PlanNode, map[string]struct{}, error) {
 	proposed := make(map[string]struct{})
-	if decision == nil || !decision.HasProposal || decision.Stale {
+	if len(pending) == 0 {
 		return plan, proposed, nil
 	}
 	byID := make(map[string]model.PlanNode, len(plan))
 	for _, node := range plan {
 		byID[node.ID] = node
 	}
-	for _, patch := range decision.Proposal.Patches {
-		if patch.Document.Kind != model.DocumentPlan {
-			continue
+	for _, proposal := range pending {
+		for _, patch := range proposal.Patches {
+			if patch.Document.Kind != model.DocumentPlan {
+				continue
+			}
+			if patch.Operation != model.PatchPut {
+				delete(byID, patch.Document.ID)
+				continue
+			}
+			var node model.PlanNode
+			if err := json.Unmarshal(patch.Content, &node); err != nil {
+				return nil, nil, fmt.Errorf("decode proposed plan node %q: %w", patch.Document.ID, err)
+			}
+			byID[node.ID], proposed[node.ID] = node, struct{}{}
 		}
-		if patch.Operation != model.PatchPut {
-			delete(byID, patch.Document.ID)
-			continue
-		}
-		var node model.PlanNode
-		if err := json.Unmarshal(patch.Content, &node); err != nil {
-			return nil, nil, fmt.Errorf("decode proposed plan node %q: %w", patch.Document.ID, err)
-		}
-		byID[node.ID], proposed[node.ID] = node, struct{}{}
 	}
 	return slices.Collect(maps.Values(byID)), proposed, nil
 }

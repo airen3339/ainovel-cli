@@ -50,6 +50,19 @@ func (e *Engine) Validate(ctx context.Context, proposal model.Proposal) error {
 	return err
 }
 
+// SemanticScope 在提案基线上做全部确定性校验，给出修改可能与之矛盾的已写章节（创作
+// 领域判定，model.SemanticScope），不落库：非空时调用方先做语义影响分析（D77）。
+func (e *Engine) SemanticScope(ctx context.Context, proposal model.Proposal) ([]model.DocumentRef, error) {
+	if err := proposal.Validate(); err != nil {
+		return nil, err
+	}
+	checked, err := e.validateAndAnalyze(ctx, proposal)
+	if err != nil {
+		return nil, err
+	}
+	return model.SemanticScope(proposal.Patches, checked.base)
+}
+
 // PrepareExecution 校验并保存执行提案（attempt 围栏内）：基线落后时先按 D51 重定位，
 // 不能重定位返回 model.ErrRevisionConflict。
 func (e *Engine) PrepareExecution(ctx context.Context, proposal model.Proposal, attempt int) (model.Proposal, error) {
@@ -87,7 +100,14 @@ func (e *Engine) prepare(ctx context.Context, proposal model.Proposal, analyzeSe
 		if e.semantic == nil {
 			return model.Proposal{}, ErrSemanticUnavailable
 		}
-		semantic, err := e.semantic.Analyze(ctx, proposal, checked.impact)
+		// 分析要读到可能矛盾的已写正文：设定没有结构上的依赖方，正文只在语义范围里。
+		scope, err := model.SemanticScope(proposal.Patches, checked.base)
+		if err != nil {
+			return model.Proposal{}, err
+		}
+		judged := checked.impact
+		judged.Affected = unionRefs(judged.Affected, scope)
+		semantic, err := e.semantic.Analyze(ctx, proposal, judged)
 		if err != nil {
 			return model.Proposal{}, fmt.Errorf("analyze semantic impact: %w", err)
 		}
@@ -257,11 +277,86 @@ func (e *Engine) PrepareRevert(
 	})
 }
 
+// Undo 给出撤销一次变更的补丁（D77）：它改过的文档恢复成改动之前的样子，基线是当前
+// Revision。只追加的文档不随撤销变化；之后又被改过的文档不能单独撤销——那会连带抹掉
+// 后来的改动，返回 model.ErrRevisionConflict；没有可撤销的内容返回 model.ErrInvalid。
+func (e *Engine) Undo(ctx context.Context, changeSetID string) ([]model.Patch, model.Revision, error) {
+	changeSet, err := e.store.GetChangeSet(ctx, changeSetID)
+	if err != nil {
+		return nil, 0, err
+	}
+	target := changeSet.Target
+	current, err := e.currentRevision(ctx, target)
+	if err != nil {
+		return nil, 0, err
+	}
+	var refs []model.DocumentRef
+	touched := make(map[string]bool)
+	for _, patch := range changeSet.Patches {
+		if spec, _ := model.DocumentType(patch.Document.Kind); !spec.AppendOnly {
+			refs = append(refs, patch.Document)
+			touched[patch.Document.Key()] = true
+		}
+	}
+	for revision := changeSet.NewRevision + 1; revision <= current; revision++ {
+		later, err := e.store.GetChangeSetByRevision(ctx, target, revision)
+		if err != nil {
+			return nil, 0, err
+		}
+		for _, patch := range later.Patches {
+			if touched[patch.Document.Key()] {
+				return nil, 0, fmt.Errorf("%s changed again at revision %d: %w", patch.Document.Key(), revision, model.ErrRevisionConflict)
+			}
+		}
+	}
+	version := func(ref model.DocumentRef, at model.Revision) (json.RawMessage, error) {
+		if at == model.InitialRevision {
+			return nil, nil
+		}
+		document, err := e.store.GetDocument(ctx, target, ref, at)
+		if errors.Is(err, model.ErrNotFound) {
+			return nil, nil
+		}
+		return document.Content, err
+	}
+	var patches []model.Patch
+	for _, ref := range refs {
+		before, err := version(ref, changeSet.NewRevision-1)
+		if err != nil {
+			return nil, 0, err
+		}
+		now, err := version(ref, current)
+		if err != nil {
+			return nil, 0, err
+		}
+		switch {
+		case before == nil && now != nil:
+			patches = append(patches, model.Patch{Document: ref, Operation: model.PatchDelete})
+		case before != nil:
+			content, err := model.RevertContent(ref, now, before)
+			if err != nil {
+				return nil, 0, err
+			}
+			patches = append(patches, model.Patch{Document: ref, Operation: model.PatchPut, Content: content})
+		}
+	}
+	if len(patches) == 0 {
+		return nil, 0, fmt.Errorf("change set %q has nothing to undo: %w", changeSetID, model.ErrInvalid)
+	}
+	return patches, current, nil
+}
+
 // analysis 是一次确定性校验的结果：结构影响、基线状态与提案所属任务。
 type analysis struct {
 	impact StructuralImpact
 	base   model.DocumentSet
 	task   *model.Operation
+}
+
+func unionRefs(left, right []model.DocumentRef) []model.DocumentRef {
+	refs := slices.Concat(left, right)
+	slices.SortFunc(refs, compareDocumentRef)
+	return slices.CompactFunc(refs, func(a, b model.DocumentRef) bool { return a.Key() == b.Key() })
 }
 
 func withImpact(proposal model.Proposal, impact StructuralImpact) (model.Proposal, error) {

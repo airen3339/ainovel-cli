@@ -30,10 +30,10 @@ func (m model) proseSource() proseSource {
 		return m.overviewSource()
 	}
 	overline := fmt.Sprintf("第 %d 章", number)
-	if candidate, ok := m.candidateFor(number); ok {
-		return proseSource{overline: overline, title: candidate.Title, state: "◇ 候选稿 · 等你确认 · 尚未入稿", text: chapterText(candidate)}
-	}
 	node, _ := m.outlineChapter(number)
+	if candidate, ok := m.candidateFor(number); ok {
+		return proseSource{overline: overline, title: node.Node.Title, state: "◇ 候选稿 · 等你确认 · 尚未入稿", text: chapterText(candidate)}
+	}
 	if node.State == workbench.ChapterInProgress {
 		// 创作停下（暂停、出错）后草稿还在，但不再是直播：不跟随尾部、不显示光标。
 		src := proseSource{overline: overline, title: node.Node.Title, state: "◌ 生成中的草稿 · 未入稿", live: m.bench.writing}
@@ -50,7 +50,7 @@ func (m model) proseSource() proseSource {
 		return src
 	}
 	if chapter, ok := chapterByNumber(snap.Manuscript, number); ok {
-		return proseSource{overline: overline, title: chapter.Title, state: "✓ 已入稿", text: chapterText(chapter)}
+		return proseSource{overline: overline, title: node.Node.Title, state: "✓ 已入稿", text: chapterText(chapter)}
 	}
 	state := "○ 已规划 · 尚无正文"
 	if node.Proposed {

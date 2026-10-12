@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"strconv"
+	"strings"
 
 	projectdoc "github.com/voocel/ainovel-cli/internal/app/project"
 	"github.com/voocel/ainovel-cli/internal/domain/creation"
@@ -35,6 +36,9 @@ const (
 	// workVerifyCanon 是事实核验（§4.4 D41 / §4.5）：正文改动后待核验或未入账的章节，
 	// 先核验事实再写、审后续内容。
 	workVerifyCanon
+	// workAffected 是用户在语义影响处置里选的“重写受影响章”（S4，D77）：任务已由用户的
+	// 选择建好，推导只负责把它排进这次运行。
+	workAffected
 )
 
 type novelItem struct {
@@ -60,11 +64,15 @@ type novelItem struct {
 	// basis 是任务基线（D48/D51）：review 为裁定将继承的证据基线，write/rewrite 为本章要求
 	// 作用域，extend 为所依据的窗口裁定基线。
 	basis model.EvidenceBasis
+	// requested 是用户发起的任务（affected：后继链的首个任务），label 是它涉及的章。
+	requested model.Operation
+	label     string
 }
 
-// Next 的顺序即小说的推进规则：蓝图超出固定篇幅先停下 → 事实缺口先核验（D41）→ 审阅
-// 闸门（D62：写满一个窗口先审、先审后扩，阻塞发现按预算重写，到期要求必须兑现）→ 完成
-// 契约（D29/§6.4）→ 写章或扩窗（D63：全书章数未知或蓝图未到末章时扩窗）。
+// Next 的顺序即小说的推进规则：主编的修改等用户确认时先停下（D77）→ 蓝图超出固定篇幅
+// 先停下 → 事实缺口先核验（D41）→ 用户发起的任务（S4）→ 审阅闸门（D62：写满一个窗口
+// 先审、先审后扩，阻塞发现按预算重写，到期要求必须兑现）→ 完成契约（D29/§6.4）→ 写章
+// 或扩窗（D63：全书章数未知或蓝图未到末章时扩窗）。
 func (p Policy) Next(project projectdoc.Snapshot, run model.CreationRun, evidence Evidence) (creation.Step, error) {
 	step, _, err := p.next(project, run, evidence)
 	return step, err
@@ -82,6 +90,9 @@ func (Policy) next(project projectdoc.Snapshot, run model.CreationRun, evidence 
 	if err != nil {
 		return creation.Step{}, "", err
 	}
+	if evidence.Change {
+		return creation.Step{Wait: "主编提出的修改等你确认，确认或撤回后接着写"}, "", nil
+	}
 	length := lengthOf(project, goal.TargetChapters)
 	if planCount := len(model.ChapterPlansInOrder(project.Plan)); length.Fixed > 0 && planCount > length.Fixed {
 		return creation.Step{Wait: fmt.Sprintf(
@@ -95,6 +106,12 @@ func (Policy) next(project projectdoc.Snapshot, run model.CreationRun, evidence 
 		// 旧事实不得继续指导后续创作与审阅。
 		gap := gaps[0]
 		item = novelItem{kind: workVerifyCanon, chapterID: gap.ChapterID, number: gap.Number, facts: gap.Pending, revision: gap.Revision}
+	} else if len(evidence.Requested) > 0 {
+		// 用户点名要做的先做：它是用户对已写内容的处置，后面的审阅与写作都应以处置后的
+		// 正文为准。
+		if item, err = affectedItem(project, evidence.Requested[0]); err != nil {
+			return creation.Step{}, "", err
+		}
 	} else {
 		// 完成契约（§6.4）：内容齐全不等于完成，全书每章都要有基线仍成立的通过裁定、
 		// 每项要求都已兑现；相干文档或要求再变化时旧证据随基线自动失效。
@@ -247,6 +264,20 @@ func rewriteItem(project projectdoc.Snapshot, verdict model.ReviewVerdict, chapt
 	return novelItem{}
 }
 
+// affectedItem 排入用户选的“重写受影响章”任务。
+func affectedItem(project projectdoc.Snapshot, operation model.Operation) (novelItem, error) {
+	input, err := model.TaskInputAs[model.RewriteAffectedInput](operation)
+	if err != nil {
+		return novelItem{}, err
+	}
+	byID := manuscriptsByID(project.Manuscript)
+	var numbers []string
+	for _, id := range input.ChapterIDs {
+		numbers = append(numbers, strconv.Itoa(byID[id].Number))
+	}
+	return novelItem{kind: workAffected, requested: operation, label: "第 " + strings.Join(numbers, "、") + " 章"}, nil
+}
+
 // chapterBasis 是章节任务的基线（D51）：只钉住本章命中的要求作用域。
 func chapterBasis(project projectdoc.Snapshot, number int, planID string) model.EvidenceBasis {
 	return model.EvidenceBasis{Scopes: []model.ScopeBasis{directiveScope(project, directiveTarget(model.IndexPlan(project.Plan), number, planID))}}
@@ -393,6 +424,12 @@ func (item novelItem) work(run model.CreationRun, premise string, length Length)
 			Basis: item.basis, Goal: goal,
 		}
 		work.ID, work.Kind, work.Input = reviewOperationID(run.ID, item.revision, input), model.OperationReviewRange, input
+	case workAffected:
+		input, err := model.TaskInputAs[model.RewriteAffectedInput](item.requested)
+		if err != nil {
+			return creation.WorkItem{}, err
+		}
+		work.ID, work.Kind, work.Input = item.requested.ID, item.requested.Kind, input
 	case workVerifyCanon:
 		reason := fmt.Sprintf("第 %d 章正文在事实入账后被修改，需要核验来源事实", item.number)
 		if len(item.facts) == 0 {
@@ -471,6 +508,14 @@ func (item novelItem) reasons() creation.WorkReasons {
 			Waiting: fmt.Sprintf("第 %d 章的事实核验已完成，等你确认后继续", item.number),
 			Failure: fmt.Sprintf("第 %d 章的事实核验这次没能完成", item.number),
 			Stuck:   fmt.Sprintf("第 %d 章的事实核验已结束但缺口仍在，需要人工检查", item.number),
+		}
+	case workAffected:
+		return creation.WorkReasons{
+			Start:   "按你选的处置重写受影响的" + item.label + "，与改过的设定对齐",
+			Done:    item.label + "已按改过的设定重写",
+			Waiting: item.label + "已按改过的设定重写，等你过目后继续",
+			Failure: item.label + "按改过的设定重写失败",
+			Stuck:   item.label + "的重写已结束但任务没有完成，需要人工检查",
 		}
 	case workRewrite:
 		return creation.WorkReasons{

@@ -131,7 +131,7 @@ func TestNewBookCompilesOfficialPackIntoWorkerPrompt(t *testing.T) {
 		t.Fatalf("writer prompt does not carry exactly the writer slots:\n%s", text)
 	}
 	if !slices.ContainsFunc(sources, func(source prompt.Source) bool {
-		return source.Layer == "pack_defaults" && source.ID == "official@3"
+		return source.Layer == "pack_defaults" && source.ID == "official@4"
 	}) {
 		t.Fatalf("sources = %#v", sources)
 	}
@@ -437,7 +437,7 @@ func TestLearnsPreferenceCandidateFromUserManuscriptEditsBeforeConfirmation(t *t
 		t.Fatalf("export revision 1: %v", err)
 	}
 	projection.Manuscript = []model.ManuscriptChapter{{
-		ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1, Title: "山门", Author: model.AuthorUser,
+		ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1, Author: model.AuthorUser,
 		Blocks: []model.ManuscriptBlock{{ID: "block-1", Text: "他感到非常悲伤，于是哭了。"}},
 	}}
 	proposal, err := api.Projects.ImportProject(ctx, "add-manuscript", "user-1", "加入正文", projection, now.Add(time.Minute))
@@ -547,7 +547,7 @@ func TestSemanticConflictResolutionCreatesOneAtomicAffectedRewrite(t *testing.T)
 		t.Fatalf("export project: %v", err)
 	}
 	projection.Manuscript = append(projection.Manuscript, model.ManuscriptChapter{
-		ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1, Title: "第一章", Author: model.AuthorUser,
+		ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1, Author: model.AuthorUser,
 		Blocks: []model.ManuscriptBlock{{ID: "block-1", Text: "他在山门前放下了刀。"}},
 	})
 	manuscriptProposal, err := api.Projects.ImportProject(

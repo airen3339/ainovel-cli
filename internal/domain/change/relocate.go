@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain/model"
@@ -90,17 +91,22 @@ func (e *Engine) directivesAt(
 // Relocate 落实提案重定位规则（D51 / §5.5 第 4 条）：提案基线落后于当前 Revision 时，
 // 仅当中间各 Revision 只改过用户专属文档、没碰本提案的文档，且所属任务的基线在当前仍
 // 成立，才把基线搬到当前并重算结构影响；否则返回 model.ErrRevisionConflict 并说明原因。
-// 不落库；没有任务的提案（用户直接变更）没有可核对的基线，原样返回。
+// 不落库。没有任务的提案（主编提出的修改、导入的草案，D77）不是照着任务上下文写的，
+// 中间各 Revision 没碰它的文档就能搬；带语义影响报告的，报告判断过的文档（结构影响的
+// 全集）其间都不能变，搬过去后也不能波及报告之外的文档——否则报告过时，要重判。
 func (e *Engine) Relocate(ctx context.Context, proposal model.Proposal) (model.Proposal, bool, error) {
 	task, err := e.task(ctx, proposal)
-	if err != nil || task == nil {
-		return proposal, false, err
+	if err != nil {
+		return model.Proposal{}, false, err
+	}
+	if task == nil {
+		return e.relocate(ctx, proposal, model.EvidenceBasis{}, true)
 	}
 	basis, err := model.OperationBasis(*task)
 	if err != nil {
 		return model.Proposal{}, false, err
 	}
-	return e.relocate(ctx, proposal, basis)
+	return e.relocate(ctx, proposal, basis, false)
 }
 
 // RelocatePending 重定位已保存的待裁决提案并落库；attempt 为正时受执行归属围栏保护（D42）。
@@ -115,7 +121,32 @@ func (e *Engine) RelocatePending(ctx context.Context, proposal model.Proposal, a
 	return relocated, nil
 }
 
-func (e *Engine) relocate(ctx context.Context, proposal model.Proposal, basis model.EvidenceBasis) (model.Proposal, bool, error) {
+// judgedDocuments 是没有任务的提案的语义影响报告判断过的文档：提案基线上的结构影响
+// 全集加语义范围，与分析时读的一致。没有报告时为空。
+func (e *Engine) judgedDocuments(ctx context.Context, proposal model.Proposal, direct bool) (map[string]bool, error) {
+	if !direct || len(proposal.Impact.Semantic) == 0 {
+		return nil, nil
+	}
+	var impact StructuralImpact
+	if err := json.Unmarshal(proposal.Impact.Structural, &impact); err != nil {
+		return nil, fmt.Errorf("decode structural impact of %q: %w", proposal.ID, err)
+	}
+	base, err := e.loadState(ctx, proposal.Target, proposal.BaseRevision)
+	if err != nil {
+		return nil, err
+	}
+	scope, err := model.SemanticScope(proposal.Patches, base)
+	if err != nil {
+		return nil, err
+	}
+	judged := make(map[string]bool)
+	for _, ref := range slices.Concat(impact.Direct, impact.Affected, scope) {
+		judged[ref.Key()] = true
+	}
+	return judged, nil
+}
+
+func (e *Engine) relocate(ctx context.Context, proposal model.Proposal, basis model.EvidenceBasis, direct bool) (model.Proposal, bool, error) {
 	current, err := e.currentRevision(ctx, proposal.Target)
 	if err != nil {
 		return model.Proposal{}, false, err
@@ -131,6 +162,10 @@ func (e *Engine) relocate(ctx context.Context, proposal model.Proposal, basis mo
 	for _, patch := range proposal.Patches {
 		own[patch.Document.Key()] = struct{}{}
 	}
+	judged, err := e.judgedDocuments(ctx, proposal, direct)
+	if err != nil {
+		return model.Proposal{}, false, err
+	}
 	for revision := proposal.BaseRevision + 1; revision <= current; revision++ {
 		changeSet, err := e.store.GetChangeSetByRevision(ctx, proposal.Target, revision)
 		if err != nil {
@@ -141,7 +176,12 @@ func (e *Engine) relocate(ctx context.Context, proposal model.Proposal, basis mo
 			if err != nil {
 				return model.Proposal{}, false, err
 			}
-			if _, touched := own[patch.Document.Key()]; !spec.UserOnly || touched {
+			_, touched := own[patch.Document.Key()]
+			unrelated := spec.UserOnly
+			if direct {
+				unrelated = !judged[patch.Document.Key()]
+			}
+			if touched || !unrelated {
 				return model.Proposal{}, false, fmt.Errorf("%s changed at revision %d: %w",
 					patch.Document.Key(), revision, model.ErrRevisionConflict)
 			}
@@ -157,6 +197,17 @@ func (e *Engine) relocate(ctx context.Context, proposal model.Proposal, basis mo
 	checked, err := e.validateAndAnalyze(ctx, relocated)
 	if err != nil {
 		return model.Proposal{}, false, err
+	}
+	if judged != nil {
+		scope, err := model.SemanticScope(relocated.Patches, checked.base)
+		if err != nil {
+			return model.Proposal{}, false, err
+		}
+		for _, ref := range unionRefs(checked.impact.Affected, scope) {
+			if !judged[ref.Key()] {
+				return model.Proposal{}, false, fmt.Errorf("%s came after the semantic impact report: %w", ref.Key(), model.ErrRevisionConflict)
+			}
+		}
 	}
 	relocated, err = withImpact(relocated, checked.impact)
 	return relocated, err == nil, err

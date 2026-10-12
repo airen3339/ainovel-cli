@@ -206,7 +206,7 @@ func (e *stallingExecutor) Execute(ctx context.Context, operation model.Operatio
 }
 
 // pausedMidChapter 开写两章的书，在第一次模型调用里按键暂停：推进停下、作品落盘为暂停。
-func pausedMidChapter(t *testing.T, replies ...litellmtest.Reply) *chief.Session {
+func pausedMidChapter(t *testing.T, provider litellm.Provider) *chief.Session {
 	t.Helper()
 	authorityStore := openTestStore(t)
 	executor := &stallingExecutor{
@@ -214,7 +214,7 @@ func pausedMidChapter(t *testing.T, replies ...litellmtest.Reply) *chief.Session
 		started:               make(chan struct{}),
 	}
 	api := newTestApp(authorityStore, bootstrap.Options{
-		Executors: task.ExecutorSet{LLM: executor}, ChiefModels: scriptedModels{litellmtest.New(replies...)},
+		Executors: task.ExecutorSet{LLM: executor}, ChiefModels: scriptedModels{provider},
 	})
 	ctx := context.Background()
 	session := api.Chief.Open(ctx, "paused-book", "user-1")
@@ -269,18 +269,18 @@ func requireCompleted(t *testing.T, end chief.DriveEnd, chapters int) {
 
 // 按键暂停后跟主编说完一句话，回合结束就从停下的地方接着写。
 func TestTalkingAfterAPauseResumesWriting(t *testing.T) {
-	session := pausedMidChapter(t, litellmtest.Text("在写第一章。"))
+	session := pausedMidChapter(t, litellmtest.New(litellmtest.Text("在写第一章。")))
 	talk(t, session, "现在写到哪了")
 	requireCompleted(t, driven(t, session, 2), 2)
 }
 
 // 用户让主编停下：之后的话不再带着续写，直到用户让它继续。
 func TestChiefPauseHoldsUntilAskedToResume(t *testing.T) {
-	session := pausedMidChapter(t,
+	session := pausedMidChapter(t, litellmtest.New(
 		chiefCall("pause", "pause_creation", `{}`), litellmtest.Text("好，先停着。"),
 		litellmtest.Text("好的。"),
 		chiefCall("resume", "resume_creation", `{}`), litellmtest.Text("继续写了。"),
-	)
+	))
 	talk(t, session, "先停一下，我想想")
 	talk(t, session, "第二章多点雨声")
 	if production := session.Production(); production.Writing || production.Ended != 1 {
@@ -293,16 +293,25 @@ func TestChiefPauseHoldsUntilAskedToResume(t *testing.T) {
 	requireCompleted(t, driven(t, session, 2), 2)
 }
 
-// 主编改篇幅后按新篇幅接着写。
+// 主编改篇幅后按新篇幅接着写；下一句话的书况带上这期间的里程碑（D77）。
 func TestChiefSetsTheLengthAndKeepsWriting(t *testing.T) {
-	session := pausedMidChapter(t,
+	provider := litellmtest.New(
 		chiefCall("length", "set_length", `{"chapters":3}`), litellmtest.Text("改成三章了。"),
+		litellmtest.Text("写完了。"),
 	)
+	session := pausedMidChapter(t, provider)
 	thread := talk(t, session, "写三章吧")
 	if receipt := thread.Entries[1]; receipt.Failed || receipt.Text != "篇幅定为 3 章 · 继续创作" {
 		t.Fatalf("receipt = %+v", receipt)
 	}
 	requireCompleted(t, driven(t, session, 2), 3)
+	talk(t, session, "写得怎么样了")
+	requests := provider.Requests()
+	last := requests[len(requests)-1]
+	brief := last.Messages[len(last.Messages)-1].Blocks[0].(litellm.TextBlock).Text
+	if !strings.Contains(brief, "上一回合以来：") || !strings.Contains(brief, "第 3 章《") || !strings.Contains(brief, "全书 3 章完成") {
+		t.Fatalf("brief = %q", brief)
+	}
 }
 
 // gatedProvider 让第一次模型调用等到放行：测试借此在主编回话中途再说一句。

@@ -211,7 +211,7 @@ func (r *Runtime) executor(
 			if err != nil {
 				return nil, err
 			}
-			// 章的身份由宿主按任务确定（D66）：模型只写标题与段落。
+			// 章的身份由宿主按任务确定（D66）：模型只写段落。
 			chapter, err := base.Draft(input, args.Chapter)
 			if err != nil {
 				return nil, err
@@ -436,7 +436,7 @@ func draftView(operation model.Operation, content []byte) (json.RawMessage, erro
 	if err := json.Unmarshal(content, &chapter); err != nil {
 		return nil, fmt.Errorf("decode workspace chapter: %w", err)
 	}
-	draft := narrative.ChapterDraft{Title: chapter.Title, Blocks: chapter.Blocks}
+	draft := narrative.ChapterDraft{Blocks: chapter.Blocks}
 	if operation.Kind == model.OperationRewriteAffected {
 		draft.Number = chapter.Number
 	}

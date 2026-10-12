@@ -48,7 +48,7 @@ func studioModel(t *testing.T, width, height int) model {
 		})
 		if i < 3 {
 			m.bench.snap.Manuscript = append(m.bench.snap.Manuscript, domainmodel.ManuscriptChapter{
-				ID: fmt.Sprint("ch-", i+1), PlanNodeID: fmt.Sprint("c", i+1), Number: i + 1, Title: title,
+				ID: fmt.Sprint("ch-", i+1), PlanNodeID: fmt.Sprint("c", i+1), Number: i + 1,
 				Blocks: []domainmodel.ManuscriptBlock{{ID: "b", Text: strings.Repeat(texts[i]+"\n\n", 3)}},
 			})
 		}
@@ -119,7 +119,7 @@ func longWorkbench(tb testing.TB, count int) model {
 			m.bench.snap.Outline = append(m.bench.snap.Outline, workbench.OutlineNode{Node: domainmodel.PlanNode{ID: fmt.Sprintf("v%d", i), Kind: domainmodel.PlanVolume, Title: fmt.Sprintf("第%d卷", i/50+1)}})
 		}
 		m.bench.snap.Outline = append(m.bench.snap.Outline, workbench.OutlineNode{Node: domainmodel.PlanNode{ID: fmt.Sprint(i), Kind: domainmodel.PlanChapter, Title: fmt.Sprintf("雨夜来信 %d", i)}, Number: i, State: workbench.ChapterConfirmed})
-		m.bench.snap.Manuscript = append(m.bench.snap.Manuscript, domainmodel.ManuscriptChapter{ID: fmt.Sprint(i), Number: i, Title: "雨夜来信", Blocks: []domainmodel.ManuscriptBlock{{Text: strings.Repeat("雨停了，屋檐却还在滴水。", 250)}}})
+		m.bench.snap.Manuscript = append(m.bench.snap.Manuscript, domainmodel.ManuscriptChapter{ID: fmt.Sprint(i), Number: i, Blocks: []domainmodel.ManuscriptBlock{{Text: strings.Repeat("雨停了，屋檐却还在滴水。", 250)}}})
 	}
 	m.bench.activity = activity.Snapshot{Seq: 1, RunID: "run"}
 	m.bench.activity.Output = []activity.OutputBlock{

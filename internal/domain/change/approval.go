@@ -28,18 +28,20 @@ type Admission struct {
 	Hold    string
 }
 
-// Admit 给出执行提案的放行结论：生效策略取任务快照与提案基线上权威设置中更严格的一方
-// （D23），manual 或 milestone 下的重大变化等待用户；受 locked/guided 约束的正文只有
-// 覆盖当前候选与约束且为 pass 的独立合规证据才能放行（D14、D51）。
+// Admit 给出提案的放行结论：生效策略取任务快照与提案基线上权威设置中更严格的一方
+// （D23），没有任务的提案（主编提出的修改，D77）只看权威设置；manual 或 milestone 下的
+// 重大变化等待用户；受 locked/guided 约束的正文只有覆盖当前候选与约束且为 pass 的独立
+// 合规证据才能放行（D14、D51）。
 func (e *Engine) Admit(ctx context.Context, proposal model.Proposal) (Admission, error) {
 	task, err := e.task(ctx, proposal)
 	if err != nil {
 		return Admission{}, err
 	}
-	if task == nil {
-		return Admission{}, fmt.Errorf("admission requires a task proposal: %w", model.ErrInvalid)
+	floor := model.ApprovalAuto
+	if task != nil {
+		floor = task.Snapshot.ApprovalPolicy
 	}
-	policy, err := e.effectivePolicy(ctx, task.Snapshot.ApprovalPolicy, proposal)
+	policy, err := e.effectivePolicy(ctx, floor, proposal)
 	if err != nil {
 		return Admission{}, err
 	}

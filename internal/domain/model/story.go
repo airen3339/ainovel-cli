@@ -312,17 +312,17 @@ type ManuscriptBlock struct {
 
 // ManuscriptChapter 记录章级作者（D34）：用户写的章默认锁定，AI 不得冒认用户
 // 身份；DependsOn 是故事依赖（D40），由宿主在提交时按本章 Canon Delta 的实体写入。
+// 标题只在章节计划上（D77）：改标题是一次计划修订，不动正文。
 type ManuscriptChapter struct {
 	ID         string            `json:"id"`
 	PlanNodeID string            `json:"plan_node_id"`
 	Number     int               `json:"number"`
-	Title      string            `json:"title"`
 	Author     AuthorKind        `json:"author"`
 	Blocks     []ManuscriptBlock `json:"blocks"`
 	DependsOn  []DocumentRef     `json:"depends_on,omitempty"`
 }
 
-// Runes 是正文字符数：各 block 正文累加，不含标题。
+// Runes 是正文字符数：各 block 正文累加。
 func (v ManuscriptChapter) Runes() int {
 	count := 0
 	for _, block := range v.Blocks {
@@ -340,8 +340,8 @@ func (v ManuscriptChapter) Validate() error {
 	default:
 		return fmt.Errorf("chapter author must be user, ai or extension, got %q: %w", v.Author, ErrInvalid)
 	}
-	if v.Number <= 0 || strings.TrimSpace(v.Title) == "" || len(v.Blocks) == 0 {
-		return fmt.Errorf("chapter number, title and blocks are required: %w", ErrInvalid)
+	if v.Number <= 0 || len(v.Blocks) == 0 {
+		return fmt.Errorf("chapter number and blocks are required: %w", ErrInvalid)
 	}
 	seen := make(map[string]struct{}, len(v.Blocks))
 	for i, block := range v.Blocks {

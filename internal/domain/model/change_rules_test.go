@@ -51,7 +51,7 @@ func TestReviseCanonSubmissionCoversRequestedFacts(t *testing.T) {
 // 全部受影响章节），不得删除正文，正文满足任务携带要求的字数约束（S13）。
 func TestChapterTasksWriteExactlyTheirTargets(t *testing.T) {
 	chapter := func(id, plan, text string) Patch {
-		content, _ := json.Marshal(ManuscriptChapter{ID: id, PlanNodeID: plan, Number: 1, Title: "章", Author: AuthorAI,
+		content, _ := json.Marshal(ManuscriptChapter{ID: id, PlanNodeID: plan, Number: 1, Author: AuthorAI,
 			Blocks: []ManuscriptBlock{{ID: "b", Text: text}}})
 		return Patch{Document: DocumentRef{Kind: DocumentManuscript, ID: id}, Operation: PatchPut, Content: content}
 	}

@@ -54,13 +54,13 @@ func commitProposalTx(ctx context.Context, tx *sql.Tx, proposal model.Proposal, 
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO change_sets (
 			id, content_digest, target_kind, target_id, target_scope,
-			base_revision, new_revision, author_kind, author_id, reason,
+			base_revision, new_revision, author_kind, author_id, reason, source,
 			structural_impact, semantic_impact, compliance_impact, approval_state,
 			decision_author_kind, decision_author_id, decided_at_unix_ms, created_at_unix_ms,
 			operation_id
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		proposal.ID, digest, proposal.Target.Kind, proposal.Target.ID, proposal.Target.Scope,
-		proposal.BaseRevision, newRevision, proposal.Author.Kind, proposal.Author.ID, proposal.Reason,
+		proposal.BaseRevision, newRevision, proposal.Author.Kind, proposal.Author.ID, proposal.Reason, proposal.Source,
 		nullableJSON(proposal.Impact.Structural), nullableJSON(proposal.Impact.Semantic),
 		nullableJSON(proposal.Impact.Compliance),
 		proposal.ApprovalState, proposal.DecidedBy.Kind, proposal.DecidedBy.ID,

@@ -35,7 +35,7 @@ func (s *Story) labelPairs() []string {
 		add(model.DocumentRef{Kind: model.DocumentPlan, ID: node.ID}, s.planLabel(node))
 	}
 	for _, chapter := range s.content.Manuscript {
-		add(model.DocumentRef{Kind: model.DocumentManuscript, ID: chapter.ID}, s.planLabelByID(chapter.PlanNodeID))
+		add(model.DocumentRef{Kind: model.DocumentManuscript, ID: chapter.ID}, s.PlanLabel(chapter.PlanNodeID))
 	}
 	for _, entity := range s.content.Entities {
 		add(model.DocumentRef{Kind: model.DocumentEntity, ID: entity.ID}, "「"+entity.Name+"」")

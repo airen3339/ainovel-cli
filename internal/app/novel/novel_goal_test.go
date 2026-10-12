@@ -33,7 +33,7 @@ func novelFixture(t *testing.T, plans, written int) projectdoc.Snapshot {
 		plan := project.Plan[1+number]
 		chapterID := "chapter-" + strings.Repeat("i", number)
 		project.Manuscript = append(project.Manuscript, model.ManuscriptChapter{
-			ID: chapterID, PlanNodeID: plan.ID, Number: number, Title: plan.Title,
+			ID: chapterID, PlanNodeID: plan.ID, Number: number,
 			Author: model.AuthorAI, Blocks: []model.ManuscriptBlock{{ID: "b", Text: strings.Repeat("字", derive.ReviewTextBudget/3)}},
 		})
 		// 每章随章入账一条事实：没有来源事实的章视为未入账（§4.5）。
@@ -234,6 +234,18 @@ func TestNovelDeriverNextFollowsNovelRules(t *testing.T) {
 				}
 			}},
 		{name: "oversized plan waits", plans: 6, wantWait: "蓝图包含 6 个有效章节节点"},
+		// 主编提出的修改等用户确认时不往下写（D77）：写下去的内容可能要按它改。
+		{name: "pending chief change waits", plans: 3, written: 1, evidence: Evidence{Change: true},
+			wantWait: "主编提出的修改等你确认"},
+		// 用户在语义影响处置里选了重写受影响章（S4）：先于审阅与续写排进运行。
+		{name: "requested affected rewrite comes first", plans: 3, written: 3,
+			evidence: Evidence{Requested: []model.Operation{affectedRewrite(t, "change-1", "chapter-i", "chapter-ii")}},
+			wantKind: model.OperationRewriteAffected, wantID: "change-1:rewrite-affected",
+			check: func(t *testing.T, work creation.WorkItem) {
+				if input := work.Input.(model.RewriteAffectedInput); len(input.ChapterIDs) != 2 || input.ResolutionProposalID != "change-1" {
+					t.Fatalf("affected input = %#v", input)
+				}
+			}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -244,6 +256,17 @@ func TestNovelDeriverNextFollowsNovelRules(t *testing.T) {
 			assertStep(t, project, run, tc.evidence, stepWant{kind: tc.wantKind, id: tc.wantID, wait: tc.wantWait, done: tc.wantDone, fail: tc.wantFail, check: tc.check})
 		})
 	}
+}
+
+func affectedRewrite(t *testing.T, proposalID string, chapters ...string) model.Operation {
+	t.Helper()
+	input, err := json.Marshal(model.RewriteAffectedInput{
+		ChapterIDs: chapters, BaseRevision: 4, ResolutionProposalID: proposalID, Reason: "同步改过的设定",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return model.Operation{ID: proposalID + ":rewrite-affected", Kind: model.OperationRewriteAffected, Input: input}
 }
 
 type stepWant struct {

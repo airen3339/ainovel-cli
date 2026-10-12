@@ -156,7 +156,7 @@ func (s *Story) Texts(ids []string) []ChapterText {
 	texts := make([]ChapterText, 0, len(ids))
 	for _, id := range ids {
 		if chapter, ok := s.manuscripts[id]; ok {
-			texts = append(texts, ChapterText{Chapter: s.chapterNumberOf(id), Title: chapter.Title, Text: joinBlocks(chapter.Blocks)})
+			texts = append(texts, ChapterText{Chapter: s.chapterNumberOf(id), Title: s.plans[chapter.PlanNodeID].Title, Text: joinBlocks(chapter.Blocks)})
 		}
 	}
 	slices.SortFunc(texts, func(left, right ChapterText) int { return left.Chapter - right.Chapter })
@@ -324,7 +324,7 @@ func (s *Story) Label(ref model.DocumentRef) (string, bool) {
 		}
 	case model.DocumentManuscript:
 		if chapter, ok := s.manuscripts[ref.ID]; ok {
-			return fmt.Sprintf("第 %d 章《%s》的正文", s.chapterNumberOf(ref.ID), chapter.Title), true
+			return fmt.Sprintf("第 %d 章《%s》的正文", s.chapterNumberOf(ref.ID), s.plans[chapter.PlanNodeID].Title), true
 		}
 	case model.DocumentEntity:
 		if entity, ok := s.entities[ref.ID]; ok {
@@ -351,13 +351,13 @@ func (s *Story) planLabel(node model.PlanNode) string {
 	}
 }
 
-// planLabelByID 用故事语言指称计划节点，供要求作用域等文案使用。
-func (s *Story) planLabelByID(id string) string {
+// PlanLabel 用故事语言指称计划节点，供要求作用域、修改说明等文案使用。
+func (s *Story) PlanLabel(id string) string {
 	if node, ok := s.plans[id]; ok {
 		return s.planLabel(node)
 	}
 	if s.parent != nil {
-		return s.parent.planLabelByID(id)
+		return s.parent.PlanLabel(id)
 	}
 	return "大纲中尚不存在的节点"
 }

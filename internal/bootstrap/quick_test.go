@@ -445,6 +445,23 @@ func TestQuickWriteBlockedReviewTriggersRewriteAndReReview(t *testing.T) {
 	if !rewritten {
 		t.Fatalf("chapter 2 was not rewritten from review findings: %#v", project.Manuscript)
 	}
+	// 生产里程碑取自落盘的记录（D77）：入稿、改写入稿、两次审阅结论与完成。
+	snap, err := api.Workbench.WorkbenchSnapshot(ctx, command.ProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var milestones []string
+	for _, milestone := range snap.Milestones {
+		milestones = append(milestones, milestone.Text)
+	}
+	if len(milestones) != 6 {
+		t.Fatalf("milestones = %q", milestones)
+	}
+	for _, want := range []string{"第 1 章《", "第 2 章《", "》改写入稿", "审阅第 1–2 章：未通过 · 阻塞 1 处", "审阅第 1–2 章：通过", "全书 2 章完成"} {
+		if !slices.ContainsFunc(milestones, func(text string) bool { return strings.Contains(text, want) }) {
+			t.Fatalf("milestones missing %q: %q", want, milestones)
+		}
+	}
 }
 
 func TestQuickWriteDirectiveAddedMidRunReachesSuccessorAndGatesReview(t *testing.T) {
@@ -804,7 +821,7 @@ func (e *scriptedQuickExecutor) Execute(ctx context.Context, operation model.Ope
 		}
 		chapter := model.ManuscriptChapter{
 			ID: "chapter-" + input.ChapterPlanID, PlanNodeID: input.ChapterPlanID,
-			Number: input.ChapterNumber, Title: fmt.Sprintf("第%d章", input.ChapterNumber), Author: model.AuthorAI,
+			Number: input.ChapterNumber, Author: model.AuthorAI,
 			Blocks: []model.ManuscriptBlock{{
 				ID:   fmt.Sprintf("chapter-%d-block-1", input.ChapterNumber),
 				Text: fmt.Sprintf("第%d章正文", input.ChapterNumber),
@@ -816,7 +833,7 @@ func (e *scriptedQuickExecutor) Execute(ctx context.Context, operation model.Ope
 		}
 		fact := model.CanonFact{
 			ID: chapter.ID + "-outcome", Kind: model.CanonEvent, SubjectID: "hero",
-			Predicate: "event.chapter_outcome", Value: json.RawMessage(fmt.Sprintf("%q", chapter.Title)),
+			Predicate: "event.chapter_outcome", Value: json.RawMessage(fmt.Sprintf(`"第%d章"`, input.ChapterNumber)),
 			SourceChapterID: chapter.ID,
 		}
 		canon, err := json.Marshal(fact)
@@ -897,7 +914,7 @@ func (e *scriptedQuickExecutor) Execute(ctx context.Context, operation model.Ope
 		}
 		chapter := model.ManuscriptChapter{
 			ID: input.ChapterID, PlanNodeID: input.ChapterPlanID,
-			Number: input.ChapterNumber, Title: fmt.Sprintf("第%d章", input.ChapterNumber), Author: model.AuthorAI,
+			Number: input.ChapterNumber, Author: model.AuthorAI,
 			Blocks: []model.ManuscriptBlock{{
 				ID:   fmt.Sprintf("chapter-%d-block-1", input.ChapterNumber),
 				Text: fmt.Sprintf("第%d章正文（按审阅意见重写：%s）", input.ChapterNumber, strings.Join(input.Findings, "；")),
@@ -915,8 +932,8 @@ func (e *scriptedQuickExecutor) Execute(ctx context.Context, operation model.Ope
 		fact := model.CanonFact{
 			ID: chapter.ID + "-outcome", Kind: model.CanonEvent, SubjectID: "hero",
 			Predicate:       "event.chapter_outcome",
-			PreviousValue:   json.RawMessage(fmt.Sprintf("%q", chapter.Title+strings.Repeat("（重写）", round))),
-			Value:           json.RawMessage(fmt.Sprintf("%q", chapter.Title+strings.Repeat("（重写）", round+1))),
+			PreviousValue:   json.RawMessage(fmt.Sprintf("%q", fmt.Sprintf("第%d章", input.ChapterNumber)+strings.Repeat("（重写）", round))),
+			Value:           json.RawMessage(fmt.Sprintf("%q", fmt.Sprintf("第%d章", input.ChapterNumber)+strings.Repeat("（重写）", round+1))),
 			SourceChapterID: chapter.ID,
 		}
 		canon, err := json.Marshal(fact)

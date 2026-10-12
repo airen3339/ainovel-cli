@@ -114,3 +114,36 @@ func (e schemaPathError) Error() string {
 func errSchemaPath(path, segment, reason string) error {
 	return schemaPathError{path, segment, reason}
 }
+
+// 主编的 propose_change 同理（D77）：Schema 的每条路径都要能解码进 narrative.Edit。
+func TestChangeSchemaFieldsAreDecodable(t *testing.T) {
+	var schema map[string]any
+	if err := json.Unmarshal(ChangeSchema(), &schema); err != nil {
+		t.Fatal(err)
+	}
+	cases := []struct {
+		path   string
+		fields []string
+	}{
+		{"", append(jsonFields(narrative.Edit{}), "reason")},
+		{"volumes[]", jsonFields(narrative.VolumeEdit{})},
+		{"arcs[]", jsonFields(narrative.ArcEdit{})},
+		{"chapters[]", jsonFields(narrative.ChapterEdit{})},
+		{"entities[]", jsonFields(narrative.EntityEdit{})},
+		{"facts[]", jsonFields(narrative.FactEdit{})},
+		{"remove_facts[]", jsonFields(narrative.FactRef{})},
+		{"intent", jsonFields(narrative.IntentEdit{})},
+		{"locks[]", jsonFields(narrative.LockEdit{})},
+	}
+	for _, c := range cases {
+		properties, err := schemaProperties(schema, c.path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for name := range properties {
+			if !slices.Contains(c.fields, name) {
+				t.Errorf("propose_change/%s 公开了宿主不解码的字段 %s", c.path, name)
+			}
+		}
+	}
+}

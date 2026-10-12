@@ -62,7 +62,7 @@ func (m model) reviewTarget() string {
 		return "候选稿读取异常"
 	}
 	if len(chapters) == 1 {
-		return fmt.Sprintf("第 %d 章 · %s", chapters[0].Number, chapters[0].Title)
+		return fmt.Sprintf("第 %d 章 · %s", chapters[0].Number, m.chapterTitle(chapters[0].Number))
 	}
 	if len(chapters) > 1 {
 		return fmt.Sprintf("%d 章候选稿", len(chapters))
@@ -78,7 +78,7 @@ func chapterWords(chapter domainmodel.ManuscriptChapter) int {
 	return words
 }
 
-// candidateSummary 决定卡上的一行变更摘要：正文比对字数与标题，其余变更给规模。
+// candidateSummary 决定卡上的一行变更摘要：正文比对字数，其余变更（含改标题）给规模。
 func (m model) candidateSummary() string {
 	d := m.bench.decision
 	chapters, err := m.reviewChapters()
@@ -93,9 +93,6 @@ func (m model) candidateSummary() string {
 			continue
 		}
 		parts = append(parts, fmt.Sprintf("正文 %s → %s 字", groupDigits(chapterWords(previous)), groupDigits(chapterWords(chapter))))
-		if previous.Title != chapter.Title {
-			parts = append(parts, "标题已调整")
-		}
 	}
 	parts = append(parts, d.view.Summary...)
 	if d.view.Compass != nil {
@@ -172,7 +169,7 @@ func (m model) reviewContent() (string, error) {
 		body.WriteString(compassSummary(m.bench.snap.Length.Compass, *view.Compass) + "\n")
 	}
 	for _, chapter := range chapters {
-		section(fmt.Sprintf("第 %d 章 · %s", chapter.Number, chapter.Title))
+		section(fmt.Sprintf("第 %d 章 · %s", chapter.Number, m.chapterTitle(chapter.Number)))
 		body.WriteString(styleHint.Render("候选稿 · 尚未入稿") + "\n\n" + chapterText(chapter) + "\n")
 	}
 	body.WriteString("\n" + styleHint.Render(m.decisionActions()))

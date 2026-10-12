@@ -3,6 +3,7 @@ package workbench
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	projectdoc "github.com/voocel/ainovel-cli/internal/app/project"
@@ -15,7 +16,10 @@ import (
 // 另见 Candidates，罗盘的前后对比由入口按当前罗盘呈现。
 type ProposalView struct {
 	// Summary 是规模摘要的各段，如「新增 1 卷 · 5 个故事弧 · 7 章」「设定 21 条」。
-	Summary  []string               `json:"summary,omitempty"`
+	Summary []string `json:"summary,omitempty"`
+	// Changes 逐处说清改了什么（D77），如「第 2 章《旧》改名《新》」：主编的回执、确认卡
+	// 与变更记录都用它，不依赖主编复述。
+	Changes  []string               `json:"changes,omitempty"`
 	Outline  []narrative.VolumeView `json:"outline,omitempty"`  // 新增或修订的卷弧章，祖先补齐
 	Entities []narrative.EntityView `json:"entities,omitempty"` // 新增或修订的人物、地点、物品、组织
 	Facts    []Fact                 `json:"facts,omitempty"`    // 新增或修订的设定
@@ -24,9 +28,9 @@ type ProposalView struct {
 	Other    []string               `json:"other,omitempty"`    // 其余种类的改动
 }
 
-func proposalView(project projectdoc.Snapshot, proposal model.Proposal) (ProposalView, error) {
+func proposalView(project projectdoc.Snapshot, patches []model.Patch) (ProposalView, error) {
 	base := storyOf(project)
-	next, err := base.Apply(proposal.Patches)
+	next, err := base.Apply(patches)
 	if err != nil {
 		return ProposalView{}, err
 	}
@@ -34,7 +38,14 @@ func proposalView(project projectdoc.Snapshot, proposal model.Proposal) (Proposa
 	var plans, entities []string
 	added := make(map[model.PlanNodeKind]int)
 	revisedPlans, addedEntities, revisedEntities := 0, 0, 0
-	for _, patch := range proposal.Patches {
+	for _, patch := range patches {
+		line, err := changeLine(project, base, next, patch)
+		if err != nil {
+			return ProposalView{}, err
+		}
+		view.Changes = append(view.Changes, line)
+	}
+	for _, patch := range patches {
 		ref := patch.Document
 		if patch.Operation != model.PatchPut {
 			view.Removed = append(view.Removed, describe(base, ref))
@@ -123,4 +134,124 @@ func describe(story *narrative.Story, ref model.DocumentRef) string {
 
 func storyOf(project projectdoc.Snapshot) *narrative.Story {
 	return narrative.New(narrative.Content{Plan: project.Plan, Entities: project.Entities, Canon: project.Canon, Manuscript: project.Manuscript})
+}
+
+// changeLine 用一句故事语言说清一处改动：大纲说改名、改梗概或挪位置，设定说新的内容，
+// 作品方向逐项说改成了什么。
+func changeLine(project projectdoc.Snapshot, base, next *narrative.Story, patch model.Patch) (string, error) {
+	ref := patch.Document
+	if patch.Operation != model.PatchPut {
+		if ref.Kind == model.DocumentOwnership {
+			for _, rule := range project.Ownership {
+				if rule.Target.Key() == ref.ID {
+					return "放开" + describe(base, rule.Target), nil
+				}
+			}
+		}
+		return "删去" + describe(base, ref), nil
+	}
+	switch ref.Kind {
+	case model.DocumentManuscript:
+		if _, existed := base.Label(ref); existed {
+			return "改写" + describe(next, ref), nil
+		}
+		return "入稿" + describe(next, ref), nil
+	case model.DocumentPlan:
+		var node model.PlanNode
+		if err := json.Unmarshal(patch.Content, &node); err != nil {
+			return "", fmt.Errorf("decode proposed plan node: %w", err)
+		}
+		before, existed := model.IndexPlan(project.Plan)[node.ID]
+		if !existed {
+			return "新增" + next.PlanLabel(node.ID), nil
+		}
+		var parts []string
+		if node.Title != before.Title {
+			parts = append(parts, fmt.Sprintf("改名《%s》", node.Title))
+		}
+		if node.Summary != before.Summary {
+			parts = append(parts, "梗概改为："+node.Summary)
+		}
+		if node.ParentID != before.ParentID {
+			parts = append(parts, "移到"+next.PlanLabel(node.ParentID)+"下")
+		}
+		return base.PlanLabel(node.ID) + strings.Join(parts, "，"), nil
+	case model.DocumentEntity:
+		var entity model.Entity
+		if err := json.Unmarshal(patch.Content, &entity); err != nil {
+			return "", fmt.Errorf("decode proposed entity: %w", err)
+		}
+		if _, existed := base.Label(ref); !existed {
+			return fmt.Sprintf("新增%s「%s」", entity.Kind.Noun(), entity.Name), nil
+		}
+		line := fmt.Sprintf("「%s」是%s", entity.Name, entity.Kind.Noun())
+		if len(entity.Aliases) > 0 {
+			line += "，又名" + strings.Join(entity.Aliases, "、")
+		}
+		return line, nil
+	case model.DocumentCanon:
+		var fact model.CanonFact
+		if err := json.Unmarshal(patch.Content, &fact); err != nil {
+			return "", fmt.Errorf("decode proposed fact: %w", err)
+		}
+		subject, text := next.FactNote(fact)
+		return fmt.Sprintf("设定 · 「%s」%s", subject, text), nil
+	case model.DocumentIntent:
+		var intent model.Intent
+		if err := json.Unmarshal(patch.Content, &intent); err != nil {
+			return "", fmt.Errorf("decode proposed intent: %w", err)
+		}
+		return intentChange(project.Intent, intent), nil
+	case model.DocumentApproval:
+		var setting model.ApprovalSetting
+		if err := json.Unmarshal(patch.Content, &setting); err != nil {
+			return "", fmt.Errorf("decode proposed approval: %w", err)
+		}
+		return "审批改为：" + approvalLabel[setting.Policy], nil
+	case model.DocumentOwnership:
+		var rule model.OwnershipRule
+		if err := json.Unmarshal(patch.Content, &rule); err != nil {
+			return "", fmt.Errorf("decode proposed ownership: %w", err)
+		}
+		if rule.Control == model.ControlGuided {
+			return describe(next, rule.Target) + "只按要求改：「" + strings.Join(rule.Guidance, "；") + "」", nil
+		}
+		return "锁定" + describe(next, rule.Target), nil
+	case model.DocumentDirective:
+		var directive model.Directive
+		if err := json.Unmarshal(patch.Content, &directive); err != nil {
+			return "", fmt.Errorf("decode proposed directive: %w", err)
+		}
+		if directive.Status == model.DirectiveRetired {
+			return "退掉要求「" + directive.Text + "」", nil
+		}
+		return "记下要求「" + directive.Text + "」", nil
+	}
+	return "改动" + describe(next, ref), nil
+}
+
+// approvalLabel 是审批方式的读者用语。
+var approvalLabel = map[model.ApprovalPolicy]string{
+	model.ApprovalAuto: "自动放行", model.ApprovalMilestone: "重大变化等你确认", model.ApprovalManual: "每一步都等你确认",
+}
+
+func intentChange(before, after model.Intent) string {
+	var parts []string
+	field := func(name, old, value string) {
+		if value != old {
+			parts = append(parts, name+"改为「"+value+"」")
+		}
+	}
+	list := func(name string, old, value []string) {
+		if !slices.Equal(old, value) {
+			parts = append(parts, name+"改为「"+strings.Join(value, "、")+"」")
+		}
+	}
+	field("故事前提", before.Premise, after.Premise)
+	field("读者", before.Audience, after.Audience)
+	field("结局方向", before.EndingDirection, after.EndingDirection)
+	list("想给读者的体验", before.DesiredExperience, after.DesiredExperience)
+	list("必须有", before.Required, after.Required)
+	list("不要", before.Forbidden, after.Forbidden)
+	return "作品方向：" + strings.Join(parts, "，")
 }

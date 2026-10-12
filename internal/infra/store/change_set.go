@@ -44,13 +44,13 @@ func (s *Store) GetChangeSet(ctx context.Context, id string) (model.ChangeSet, e
 	var createdAt int64
 	err := s.db.QueryRowContext(ctx, `
 		SELECT target_kind, target_id, target_scope, base_revision, new_revision,
-			author_kind, author_id, reason, structural_impact, semantic_impact, compliance_impact,
+			author_kind, author_id, reason, source, structural_impact, semantic_impact, compliance_impact,
 			approval_state, decision_author_kind, decision_author_id,
 			decided_at_unix_ms, created_at_unix_ms, operation_id
 		FROM change_sets WHERE id = ?`, id).Scan(
 		&changeSet.Target.Kind, &changeSet.Target.ID, &changeSet.Target.Scope,
 		&changeSet.BaseRevision, &changeSet.NewRevision,
-		&changeSet.Author.Kind, &changeSet.Author.ID, &changeSet.Reason,
+		&changeSet.Author.Kind, &changeSet.Author.ID, &changeSet.Reason, &changeSet.Source,
 		&structural, &semantic, &compliance, &changeSet.ApprovalState,
 		&decidedByKind, &decidedByID, &decidedAt, &createdAt, &operationID,
 	)
@@ -100,4 +100,39 @@ func (s *Store) GetChangeSet(ctx context.Context, id string) (model.ChangeSet, e
 		return model.ChangeSet{}, fmt.Errorf("stored change set is invalid: %w", err)
 	}
 	return changeSet, nil
+}
+
+// ManuscriptCommit 是正文的一次入稿：哪一章、在哪个 revision、何时生效。
+type ManuscriptCommit struct {
+	ChapterID string
+	Revision  model.Revision
+	At        time.Time
+}
+
+// ManuscriptCommits 列出作品正文的每次入稿，按 revision 先后：生产里程碑取自落盘的
+// 记录，重开作品也还在（D77）。
+func (s *Store) ManuscriptCommits(ctx context.Context, projectID string) ([]ManuscriptCommit, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT v.document_id, c.new_revision, COALESCE(c.decided_at_unix_ms, c.created_at_unix_ms)
+		FROM document_versions v JOIN change_sets c ON c.id = v.change_set_id
+		WHERE v.target_kind = ? AND v.target_id = ? AND v.target_scope = '' AND v.document_kind = ? AND v.operation = 'put'
+		ORDER BY c.new_revision`, model.AuthorityProject, projectID, model.DocumentManuscript)
+	if err != nil {
+		return nil, fmt.Errorf("list manuscript commits: %w", err)
+	}
+	defer rows.Close()
+	var commits []ManuscriptCommit
+	for rows.Next() {
+		var commit ManuscriptCommit
+		var at int64
+		if err := rows.Scan(&commit.ChapterID, &commit.Revision, &at); err != nil {
+			return nil, fmt.Errorf("scan manuscript commit: %w", err)
+		}
+		commit.At = time.UnixMilli(at).UTC()
+		commits = append(commits, commit)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list manuscript commits: %w", err)
+	}
+	return commits, nil
 }

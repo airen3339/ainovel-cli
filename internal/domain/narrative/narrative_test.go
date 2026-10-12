@@ -14,7 +14,7 @@ import (
 
 func fixture() *Story {
 	chapter := func(id string, number int) model.ManuscriptChapter {
-		return model.ManuscriptChapter{ID: id, PlanNodeID: id, Number: number, Title: fmt.Sprintf("第%d章题", number), Author: model.AuthorAI,
+		return model.ManuscriptChapter{ID: id, PlanNodeID: id, Number: number, Author: model.AuthorAI,
 			Blocks: []model.ManuscriptBlock{{ID: "b1", Text: "山风很冷。"}, {ID: "b2", Text: "他走进山门。"}}}
 	}
 	return New(Content{
@@ -108,7 +108,7 @@ func TestResolvePlanEditsAssignIDsAndKeepNumbering(t *testing.T) {
 func TestResolveChapterSubmissionUsesNaturalKeys(t *testing.T) {
 	story := fixture()
 	input := &model.WriteChapterInput{ChapterPlanID: "c3", ChapterNumber: 3}
-	draft, err := story.Draft(input, ChapterDraft{Title: "下山", Blocks: []model.ManuscriptBlock{{ID: "b1", Text: "下山了。"}}})
+	draft, err := story.Draft(input, ChapterDraft{Blocks: []model.ManuscriptBlock{{ID: "b1", Text: "下山了。"}}})
 	if err != nil || draft.ID != "c3" || draft.PlanNodeID != "c3" || draft.Number != 3 || draft.Author != model.AuthorAI {
 		t.Fatalf("draft identity = %+v, %v", draft, err)
 	}
@@ -154,7 +154,7 @@ func TestResolveChapterSubmissionUsesNaturalKeys(t *testing.T) {
 func TestResolveRedeclarationByNaturalKey(t *testing.T) {
 	story := fixture()
 	input := &model.RewriteChapterInput{ChapterID: "c2", ChapterPlanID: "c2", ChapterNumber: 2, Findings: []string{"节奏拖沓"}}
-	draft, err := story.Draft(input, ChapterDraft{Title: "立誓", Blocks: []model.ManuscriptBlock{{ID: "b1", Text: "他立誓。"}}})
+	draft, err := story.Draft(input, ChapterDraft{Blocks: []model.ManuscriptBlock{{ID: "b1", Text: "他立誓。"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -186,14 +186,14 @@ func TestResolveRedeclarationByNaturalKey(t *testing.T) {
 func TestAffectedRewriteResolvesChaptersByNumber(t *testing.T) {
 	story := fixture()
 	input := &model.RewriteAffectedInput{ChapterIDs: []string{"c1", "c2"}, BaseRevision: 3, ResolutionProposalID: "p", Reason: "设定变更"}
-	if _, err := story.Draft(input, ChapterDraft{Number: 3, Title: "t", Blocks: []model.ManuscriptBlock{{ID: "b", Text: "x"}}}); err == nil {
+	if _, err := story.Draft(input, ChapterDraft{Number: 3, Blocks: []model.ManuscriptBlock{{ID: "b", Text: "x"}}}); err == nil {
 		t.Fatal("chapter outside the task accepted")
 	}
-	first, err := story.Draft(input, ChapterDraft{Number: 1, Title: "山门", Blocks: []model.ManuscriptBlock{{ID: "b", Text: "x"}}})
+	first, err := story.Draft(input, ChapterDraft{Number: 1, Blocks: []model.ManuscriptBlock{{ID: "b", Text: "x"}}})
 	if err != nil || first.ID != "c1" {
 		t.Fatalf("draft = %+v, %v", first, err)
 	}
-	second, _ := story.Draft(input, ChapterDraft{Number: 2, Title: "立誓", Blocks: []model.ManuscriptBlock{{ID: "b", Text: "y"}}})
+	second, _ := story.Draft(input, ChapterDraft{Number: 2, Blocks: []model.ManuscriptBlock{{ID: "b", Text: "y"}}})
 	drafts := []model.ManuscriptChapter{first, second}
 	if _, err := story.Resolve(input, Submission{Facts: []FactEdit{{Subject: "林凡", Predicate: "event.fall", Value: json.RawMessage(`"跌落"`)}}}, drafts); !errors.Is(err, model.ErrInvalid) {
 		t.Fatalf("multi-chapter fact without chapter: %v", err)
@@ -261,7 +261,7 @@ func TestModelFacingViewsCarryNoInternalIDs(t *testing.T) {
 	if leaked := internalID.FindAllString(all, -1); len(leaked) > 0 {
 		t.Fatalf("internal ids leaked %v in:\n%s", leaked, all)
 	}
-	for _, want := range []string{`"chapter":2`, `"chapters":[1,2]`, `第 1 个故事弧《试炼》`, `第 1 章《第1章题》的正文`, `"pending_facts"`} {
+	for _, want := range []string{`"chapter":2`, `"chapters":[1,2]`, `第 1 个故事弧《试炼》`, `第 1 章《山门》的正文`, `"pending_facts"`} {
 		if !strings.Contains(all, want) {
 			t.Fatalf("missing %s in:\n%s", want, all)
 		}

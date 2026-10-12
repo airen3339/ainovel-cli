@@ -104,8 +104,9 @@ func newReviewFixture(t *testing.T, withModel bool) *reviewFixture {
 	}
 	f.commitEdit(t, "add-chapter", func(projection *projectdoc.ProjectProjection) {
 		projection.Manuscript = append(projection.Manuscript, model.ManuscriptChapter{
-			ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1, Title: "第一章", Author: model.AuthorUser,
-			Blocks: []model.ManuscriptBlock{{ID: "block-1", Text: "他在山门前放下了刀。"}},
+			ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1, Author: model.AuthorUser,
+			Blocks:    []model.ManuscriptBlock{{ID: "block-1", Text: "他在山门前放下了刀。"}},
+			DependsOn: []model.DocumentRef{{Kind: model.DocumentEntity, ID: "hero"}},
 		})
 	})
 	if _, err := s.CreateCreationRun(ctx, model.CreationRun{
@@ -401,8 +402,9 @@ func TestResolveProposalRewriteAffectedRejectsForeignOperation(t *testing.T) {
 func TestResolveProposalStaleProposalCannotBeApprovedButCanBeAbandoned(t *testing.T) {
 	f := newReviewFixture(t, false)
 	proposal := f.conflict(t, "change-bottom-line")
+	// 报告判断过的正文其后改了：报告过时，不能照它批准。
 	f.commitEdit(t, "later-edit", func(projection *projectdoc.ProjectProjection) {
-		projection.Plan[2].Summary = "冒雨抵达山门"
+		projection.Manuscript[0].Blocks[0].Text = "他冒雨抵达山门。"
 	})
 	_, err := f.review.ResolveProposal(f.ctx, f.command(proposal.ID, model.ResolutionReinterpretFuture))
 	if !errors.Is(err, model.ErrRevisionConflict) {

@@ -47,7 +47,7 @@ func TestCompiledPromptsCarryNoDocumentIDs(t *testing.T) {
 		t.Fatalf("create project: %v", err)
 	}
 	chapter := func(id, plan string, number int, title, text string) model.Patch {
-		content, _ := json.Marshal(model.ManuscriptChapter{ID: id, PlanNodeID: plan, Number: number, Title: title, Author: model.AuthorAI,
+		content, _ := json.Marshal(model.ManuscriptChapter{ID: id, PlanNodeID: plan, Number: number, Author: model.AuthorAI,
 			Blocks: []model.ManuscriptBlock{{ID: "b1", Text: text}}})
 		return model.Patch{Document: model.DocumentRef{Kind: model.DocumentManuscript, ID: id}, Operation: model.PatchPut, Content: content}
 	}

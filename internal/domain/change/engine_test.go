@@ -120,7 +120,7 @@ func TestGuidedDocumentRequiresPassingCompliance(t *testing.T) {
 	base := pendingChange("guided-update", target, revision, model.AuthorAI, model.Patch{
 		Document: model.DocumentRef{Kind: model.DocumentManuscript, ID: "chapter-2"}, Operation: model.PatchPut,
 		Content: documentJSON(t, model.ManuscriptChapter{
-			ID: "chapter-2", PlanNodeID: "chapter-plan-2", Number: 2, Title: "身世", Author: model.AuthorAI,
+			ID: "chapter-2", PlanNodeID: "chapter-plan-2", Number: 2, Author: model.AuthorAI,
 			Blocks: []model.ManuscriptBlock{{ID: "p-1", Text: "他原是寒门孤儿。"}},
 		}),
 	}, model.Patch{
@@ -512,7 +512,7 @@ func seedProject(t *testing.T, ctx context.Context, s *store.Store, target model
 		{Document: model.DocumentRef{Kind: model.DocumentEntity, ID: "hero"}, Operation: model.PatchPut, Content: documentJSON(t, model.Entity{ID: "hero", Kind: model.EntityCharacter, Name: "主角"})},
 		{Document: model.DocumentRef{Kind: model.DocumentCanon, ID: "hero-origin"}, Operation: model.PatchPut, Content: documentJSON(t, model.CanonFact{ID: "hero-origin", Kind: model.CanonState, SubjectID: "hero", Predicate: "state.origin", Value: json.RawMessage(`"农家子"`)})},
 		{Document: model.DocumentRef{Kind: model.DocumentManuscript, ID: "chapter-1"}, Operation: model.PatchPut, Content: documentJSON(t, model.ManuscriptChapter{
-			ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1, Title: "山门", Author: model.AuthorUser,
+			ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1, Author: model.AuthorUser,
 			Blocks:    []model.ManuscriptBlock{{ID: "p-1", Text: "他第一次看见山门。"}},
 			DependsOn: []model.DocumentRef{{Kind: model.DocumentCanon, ID: "hero-origin"}},
 		})},
@@ -603,7 +603,7 @@ func TestUserAuthoredChapterIsLockedByDefault(t *testing.T) {
 		return pendingChange(id, target, 1, model.AuthorAI, model.Patch{
 			Document: model.DocumentRef{Kind: model.DocumentManuscript, ID: "chapter-1"}, Operation: model.PatchPut,
 			Content: documentJSON(t, model.ManuscriptChapter{
-				ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1, Title: "山门", Author: author,
+				ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1, Author: author,
 				Blocks: []model.ManuscriptBlock{{ID: "p-1", Text: "改写后的第一段。"}},
 			}),
 		}, model.Patch{
@@ -798,7 +798,7 @@ func TestAICanonRulesForFlashbacksEventsAndRedeclaration(t *testing.T) {
 		return model.Patch{
 			Document: model.DocumentRef{Kind: model.DocumentManuscript, ID: id}, Operation: model.PatchPut,
 			Content: documentJSON(t, model.ManuscriptChapter{
-				ID: id, PlanNodeID: "chapter-plan-" + id[len("chapter-"):], Number: number, Title: id, Author: author,
+				ID: id, PlanNodeID: "chapter-plan-" + id[len("chapter-"):], Number: number, Author: author,
 				Blocks: []model.ManuscriptBlock{{ID: id + "-p1", Text: "正文"}},
 			}),
 		}

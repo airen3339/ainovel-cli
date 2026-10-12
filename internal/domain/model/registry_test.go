@@ -78,7 +78,7 @@ func TestCanonFactDependsOnEntity(t *testing.T) {
 
 func TestManuscriptAuthorRequired(t *testing.T) {
 	chapter := ManuscriptChapter{
-		ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1, Title: "山门",
+		ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1,
 		Blocks: []ManuscriptBlock{{ID: "p-1", Text: "第一段"}},
 	}
 	if err := chapter.Validate(); !errors.Is(err, ErrInvalid) {
@@ -123,7 +123,7 @@ func TestDecodeTaskInputRejectsUnknownFieldsPerKind(t *testing.T) {
 
 func TestNormalizeSubmissionBindsCanonSubjects(t *testing.T) {
 	chapter, _ := json.Marshal(ManuscriptChapter{
-		ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1, Title: "山门", Author: AuthorAI,
+		ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1, Author: AuthorAI,
 		Blocks:    []ManuscriptBlock{{ID: "p-1", Text: "第一段"}},
 		DependsOn: []DocumentRef{{Kind: DocumentCanon, ID: "model-declared"}},
 	})

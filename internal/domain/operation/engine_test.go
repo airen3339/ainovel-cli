@@ -232,7 +232,7 @@ func (manuscriptExecutor) Identity() string { return testExecutor }
 
 func (manuscriptExecutor) Execute(_ context.Context, operation model.Operation) (model.OperationOutcome, error) {
 	chapter, err := json.Marshal(model.ManuscriptChapter{
-		ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1, Title: "山门", Author: model.AuthorAI,
+		ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1, Author: model.AuthorAI,
 		Blocks: []model.ManuscriptBlock{{ID: "chapter-1-block-1", Text: "他在山门前作出选择。"}},
 	})
 	if err != nil {

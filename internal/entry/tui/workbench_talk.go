@@ -5,6 +5,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/voocel/ainovel-cli/internal/app/chief"
+	"github.com/voocel/ainovel-cli/internal/app/workbench"
 )
 
 // sessionMsg 是会话唤醒回执：主编的对话或创作推进有了变化，醒来后整读快照。
@@ -63,6 +64,11 @@ func (m model) applySession() (tea.Model, tea.Cmd) {
 	if bench.thread.Busy || production.Writing {
 		cmds = append(cmds, bench.pulse.start(bench.gen))
 	}
+	// 主编改了书（记要求、改大纲、提出待确认的修改）：重读作品，目录与确认卡跟上。
+	if changes := changeReceipts(bench.thread.Entries); changes > bench.changeSeen {
+		bench.changeSeen = changes
+		cmds = append(cmds, m.refreshBenchCmd())
+	}
 	if production.Ended > bench.driveSeen {
 		bench.driveSeen = production.Ended
 		next, cmd := m.handleDriveEnd(production.Last)
@@ -77,38 +83,88 @@ func (m model) applySession() (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-// talkLines 对话视图的全部行：用户的话、主编的话、主编做的事，正在生成的回复在最后。
-// 定下的条目沿用排好的行；进行中的动作带转圈，每帧重排。
+func changeReceipts(entries []chief.Entry) int {
+	count := 0
+	for _, entry := range entries {
+		if entry.Change {
+			count++
+		}
+	}
+	return count
+}
+
+// talkLines 对话视图的全部行：用户的话、主编的话、主编做的事，与生产里程碑按时间交织
+// （D77），正在生成的回复在最后。定下的条目沿用排好的行；进行中的动作带转圈，每帧重排。
 func (m model) talkLines(width int) []string {
 	thread := m.bench.thread
 	cached := m.bench.talkCache.lines(thread.Entries, width, func(entry chief.Entry) []string { return m.entryLines(entry, width) })
+	milestones := m.bench.snap.Milestones
 	var lines []string
-	for i, entry := range thread.Entries {
-		if entry.Kind == chief.EntryUser && i > 0 {
+	gap := false // 下一段前空一行：用户的话与里程碑各自成段
+	add := func(block ...string) {
+		if gap && len(lines) > 0 {
 			lines = append(lines, "")
 		}
+		gap = false
+		lines = append(lines, block...)
+	}
+	next := 0
+	flush := func(before func(workbench.Milestone) bool) {
+		var block []string
+		for ; next < len(milestones) && before(milestones[next]); next++ {
+			block = append(block, milestoneLine(milestones[next], width))
+		}
+		if len(block) > 0 {
+			gap = true
+			add(block...)
+			gap = true
+		}
+	}
+	for i, entry := range thread.Entries {
+		flush(func(milestone workbench.Milestone) bool { return milestone.At.Before(entry.At) })
+		if entry.Kind == chief.EntryUser {
+			gap = true
+		}
 		if entry.Kind == chief.EntryAction && !entry.Done {
-			lines = append(lines, m.entryLines(entry, width)...)
+			add(m.entryLines(entry, width)...)
 			continue
 		}
-		lines = append(lines, cached[i]...)
+		add(cached[i]...)
 	}
+	flush(func(workbench.Milestone) bool { return true })
 	for _, text := range thread.Pending {
-		lines = append(lines, "")
-		lines = append(lines, styledLines("› "+text, width, benchTheme.Muted)...)
+		gap = true
+		add(styledLines("› "+text, width, benchTheme.Muted)...)
 	}
 	switch {
 	case thread.Reply != "":
-		lines = append(lines, styledLines(thread.Reply, width, benchTheme.Text)...)
+		add(styledLines(thread.Reply, width, benchTheme.Text)...)
 	case thread.Busy && thread.Thinking:
-		lines = append(lines, styleFocus.Render(m.bench.pulse.spinner()+" 主编在想"))
+		add(styleFocus.Render(m.bench.pulse.spinner() + " 主编在想"))
 	case thread.Busy:
-		lines = append(lines, styleFocus.Render(m.bench.pulse.spinner()+" 主编在看"))
+		add(styleFocus.Render(m.bench.pulse.spinner() + " 主编在看"))
 	}
 	if thread.Err != "" {
-		lines = append(lines, styledLines("! "+oneLine(thread.Err), width, benchTheme.Error)...)
+		add(styledLines("! "+oneLine(thread.Err), width, benchTheme.Error)...)
+	}
+	if len(thread.Entries) == 0 && len(thread.Pending) == 0 && !thread.Busy {
+		gap = true
+		add(benchTheme.Muted.Render("在下面的输入框里跟主编说话：提要求、问进度、讨论情节、退回稿件、暂停或继续都行。"),
+			benchTheme.Muted.Render("主编不写正文，它把你的意思落到书里，由创作团队去写。"))
 	}
 	return lines
+}
+
+// milestoneLine 是一件生产里程碑：记号按结果着色，文字压低，与对话区分开。
+func milestoneLine(milestone workbench.Milestone, width int) string {
+	mark := styleNotice
+	switch milestone.Tone {
+	case workbench.MilestoneWait:
+		mark = benchTheme.Warning
+	case workbench.MilestoneFail:
+		mark = benchTheme.Error
+	}
+	return fitLine(mark.Render("◆ ")+benchTheme.Muted.Render(milestone.Text), width)
 }
 
 func (m model) entryLines(entry chief.Entry, width int) []string {
@@ -172,12 +228,6 @@ func (m model) actionLine(entry chief.Entry) string {
 func (m model) talkView(width, height int) []string {
 	lines := []string{viewHead("对话", "主编", "", width)}
 	body := m.talkLines(width)
-	if len(body) == 0 {
-		return append(lines,
-			benchTheme.Muted.Render("在下面的输入框里跟主编说话：提要求、问进度、讨论情节、退回稿件、暂停或继续都行。"),
-			benchTheme.Muted.Render("主编不写正文，它把你的意思落到书里，由创作团队去写。"),
-		)
-	}
 	capacity := max(1, height-viewHeadRows)
 	last := max(0, len(body)-capacity)
 	offset := last

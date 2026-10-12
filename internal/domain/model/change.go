@@ -121,17 +121,19 @@ type ImpactReport struct {
 // Proposal describes a requested authority change. It is not authoritative until
 // the store commits it as a ChangeSet and assigns a new revision.
 type Proposal struct {
-	ID            string          `json:"id"`
-	OperationID   string          `json:"operation_id,omitempty"`
-	Target        AuthorityTarget `json:"authority_target"`
-	BaseRevision  Revision        `json:"base_revision"`
-	Author        Author          `json:"author"`
-	Reason        string          `json:"reason"`
-	Patches       []Patch         `json:"patches"`
-	Impact        ImpactReport    `json:"impact_report"`
-	ApprovalState ApprovalState   `json:"approval_state"`
-	DecidedBy     *Author         `json:"decided_by,omitempty"`
-	DecidedAt     *time.Time      `json:"decided_at,omitempty"`
+	ID           string          `json:"id"`
+	OperationID  string          `json:"operation_id,omitempty"`
+	Target       AuthorityTarget `json:"authority_target"`
+	BaseRevision Revision        `json:"base_revision"`
+	Author       Author          `json:"author"`
+	Reason       string          `json:"reason"`
+	// Source 是促成这份提案的用户的话（D77）：主编提出的修改指回对话里那条消息。
+	Source        string        `json:"source,omitempty"`
+	Patches       []Patch       `json:"patches"`
+	Impact        ImpactReport  `json:"impact_report"`
+	ApprovalState ApprovalState `json:"approval_state"`
+	DecidedBy     *Author       `json:"decided_by,omitempty"`
+	DecidedAt     *time.Time    `json:"decided_at,omitempty"`
 	// DecisionReason 是裁决附带的反馈（D26）：否决理由入账为该章作用域的 Directive（§4.9）。
 	DecisionReason string    `json:"decision_reason,omitempty"`
 	CreatedAt      time.Time `json:"created_at"`
@@ -175,6 +177,9 @@ func (p Proposal) Validate() error {
 	}
 	if strings.TrimSpace(p.Reason) == "" {
 		return fmt.Errorf("change reason is required: %w", ErrInvalid)
+	}
+	if _, ok := ParseConversationSource(p.Source); p.Source != "" && !ok {
+		return fmt.Errorf("proposal source %q is not a conversation message: %w", p.Source, ErrInvalid)
 	}
 	if len(p.Patches) == 0 {
 		return fmt.Errorf("proposal requires at least one patch: %w", ErrInvalid)

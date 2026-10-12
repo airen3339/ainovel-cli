@@ -223,11 +223,10 @@ func writerTools(draft draftSubmission, redeclare bool) []ToolSchema {
 	}
 }
 
-// putChapterTool 只收正文：章的身份（哪一章、署名）由宿主按任务确定；一次改写多章时
-// 用 number 指明是哪一章。
+// putChapterTool 只收正文：章的身份（哪一章、署名）由宿主按任务确定，标题在章节计划上；
+// 一次改写多章时用 number 指明是哪一章。
 func putChapterTool(draft draftSubmission) ToolSchema {
 	properties := map[string]any{
-		"title": map[string]any{"type": "string"},
 		"blocks": map[string]any{"type": "array", "minItems": 1, "items": map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -237,7 +236,7 @@ func putChapterTool(draft draftSubmission) ToolSchema {
 			"required": []string{"id", "text"}, "additionalProperties": false,
 		}},
 	}
-	required := []string{"title", "blocks"}
+	required := []string{"blocks"}
 	if draft == draftRange {
 		properties["number"] = map[string]any{"type": "integer", "minimum": 1, "description": "这份工作稿改写第几章，必须是任务 chapters 之一"}
 		required = append(required, "number")
@@ -293,6 +292,15 @@ func factRefSchema(draft draftSubmission) map[string]any {
 	return map[string]any{"type": "object", "properties": properties, "required": []string{"subject", "predicate"}, "additionalProperties": false}
 }
 
+func entitiesSchema(description string) map[string]any {
+	return map[string]any{"type": "array", "description": description,
+		"items": map[string]any{"type": "object", "properties": map[string]any{
+			"name":    map[string]any{"type": "string", "description": "本名，不得与其他实体的名称或别名相同"},
+			"kind":    map[string]any{"type": "string", "enum": []string{"character", "location", "item", "organization"}},
+			"aliases": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+		}, "required": []string{"name", "kind"}, "additionalProperties": false}}
+}
+
 func planEditSchema(number, parent, parentDescription string) map[string]any {
 	properties := map[string]any{
 		number:    map[string]any{"type": "integer", "minimum": 1},
@@ -322,14 +330,9 @@ func proposalTool(draft draftSubmission, redeclare, planning bool) ToolSchema {
 	facts := map[string]any{"type": "array", "items": factSchema(draft),
 		"description": "只写本次新确立或改变的事实；其他章节的既有事实原样保留，不要重复提交"}
 	properties := map[string]any{
-		"reason": map[string]any{"type": "string"},
-		"entities": map[string]any{"type": "array", "description": "新登场的人物、地点、物品、组织；与已有实体同名即修改它（合并别名）",
-			"items": map[string]any{"type": "object", "properties": map[string]any{
-				"name":    map[string]any{"type": "string", "description": "本名，不得与其他实体的名称或别名相同"},
-				"kind":    map[string]any{"type": "string", "enum": []string{"character", "location", "item", "organization"}},
-				"aliases": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
-			}, "required": []string{"name", "kind"}, "additionalProperties": false}},
-		"facts": facts,
+		"reason":   map[string]any{"type": "string"},
+		"entities": entitiesSchema("新登场的人物、地点、物品、组织；与已有实体同名即修改它（合并别名）"),
+		"facts":    facts,
 	}
 	description := `把结果提交为候选，不直接修改作品。实体按名称、事实按主体+谓词定位：state/rule/foreshadow 的同一主体同一谓词就是同一事实，` +
 		`再次提交即更新；事件与关系按来源章区分，同一章里同一主体的同一谓词只记一条。`

@@ -279,6 +279,12 @@ func (m model) outlineChapter(number int) (workbench.OutlineNode, bool) {
 	return workbench.OutlineNode{}, false
 }
 
+// chapterTitle 是第 number 章的标题：取自章节计划，待确认的方案已投影在内。
+func (m model) chapterTitle(number int) string {
+	node, _ := m.outlineChapter(number)
+	return node.Node.Title
+}
+
 func (m model) selectedChapterID() string {
 	if chapter, ok := chapterByNumber(m.bench.snap.Manuscript, m.selectedChapterNumber()); ok {
 		return chapter.ID

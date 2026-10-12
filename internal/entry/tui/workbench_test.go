@@ -29,7 +29,7 @@ func withCandidate(m model, stale bool) model {
 	m.bench.snap.Run.State = domainmodel.RunWaitingUser
 	m.bench.snap.CurrentPhase = ""
 	m.bench.snap.Outline[4].State = workbench.ChapterPending
-	chapter := domainmodel.ManuscriptChapter{ID: "ch-4", PlanNodeID: "c4", Number: 4, Title: "门后的声音",
+	chapter := domainmodel.ManuscriptChapter{ID: "ch-4", PlanNodeID: "c4", Number: 4,
 		Blocks: []domainmodel.ManuscriptBlock{{Text: strings.Repeat("雨停了，屋檐却还在滴水。\n\n他没有敲门。\n\n", 4)}}}
 	payload, _ := json.Marshal(chapter)
 	m.bench.snap.Candidates = []workbench.ChapterCandidate{{OperationID: "writing", BaseRevision: 3, Chapter: chapter}}
@@ -472,6 +472,87 @@ func TestDecisionCardGuardsApproval(t *testing.T) {
 	stale, cmd := submit(t, stale, "y")
 	if cmd != nil || !strings.Contains(stale.bench.notice, "不能直接通过") {
 		t.Fatalf("stale proposal must not be approved: notice=%q", stale.bench.notice)
+	}
+}
+
+// 主编提出的修改等你确认（D77）：确认卡压过稿件的决定卡；y 确认，回车看全部；有出入时
+// 输入序号选处置，y 不作数；序号之外的话照常交给主编。
+func TestChangeCardConfirmsOrChoosesAResolution(t *testing.T) {
+	pending := func(change workbench.PendingChange) model {
+		m := studioModel(t, 150, 40)
+		m.bench.writing = false
+		m.bench.snap.Run.State = domainmodel.RunWaitingUser
+		change.Proposal = domainmodel.Proposal{ID: "change-1", Reason: "你想要更长的标题"}
+		m.bench.snap.Change = &change
+		m.bench.snap.Decision = &workbench.PendingDecision{Reason: "主编提出的修改等你确认，确认或撤回后接着写"}
+		updated, _ := m.Update(benchRefreshedMsg{gen: m.bench.gen, snap: m.bench.snap})
+		return updated.(model)
+	}
+	plain := pending(workbench.PendingChange{View: workbench.ProposalView{Changes: []string{"第 2 章《回信》改名《没有寄出的回信》"}}})
+	requireContains(t, frame(plain), "◇ 主编提出的修改 · 等你确认", "你想要更长的标题",
+		"第 2 章《回信》改名《没有寄出的回信》", "y 确认 · 不要了跟主编说 · 回车查看全部", "Enter 查看修改")
+	if opened, _ := press(t, plain, tea.KeyEnter); !opened.bench.reading || !strings.Contains(opened.bench.bodyText, "改名《没有寄出的回信》") {
+		t.Fatal("Enter must open the whole change")
+	}
+	if confirmed, cmd := submit(t, plain, "y"); cmd == nil || confirmed.bench.notice != "" {
+		t.Fatalf("y must confirm the change: notice=%q", confirmed.bench.notice)
+	}
+
+	conflicted := pending(workbench.PendingChange{
+		View:     workbench.ProposalView{Changes: []string{"设定 · 「陈渡」从未去过北方"}},
+		Findings: []string{"第 3 章写了陈渡在北方送信"},
+		Options: []workbench.ChangeOption{
+			{Strategy: domainmodel.ResolutionRewriteAffected, Chapters: []int{3}, Explanation: "按新设定重写第 3 章"},
+			{Strategy: domainmodel.ResolutionReinterpretFuture, Explanation: "保留第 3 章，后文解释"},
+			{Strategy: domainmodel.ResolutionAbandon, Explanation: "不改了"},
+		},
+	})
+	requireContains(t, frame(conflicted), "与已写章节有出入：第 3 章写了陈渡在北方送信",
+		"输入序号选怎么处理：1 重写第 3 章 · 2 只改设定，后文按新的写 · 3 不改了")
+	if refused, cmd := submit(t, conflicted, "y"); cmd != nil || !strings.Contains(refused.bench.notice, "输入序号") {
+		t.Fatalf("y must not confirm a conflicted change: notice=%q", refused.bench.notice)
+	}
+	if chosen, cmd := submit(t, conflicted, "2"); cmd == nil || chosen.bench.view == viewTalk || chosen.bench.input.Value() != "" {
+		t.Fatal("a number must choose the resolution, not go to the chief")
+	}
+	if talked, cmd := submit(t, conflicted, "4"); cmd == nil || talked.bench.view != viewTalk {
+		t.Fatal("other words go to the chief")
+	}
+	conflicted.bench.snap.Run.State = domainmodel.RunCompleted
+	if refused, cmd := submit(t, conflicted, "1"); cmd != nil || !strings.Contains(refused.bench.notice, "没有进行中的创作") {
+		t.Fatalf("rewriting needs a run: notice=%q", refused.bench.notice)
+	}
+
+	stale := pending(workbench.PendingChange{View: workbench.ProposalView{Changes: []string{"第 2 章《回信》改名《信》"}}, Stale: true})
+	requireContains(t, frame(stale), "提出之后书又有了新变化，不能照它确认", "跟主编说，让它按最新内容重提")
+	if refused, cmd := submit(t, stale, "y"); cmd != nil || !strings.Contains(refused.bench.notice, "不能照它确认") {
+		t.Fatalf("a stale change must not be confirmed: notice=%q", refused.bench.notice)
+	}
+}
+
+// 对话视图是一条时间线（D77）：生产里程碑按时间插在对话之间，自成一段。
+func TestTalkInterleavesMilestonesByTime(t *testing.T) {
+	m := studioModel(t, 150, 40)
+	base := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
+	m.bench.thread = chief.Thread{Entries: []chief.Entry{
+		{Kind: chief.EntryUser, Text: "第二章多点雨声", At: base},
+		{Kind: chief.EntryChief, Text: "记下了。", At: base.Add(time.Second)},
+		{Kind: chief.EntryUser, Text: "写得怎么样了", At: base.Add(time.Hour)},
+	}}
+	m.bench.snap.Milestones = []workbench.Milestone{
+		{At: base.Add(10 * time.Minute), Tone: workbench.MilestoneDone, Text: "第 2 章《回信》入稿"},
+		{At: base.Add(20 * time.Minute), Tone: workbench.MilestoneWait, Text: "审阅第 1–2 章：未通过 · 阻塞 1 处"},
+		{At: base.Add(2 * time.Hour), Tone: workbench.MilestoneDone, Text: "第 3 章《门后》入稿"},
+	}
+	m.switchView(viewTalk)
+	lines := m.talkLines(80)
+	var said []string
+	for _, line := range lines {
+		said = append(said, strings.TrimSpace(ansi.Strip(line)))
+	}
+	want := []string{"› 第二章多点雨声", "记下了。", "", "◆ 第 2 章《回信》入稿", "◆ 审阅第 1–2 章：未通过 · 阻塞 1 处", "", "› 写得怎么样了", "", "◆ 第 3 章《门后》入稿"}
+	if strings.Join(said, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("talk = %q, want %q", said, want)
 	}
 }
 

@@ -29,10 +29,15 @@ const (
 	toolLength       = "set_length"
 	toolPause        = "pause_creation"
 	toolResume       = "resume_creation"
+	toolChange       = "propose_change"
+	toolHistory      = "book_history"
+	toolRevert       = "revert_change"
 )
 
 // changes 是改动作品或创作的工具：它们的结果就是给用户看的回执。
-var changes = map[string]bool{toolNote: true, toolRetire: true, toolReject: true, toolLength: true, toolPause: true, toolResume: true}
+var changes = map[string]bool{
+	toolNote: true, toolRetire: true, toolReject: true, toolLength: true, toolPause: true, toolResume: true, toolChange: true, toolRevert: true,
+}
 
 type tool struct {
 	schema prompt.ToolSchema
@@ -44,7 +49,7 @@ func define[A any](name, description, schema string, run func(ctx context.Contex
 		schema: prompt.ToolSchema{Name: name, Description: description, InputSchema: json.RawMessage(schema)},
 		run: func(ctx context.Context, raw json.RawMessage) (string, error) {
 			var args A
-			if err := json.Unmarshal(raw, &args); err != nil {
+			if err := model.DecodeStrict(raw, &args); err != nil {
 				return "", fmt.Errorf("参数不合法：%w", err)
 			}
 			return run(ctx, args)
@@ -103,6 +108,13 @@ func (s *Session) tools() []tool {
 			"required":["chapters"],"additionalProperties":false}`, s.length),
 		define(toolPause, "暂停创作（用户要停下时）", empty, s.pauseTool),
 		define(toolResume, "继续创作；卡在某章修订次数上时，就是让它再改一次", empty, s.resume),
+		define(toolChange, "按用户的意思改这本书：大纲（卷、故事弧、章的标题与梗概）、人物地点、设定、作品方向、锁定与审批方式。"+
+			"已有的按序号、名称、主体+谓词定位，给出的字段改成新的，没给的不变。能否直接生效由审批决定；"+
+			"与已写章节有出入时等用户选怎么处理。还有一份等确认的修改时，新的替换它。正文不在这里改", string(prompt.ChangeSchema()), s.proposeChange),
+		define(toolHistory, "看这本书最近的修改：谁、何时、改了什么、能否撤销（编号给 revert_change），以及等用户确认的那份", empty, s.history),
+		define(toolRevert, "撤销一次修改（编号见 book_history）：已生效的恢复原样，同样按审批放行；还在等确认的直接撤回", `{
+			"type":"object","properties":{"id":{"type":"string","minLength":1}},
+			"required":["id"],"additionalProperties":false}`, s.revert),
 	}
 }
 

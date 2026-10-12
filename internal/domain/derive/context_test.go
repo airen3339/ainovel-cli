@@ -52,8 +52,8 @@ func TestWriteContextMeetsMinimumWritingContract(t *testing.T) {
 			{ID: "villain-location", Kind: model.CanonState, SubjectID: "villain", Predicate: "state.location", Value: json.RawMessage(`"京城"`)},
 		},
 		Manuscript: []model.ManuscriptChapter{
-			{ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1, Title: "第一章", Author: model.AuthorAI, Blocks: []model.ManuscriptBlock{{ID: "block-1", Text: "更早正文只留索引"}}},
-			{ID: "chapter-2", PlanNodeID: "chapter-plan-2", Number: 2, Title: "第二章", Author: model.AuthorAI, Blocks: []model.ManuscriptBlock{{ID: "block-1", Text: "上一章结尾必须可见"}}},
+			{ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1, Author: model.AuthorAI, Blocks: []model.ManuscriptBlock{{ID: "block-1", Text: "更早正文只留索引"}}},
+			{ID: "chapter-2", PlanNodeID: "chapter-plan-2", Number: 2, Author: model.AuthorAI, Blocks: []model.ManuscriptBlock{{ID: "block-1", Text: "上一章结尾必须可见"}}},
 		},
 		Ownership: []model.OwnershipRule{{Target: locked, Control: model.ControlLocked}},
 	}, model.OperationWriteChapter, json.RawMessage(`{"chapter_plan_id":"chapter-plan-3","chapter_number":3}`))
@@ -103,10 +103,10 @@ func contextFixture() ProjectContent {
 			{ID: "hero-bottom-line", Kind: model.CanonWorldRule, SubjectID: "hero", Predicate: "rule.bottom_line", Value: json.RawMessage(`"不伤无辜"`)},
 		},
 		Manuscript: []model.ManuscriptChapter{
-			{ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1, Title: "第一章", Author: model.AuthorAI,
+			{ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1, Author: model.AuthorAI,
 				Blocks:    []model.ManuscriptBlock{{ID: "block-1", Text: "启程正文"}},
 				DependsOn: []model.DocumentRef{{Kind: model.DocumentEntity, ID: "villain"}}},
-			{ID: "chapter-2", PlanNodeID: "chapter-plan-2", Number: 2, Title: "第二章", Author: model.AuthorAI,
+			{ID: "chapter-2", PlanNodeID: "chapter-plan-2", Number: 2, Author: model.AuthorAI,
 				Blocks: []model.ManuscriptBlock{{ID: "block-1", Text: "荒村正文"}, {ID: "block-2", Text: "夜话"}}},
 		},
 	}

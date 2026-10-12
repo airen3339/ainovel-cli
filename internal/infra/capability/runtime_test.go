@@ -73,9 +73,9 @@ func TestRuntimeToolsRespectAuthoritySnapshotAndWorkspaceBoundary(t *testing.T) 
 		}
 	}
 
-	// 章的身份由宿主按任务确定：模型只写标题与段落，回执只有键与版本。
+	// 章的身份由宿主按任务确定：模型只写段落，回执只有键与版本。
 	putChapter := testTool(t, runtime, operation, "writer.compose@1", prompt.ToolWorkspacePutChapter, nil)
-	receipt, err := putChapter(ctx, json.RawMessage(`{"key":"draft","chapter":{"title":"山门","blocks":[{"id":"p-1","text":"他抵达山门……"}]}}`))
+	receipt, err := putChapter(ctx, json.RawMessage(`{"key":"draft","chapter":{"blocks":[{"id":"p-1","text":"他抵达山门……"}]}}`))
 	if err != nil || string(receipt) != `{"key":"draft","version":1}` {
 		t.Fatalf("put chapter = %s, %v", receipt, err)
 	}
@@ -162,7 +162,7 @@ func TestRuntimeToolsRespectAuthoritySnapshotAndWorkspaceBoundary(t *testing.T) 
 		Content narrative.ChapterDraft `json:"content"`
 		Version int64                  `json:"version"`
 	}
-	if err := json.Unmarshal(readBack, &readable); err != nil || len(readable.Content.Blocks) != 1 || readable.Content.Title != "山门" ||
+	if err := json.Unmarshal(readBack, &readable); err != nil || len(readable.Content.Blocks) != 1 ||
 		readable.Version != 1 || strings.Contains(string(readBack), "plan_node_id") {
 		t.Fatalf("workspace must read back the draft shape: %s, %v", readBack, err)
 	}
@@ -231,7 +231,7 @@ func TestRuntimeRestoresCommittedConversationAndWorkspace(t *testing.T) {
 		t.Fatalf("claim first attempt: %v", err)
 	}
 	chapter := domainmodel.ManuscriptChapter{
-		ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1, Title: "山门", Author: domainmodel.AuthorAI,
+		ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1, Author: domainmodel.AuthorAI,
 		Blocks: []domainmodel.ManuscriptBlock{{ID: "block-1", Text: "已经写入工作区的半成品。"}},
 	}
 	artifact, err := workspace.New(authorityStore).PutChapter(
@@ -870,8 +870,8 @@ func TestAffectedRewriteSubmissionCoversEveryWorkspaceChapter(t *testing.T) {
 		t.Fatalf("claim operation: %v", err)
 	}
 	chapters := []domainmodel.ManuscriptChapter{
-		{ID: "chapter-1", PlanNodeID: "plan-1", Number: 1, Title: "第一章", Author: domainmodel.AuthorAI, Blocks: []domainmodel.ManuscriptBlock{{ID: "block-1", Text: "新正文一"}}},
-		{ID: "chapter-2", PlanNodeID: "plan-2", Number: 2, Title: "第二章", Author: domainmodel.AuthorAI, Blocks: []domainmodel.ManuscriptBlock{{ID: "block-2", Text: "新正文二"}}},
+		{ID: "chapter-1", PlanNodeID: "plan-1", Number: 1, Author: domainmodel.AuthorAI, Blocks: []domainmodel.ManuscriptBlock{{ID: "block-1", Text: "新正文一"}}},
+		{ID: "chapter-2", PlanNodeID: "plan-2", Number: 2, Author: domainmodel.AuthorAI, Blocks: []domainmodel.ManuscriptBlock{{ID: "block-2", Text: "新正文二"}}},
 	}
 	versions := make(map[string]int64, len(chapters))
 	for _, chapter := range chapters {
@@ -1023,7 +1023,7 @@ func TestWriterSubmissionRequiresRedeclaringChapterFacts(t *testing.T) {
 			document(domainmodel.DocumentRef{Kind: domainmodel.DocumentPlan, ID: "plan-1"}, domainmodel.PlanNode{ID: "plan-1", Kind: domainmodel.PlanChapter, ParentID: "arc-1", Order: 1, Title: "第一章", Summary: "抵达"}),
 			document(domainmodel.DocumentRef{Kind: domainmodel.DocumentEntity, ID: "hero"}, domainmodel.Entity{ID: "hero", Kind: domainmodel.EntityCharacter, Name: "主角"}),
 			document(domainmodel.DocumentRef{Kind: domainmodel.DocumentManuscript, ID: "chapter-1"}, domainmodel.ManuscriptChapter{
-				ID: "chapter-1", PlanNodeID: "plan-1", Number: 1, Title: "第一章", Author: domainmodel.AuthorAI,
+				ID: "chapter-1", PlanNodeID: "plan-1", Number: 1, Author: domainmodel.AuthorAI,
 				Blocks: []domainmodel.ManuscriptBlock{{ID: "block-1", Text: "旧正文"}},
 			}),
 			document(domainmodel.DocumentRef{Kind: domainmodel.DocumentCanon, ID: "fact-1"}, domainmodel.CanonFact{
@@ -1054,7 +1054,7 @@ func TestWriterSubmissionRequiresRedeclaringChapterFacts(t *testing.T) {
 		t.Fatalf("claim operation: %v", err)
 	}
 	chapter := domainmodel.ManuscriptChapter{
-		ID: "chapter-1", PlanNodeID: "plan-1", Number: 1, Title: "第一章", Author: domainmodel.AuthorAI,
+		ID: "chapter-1", PlanNodeID: "plan-1", Number: 1, Author: domainmodel.AuthorAI,
 		Blocks: []domainmodel.ManuscriptBlock{{ID: "block-1", Text: "新正文"}},
 	}
 	content, _ := json.Marshal(chapter)
@@ -1148,7 +1148,7 @@ func seedWrittenChapters(t *testing.T, ctx context.Context, authorityStore *stor
 			document(domainmodel.DocumentRef{Kind: domainmodel.DocumentPlan, ID: plan}, domainmodel.PlanNode{
 				ID: plan, Kind: domainmodel.PlanChapter, ParentID: "arc-1", Order: number, Title: fmt.Sprintf("第%d章", number), Summary: "推进"}),
 			document(domainmodel.DocumentRef{Kind: domainmodel.DocumentManuscript, ID: chapter}, domainmodel.ManuscriptChapter{
-				ID: chapter, PlanNodeID: plan, Number: number, Title: fmt.Sprintf("第%d章", number), Author: domainmodel.AuthorAI,
+				ID: chapter, PlanNodeID: plan, Number: number, Author: domainmodel.AuthorAI,
 				Blocks: []domainmodel.ManuscriptBlock{{ID: "b1", Text: "正文"}}}),
 		)
 	}

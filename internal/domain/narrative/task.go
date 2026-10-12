@@ -91,7 +91,7 @@ func (s *Story) directives(directives []model.Directive) []DirectiveView {
 
 // DescribeScope 用故事语言描述要求的作用域。
 func (s *Story) DescribeScope(directive model.Directive) string {
-	return directive.DescribeScope(s.planLabelByID)
+	return directive.DescribeScope(s.PlanLabel)
 }
 
 func (s *Story) chapterNumbers(ids []string) []int {
@@ -127,16 +127,15 @@ func (s *Story) Ownership(rules []model.OwnershipRule) ([]RuleView, error) {
 }
 
 // ChapterDraft 是模型写入的章节工作稿：章的身份（ID、所属计划、章号、署名）由宿主
-// 按任务填写；Number 只在一次改写多章时用来指明是哪一章。
+// 按任务填写，标题在章节计划上；Number 只在一次改写多章时用来指明是哪一章。
 type ChapterDraft struct {
 	Number int                     `json:"number,omitempty"`
-	Title  string                  `json:"title"`
 	Blocks []model.ManuscriptBlock `json:"blocks"`
 }
 
 // Draft 把工作稿补全为正文文档。
 func (s *Story) Draft(input model.TaskInput, draft ChapterDraft) (model.ManuscriptChapter, error) {
-	chapter := model.ManuscriptChapter{Title: draft.Title, Author: model.AuthorAI, Blocks: draft.Blocks}
+	chapter := model.ManuscriptChapter{Author: model.AuthorAI, Blocks: draft.Blocks}
 	switch input := input.(type) {
 	case *model.WriteChapterInput:
 		if existing, ok := s.manuscripts[input.ChapterPlanID]; ok && existing.PlanNodeID != input.ChapterPlanID {

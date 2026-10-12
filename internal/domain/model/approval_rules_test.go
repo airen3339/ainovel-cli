@@ -32,7 +32,7 @@ func TestIsMilestone(t *testing.T) {
 
 	// 例行推进：章节正文与随章 Canon Delta 不构成 milestone，否则中间档塌缩为 manual。
 	chapterContent, err := json.Marshal(ManuscriptChapter{
-		ID: "chapter-2", PlanNodeID: "chapter-plan-2", Number: 2, Title: "第二章", Author: AuthorAI,
+		ID: "chapter-2", PlanNodeID: "chapter-plan-2", Number: 2, Author: AuthorAI,
 		Blocks: []ManuscriptBlock{{ID: "p-1", Text: "旅程继续。"}},
 	})
 	if err != nil {

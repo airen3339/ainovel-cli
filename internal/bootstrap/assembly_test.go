@@ -37,7 +37,7 @@ func TestEveryOperationKindIsAssembled(t *testing.T) {
 		},
 		Entities: []model.Entity{{ID: "hero", Kind: model.EntityCharacter, Name: "主角"}},
 		Manuscript: []model.ManuscriptChapter{{
-			ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1, Title: "第一章", Author: model.AuthorAI,
+			ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1, Author: model.AuthorAI,
 			Blocks: []model.ManuscriptBlock{{ID: "block-1", Text: "他抵达山门。"}},
 		}},
 	}

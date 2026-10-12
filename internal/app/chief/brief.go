@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/voocel/ainovel-cli/internal/app/workbench"
 	"github.com/voocel/ainovel-cli/internal/domain/model"
@@ -18,12 +19,28 @@ func (s *Session) brief(ctx context.Context, view View) (string, error) {
 	}
 	s.mu.Lock()
 	writing := s.writing
+	var since time.Time // 用户上一句话的时刻：之后的里程碑是主编还不知道的
+	for _, entry := range s.entries {
+		if entry.Kind == EntryUser {
+			since = entry.At
+		}
+	}
 	s.mu.Unlock()
 	lines := []string{
 		"【书况】宿主此刻的记录，不是用户说的话。",
 		"作品：" + oneLine(snap.Intent.Premise, 80),
 		"进度：" + progress(snap),
 		"创作：" + situation(snap, writing),
+	}
+	if recent := milestonesSince(snap.Milestones, since); recent != "" {
+		label := "上一回合以来："
+		if since.IsZero() {
+			label = "最近的进展："
+		}
+		lines = append(lines, label+recent)
+	}
+	if change := pendingChange(snap); change != "" {
+		lines = append(lines, "待用户确认的修改："+change)
 	}
 	if decision := pendingDecision(snap); decision != "" {
 		lines = append(lines, "待用户决定："+decision)
@@ -87,6 +104,22 @@ func situation(snap workbench.WorkbenchSnapshot, writing bool) string {
 	}
 }
 
+// pendingChange 是主编提出、等用户确认的修改与用户能怎么做；没有为空。
+func pendingChange(snap workbench.WorkbenchSnapshot) string {
+	change := snap.Change
+	if change == nil {
+		return ""
+	}
+	text := oneLine(change.Proposal.Reason, 80)
+	switch {
+	case change.Stale:
+		return text + "。之后作品又变了，不能照它确认：按用户的意思重新 propose_change 替换它，或 revert_change 撤回"
+	case len(change.Options) > 0:
+		return text + fmt.Sprintf("。与已写章节有出入（%d 处），用户在确认卡上按序号选处置；详情用 book_history 看，不要了就 revert_change 撤回", len(change.Findings))
+	}
+	return text + "。用户按 y 确认；不要了就 revert_change 撤回"
+}
+
 // pendingDecision 是等用户决定的事与用户能怎么做；没有为空。
 func pendingDecision(snap workbench.WorkbenchSnapshot) string {
 	decision := snap.Decision
@@ -100,6 +133,21 @@ func pendingDecision(snap workbench.WorkbenchSnapshot) string {
 	default:
 		return oneLine(decision.Reason, 120)
 	}
+}
+
+// milestonesSince 是 since 之后的生产里程碑，只列最近几件。
+func milestonesSince(milestones []workbench.Milestone, since time.Time) string {
+	const limit = 6
+	var texts []string
+	for _, milestone := range milestones {
+		if milestone.At.After(since) {
+			texts = append(texts, milestone.Text)
+		}
+	}
+	if len(texts) > limit {
+		texts = append([]string{fmt.Sprintf("（更早的 %d 件略）", len(texts)-limit)}, texts[len(texts)-limit:]...)
+	}
+	return strings.Join(texts, "；")
 }
 
 func chapterLabel(snap workbench.WorkbenchSnapshot, number int) string {

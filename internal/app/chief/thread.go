@@ -75,6 +75,12 @@ func actionLabel(tool string, args json.RawMessage) string {
 		return "暂停创作"
 	case toolResume:
 		return "继续创作"
+	case toolChange:
+		return "改书"
+	case toolHistory:
+		return "看修改记录"
+	case toolRevert:
+		return "撤销修改"
 	}
 	return tool
 }

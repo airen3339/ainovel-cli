@@ -72,15 +72,26 @@ type FactRef struct {
 // Resolve 把故事语言提交解析成补丁：新文档由宿主分配 ID，已有文档按自然键定位，
 // 更新事实的 old_value 一律取自基线。跨文档不变量仍由 model.ValidateChange 执行。
 func (s *Story) Resolve(input model.TaskInput, submission Submission, drafts []model.ManuscriptChapter) ([]model.Patch, error) {
-	r := &resolver{
-		story: s, ids: s.allocator(), created: make(map[model.PlanNodeKind][]string),
-		names: make(map[string]string), touched: make(map[string]bool), chapters: make(map[int]string),
+	r := s.resolver(false)
+	if err := r.submission(input, submission, drafts); err != nil {
+		return nil, err
 	}
+	return r.patches, nil
+}
+
+func (s *Story) resolver(direct bool) *resolver {
+	return &resolver{
+		story: s, ids: s.allocator(), created: make(map[model.PlanNodeKind][]string),
+		names: make(map[string]string), touched: make(map[string]bool), chapters: make(map[int]string), direct: direct,
+	}
+}
+
+func (r *resolver) submission(input model.TaskInput, submission Submission, drafts []model.ManuscriptChapter) error {
 	for _, chapter := range drafts {
 		r.scope = append(r.scope, chapter.ID)
 		r.chapters[chapter.Number] = chapter.ID
 		if err := r.put(model.DocumentManuscript, chapter.ID, chapter); err != nil {
-			return nil, err
+			return err
 		}
 	}
 	if canon, ok := input.(*model.ReviseCanonInput); ok {
@@ -88,7 +99,7 @@ func (s *Story) Resolve(input model.TaskInput, submission Submission, drafts []m
 	}
 	if submission.Compass != nil {
 		if err := r.put(model.DocumentCompass, model.SingletonDocumentID, submission.Compass); err != nil {
-			return nil, err
+			return err
 		}
 	}
 	steps := []func() error{
@@ -102,10 +113,10 @@ func (s *Story) Resolve(input model.TaskInput, submission Submission, drafts []m
 	}
 	for _, step := range steps {
 		if err := step(); err != nil {
-			return nil, err
+			return err
 		}
 	}
-	return r.patches, nil
+	return nil
 }
 
 type resolver struct {
@@ -117,6 +128,9 @@ type resolver struct {
 	touched  map[string]bool                 // 本次已处理的事实
 	scope    []string                        // 事实可以来源的正文章节
 	chapters map[int]string                  // 本次工作稿的章号 → 正文 ID
+	// direct 是不属于任务的修改（主编，D77）：事实可以来源于任何已写的章，不给来源章时
+	// 沿用原有事实的来源。
+	direct bool
 }
 
 func (r *resolver) put(kind model.DocumentKind, id string, value any) error {
@@ -265,7 +279,15 @@ func (r *resolver) subject(name string) (string, error) {
 }
 
 // source 解析来源章：给了章号必须是本次改写的章，没给且只有一章时就是它；规划期事实没有来源章。
+// 直接修改的来源章可以是任何已写的章。
 func (r *resolver) source(number int) (string, error) {
+	if r.direct {
+		if number == 0 {
+			return "", nil
+		}
+		chapter, err := r.story.manuscript(number)
+		return chapter.ID, err
+	}
 	if number != 0 {
 		for _, id := range r.scope {
 			if r.chapterNumber(id) == number {
@@ -328,10 +350,12 @@ func (r *resolver) facts(edits []FactEdit) error {
 		if err != nil {
 			return err
 		}
-		fact := model.CanonFact{
-			Kind: kind, SubjectID: subject, Predicate: edit.Predicate, Value: edit.Value,
-			SourceChapterID: source, Resolved: edit.Resolved,
+		fact := model.CanonFact{Kind: kind, SubjectID: subject, Predicate: edit.Predicate, Value: edit.Value, Resolved: edit.Resolved}
+		previous, exists := r.story.fact(subject, edit.Predicate, source)
+		if exists && r.direct && edit.Chapter == 0 {
+			source = previous.SourceChapterID
 		}
+		fact.SourceChapterID = source
 		if edit.EffectiveChapter != 0 {
 			if fact.EffectiveChapterID, err = r.chapterID(edit.EffectiveChapter); err != nil {
 				return fmt.Errorf("事实「%s」%s 的 effective_chapter 只能指向已写的章（插叙、回忆）: %w", edit.Subject, edit.Predicate, err)
@@ -340,7 +364,7 @@ func (r *resolver) facts(edits []FactEdit) error {
 				fact.EffectiveChapterID = ""
 			}
 		}
-		if previous, exists := r.story.fact(subject, edit.Predicate, source); exists {
+		if exists {
 			fact.ID, fact.PreviousValue, fact.DependsOn = previous.ID, previous.Value, previous.DependsOn
 		} else {
 			fact.ID = r.ids.allocate(factPrefix)

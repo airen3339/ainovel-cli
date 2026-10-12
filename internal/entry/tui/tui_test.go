@@ -548,13 +548,13 @@ func TestWorkbenchTwoPaneOutlineDetailAndCandidateReading(t *testing.T) {
 			{Node: domainmodel.PlanNode{ID: "c2", Kind: domainmodel.PlanChapter, ParentID: "a1", Title: "第二章"}, Number: 2, State: workbench.ChapterPending},
 		},
 		Manuscript: []domainmodel.ManuscriptChapter{{
-			ID: "chapter-1", PlanNodeID: "c1", Number: 1, Title: "第一章",
+			ID: "chapter-1", PlanNodeID: "c1", Number: 1,
 			Blocks: []domainmodel.ManuscriptBlock{{ID: "b1", Text: "正文一"}},
 		}},
 		Candidates: []workbench.ChapterCandidate{{
 			OperationID: "op-2", BaseRevision: 3,
 			Chapter: domainmodel.ManuscriptChapter{
-				ID: "chapter-2", PlanNodeID: "c2", Number: 2, Title: "第二章",
+				ID: "chapter-2", PlanNodeID: "c2", Number: 2,
 				Blocks: []domainmodel.ManuscriptBlock{{ID: "b2", Text: "候选正文二"}},
 			},
 		}},
@@ -1110,13 +1110,13 @@ func TestRewriteCandidateTakesPrecedenceOverOldAuthorityChapter(t *testing.T) {
 			Node: domainmodel.PlanNode{ID: "c1", Kind: domainmodel.PlanChapter, Title: "重写稿"}, Number: 1, State: workbench.ChapterPending,
 		}},
 		Manuscript: []domainmodel.ManuscriptChapter{{
-			ID: "ch-1", Number: 1, Title: "旧稿",
+			ID: "ch-1", Number: 1,
 			Blocks: []domainmodel.ManuscriptBlock{{ID: "b1", Text: "旧版本正文"}},
 		}},
 		Candidates: []workbench.ChapterCandidate{{
 			OperationID: "op-rw", BaseRevision: 3,
 			Chapter: domainmodel.ManuscriptChapter{
-				ID: "ch-1", Number: 1, Title: "重写稿",
+				ID: "ch-1", Number: 1,
 				Blocks: []domainmodel.ManuscriptBlock{{ID: "b1", Text: "重写后的正文"}},
 			},
 		}},
@@ -1251,7 +1251,7 @@ func TestOutlineViewportFollowsCursorAndPaneFocusCycles(t *testing.T) {
 	for i := 1; i <= 30; i++ {
 		blocks = append(blocks, domainmodel.ManuscriptBlock{ID: fmt.Sprintf("b%d", i), Text: fmt.Sprintf("第25章第%d段", i)})
 	}
-	snap.Manuscript = []domainmodel.ManuscriptChapter{{ID: "ch-25", Number: 25, Title: "第25回", Blocks: blocks}}
+	snap.Manuscript = []domainmodel.ManuscriptChapter{{ID: "ch-25", Number: 25, Blocks: blocks}}
 	m.bench.snap = snap
 	m.bench.cursor = 26 // 行索引：0 是全书，1 是卷头行，章 N 在第 N+1 行
 	view := m.View()
@@ -1288,8 +1288,8 @@ func TestManualSelectionPinsMainPaneDuringWriting(t *testing.T) {
 			{Node: domainmodel.PlanNode{ID: "c2", Kind: domainmodel.PlanChapter, Title: "转折"}, Number: 2, State: workbench.ChapterConfirmed},
 		},
 		Manuscript: []domainmodel.ManuscriptChapter{
-			{ID: "ch-1", Number: 1, Title: "开端", Blocks: []domainmodel.ManuscriptBlock{{ID: "b1", Text: "第一章内容"}}},
-			{ID: "ch-2", Number: 2, Title: "转折", Blocks: []domainmodel.ManuscriptBlock{{ID: "b1", Text: "第二章内容"}}},
+			{ID: "ch-1", Number: 1, Blocks: []domainmodel.ManuscriptBlock{{ID: "b1", Text: "第一章内容"}}},
+			{ID: "ch-2", Number: 2, Blocks: []domainmodel.ManuscriptBlock{{ID: "b1", Text: "第二章内容"}}},
 		},
 	}
 	m.bench.pane, m.bench.cursor = benchPaneOutline, anchorOutlineCursor(m.outlineRows(), "", 0)

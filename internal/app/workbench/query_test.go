@@ -49,7 +49,7 @@ func TestPendingProposalReadsAsStoryAndPreviewsInOutline(t *testing.T) {
 	project := projectdoc.Snapshot{
 		Plan:       []model.PlanNode{volume, arc, chapter},
 		Entities:   []model.Entity{{ID: "entity-hero", Kind: model.EntityCharacter, Name: "陈渡"}},
-		Manuscript: []model.ManuscriptChapter{{ID: "chapter-1", PlanNodeID: chapter.ID, Number: 1, Title: "来信"}},
+		Manuscript: []model.ManuscriptChapter{{ID: "chapter-1", PlanNodeID: chapter.ID, Number: 1}},
 	}
 	revised := chapter
 	revised.Summary = "陈渡收到信，认出笔迹"
@@ -65,7 +65,7 @@ func TestPendingProposalReadsAsStoryAndPreviewsInOutline(t *testing.T) {
 		put(model.DocumentOverlay, model.SingletonDocumentID, map[string]string{}),
 	}}
 
-	view, err := proposalView(project, proposal)
+	view, err := proposalView(project, proposal.Patches)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -91,8 +91,7 @@ func TestPendingProposalReadsAsStoryAndPreviewsInOutline(t *testing.T) {
 		}
 	}
 
-	decision := &PendingDecision{Proposal: proposal, HasProposal: true}
-	plan, proposed, err := proposedPlan(project.Plan, decision)
+	plan, proposed, err := proposedPlan(project.Plan, []model.Proposal{proposal})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -111,9 +110,8 @@ func TestPendingProposalReadsAsStoryAndPreviewsInOutline(t *testing.T) {
 	if outline[0].Volume != 1 || slices.ContainsFunc(outline[1:], func(entry OutlineNode) bool { return entry.Volume != 0 }) {
 		t.Fatalf("only volumes carry their number: %+v", outline)
 	}
-	decision.Stale = true
-	if plan, proposed, err = proposedPlan(project.Plan, decision); err != nil || len(plan) != 3 || len(proposed) != 0 {
-		t.Fatalf("stale proposal must not project: plan=%d proposed=%d err=%v", len(plan), len(proposed), err)
+	if plan, proposed, err = proposedPlan(project.Plan, nil); err != nil || len(plan) != 3 || len(proposed) != 0 {
+		t.Fatalf("nothing pending projects nothing: plan=%d proposed=%d err=%v", len(plan), len(proposed), err)
 	}
 }
 

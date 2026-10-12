@@ -37,7 +37,7 @@ func longBook(planned, written int) ProjectContent {
 		chapter := chapterID(i)
 		content.Entities = append(content.Entities, model.Entity{ID: "mate-" + chapter, Kind: model.EntityCharacter, Name: mate})
 		content.Manuscript = append(content.Manuscript, model.ManuscriptChapter{
-			ID: chapter, PlanNodeID: planID(i), Number: i, Title: fmt.Sprintf("第%d章", i), Author: model.AuthorAI,
+			ID: chapter, PlanNodeID: planID(i), Number: i, Author: model.AuthorAI,
 			Blocks:    []model.ManuscriptBlock{{ID: "b1", Text: strings.Repeat("字", 1500)}},
 			DependsOn: []model.DocumentRef{{Kind: model.DocumentEntity, ID: "mate-" + chapter}},
 		})

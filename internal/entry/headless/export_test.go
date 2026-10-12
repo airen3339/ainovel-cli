@@ -25,7 +25,7 @@ func TestProjectPublicationExportCLI(t *testing.T) {
 	defer s.Close()
 	api := bootstrap.New(s, bootstrap.Options{})
 	now := time.Now().UTC()
-	p := projectdoc.ProjectProjection{ProjectID: "book", Intent: model.Intent{Premise: "来信"}, Plan: []model.PlanNode{{ID: "v", Kind: model.PlanVolume, Title: "卷", Summary: "卷"}, {ID: "a", ParentID: "v", Kind: model.PlanArc, Title: "弧", Summary: "弧"}, {ID: "p", ParentID: "a", Kind: model.PlanChapter, Title: "信", Summary: "信"}}, Manuscript: []model.ManuscriptChapter{{ID: "c", PlanNodeID: "p", Number: 1, Title: "信", Author: model.AuthorUser, Blocks: []model.ManuscriptBlock{{ID: "b", Text: "中文正文。"}}}}}
+	p := projectdoc.ProjectProjection{ProjectID: "book", Intent: model.Intent{Premise: "来信"}, Plan: []model.PlanNode{{ID: "v", Kind: model.PlanVolume, Title: "卷", Summary: "卷"}, {ID: "a", ParentID: "v", Kind: model.PlanArc, Title: "弧", Summary: "弧"}, {ID: "p", ParentID: "a", Kind: model.PlanChapter, Title: "信", Summary: "信"}}, Manuscript: []model.ManuscriptChapter{{ID: "c", PlanNodeID: "p", Number: 1, Author: model.AuthorUser, Blocks: []model.ManuscriptBlock{{ID: "b", Text: "中文正文。"}}}}}
 	proposal, err := api.Projects.ImportNewProject(ctx, "import", "user", "test", p, now)
 	if err != nil {
 		t.Fatal(err)

@@ -7,8 +7,9 @@ import (
 
 // schemaVersion 是当前唯一支持的库结构版本。v1 没有历史数据，结构演进直接改
 // schema 并升版本号；不保留迁移阶梯，版本不符即拒绝打开。存储的 JSON 载荷格式变化同样
-// 升版本（v8：执行记录拆成尝试摘要与对话记录，D72；v9：主编对话，D74）。
-const schemaVersion = 9
+// 升版本（v8：执行记录拆成尝试摘要与对话记录，D72；v9：主编对话，D74；v10：章节标题只在
+// 计划节点、提案带来源，D77）。
+const schemaVersion = 10
 
 // unsupportedSchema 说明库结构版本不符以及怎样重新开始：v1 不迁移旧库（D38），旧库改名
 // 保留备查，程序在原位置新建空库。
@@ -66,6 +67,7 @@ var schema = []string{
 		author_kind TEXT NOT NULL,
 		author_id TEXT NOT NULL,
 		reason TEXT NOT NULL,
+		source TEXT NOT NULL DEFAULT '',
 		structural_impact BLOB,
 		semantic_impact BLOB,
 		compliance_impact BLOB,
