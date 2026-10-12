@@ -572,13 +572,13 @@ func TestOutlineFoldingCollapsesSubtreeAndAnchorsCursor(t *testing.T) {
 		ProjectID: "book-fold", Intent: domainmodel.Intent{Premise: "折叠"}, Length: novel.Length{Fixed: 5, Final: 5},
 		Outline: outline,
 	}
-	m.bench.cursor = anchorOutlineCursor(m.outlineRows(), "", 0) // 第一个章行（行 2）
+	m.bench.cursor = anchorOutlineCursor(m.outlineRows(), "", 0) // 第一个章行（行 3，行 0 是全书）
 	m.bench.pane = benchPaneOutline
 
 	// 光标移到卷一头行并折叠：整棵子树（弧一 + 两章）从可见行消失。
 	m, _ = press(t, m, tea.KeyUp)
 	m, _ = press(t, m, tea.KeyUp)
-	if m.bench.cursor != 0 {
+	if m.bench.cursor != 1 {
 		t.Fatalf("cursor should reach volume header, got %d", m.bench.cursor)
 	}
 	m, _ = press(t, m, tea.KeyEnter)
@@ -593,7 +593,7 @@ func TestOutlineFoldingCollapsesSubtreeAndAnchorsCursor(t *testing.T) {
 	// 折叠状态与光标身份跨快照刷新存活（快照每轮整体替换）。
 	updated, _ := m.Update(benchRefreshedMsg{gen: m.bench.gen, snap: m.bench.snap})
 	m = updated.(model)
-	if !m.bench.collapsed["v1"] || m.bench.cursor != 0 {
+	if !m.bench.collapsed["v1"] || m.bench.cursor != 1 {
 		t.Fatalf("fold state must survive refresh: collapsed=%v cursor=%d", m.bench.collapsed, m.bench.cursor)
 	}
 
@@ -611,9 +611,9 @@ func TestOutlineFoldingCollapsesSubtreeAndAnchorsCursor(t *testing.T) {
 	}
 }
 
-// 目录按层级缩进：卷标序号，弧在卷下、章在弧下各缩进一级。滚动规划只展开当前故事弧
-// （D67/D73）：还没展开的弧没有折叠箭头、注明待展开，回车与点击都不折叠它；下面只有
-// 空弧的卷照常可折叠。选中行与未选中行对齐在同一列。
+// 目录按层级缩进：顶部是全书行，卷标序号，弧在卷下、章在弧下各缩进一级。滚动规划只展开
+// 当前故事弧（D67/D73）：还没展开的弧没有折叠箭头、注明待展开，回车与点击都不折叠它；
+// 下面只有空弧的卷照常可折叠；开放期末尾交代后续随创作推进规划。选中行与未选中行对齐。
 func TestOutlineHierarchyAndUnexpandedArcs(t *testing.T) {
 	deps, _ := newTestDeps(t, true)
 	m := newModel(context.Background(), deps)
@@ -624,6 +624,7 @@ func TestOutlineHierarchyAndUnexpandedArcs(t *testing.T) {
 	m.width, m.height = 180, 40
 	m.bench.snap = workbench.WorkbenchSnapshot{
 		ProjectID: "book-rolling", Intent: domainmodel.Intent{Premise: "滚动规划"},
+		Length: novel.Length{Compass: &domainmodel.Compass{ScaleMax: 80, Ending: "e"}},
 		Outline: []workbench.OutlineNode{
 			{Node: domainmodel.PlanNode{ID: "v1", Kind: domainmodel.PlanVolume, Title: "漏根"}, Volume: 1},
 			{Node: domainmodel.PlanNode{ID: "a1", Kind: domainmodel.PlanArc, ParentID: "v1", Title: "残页"}},
@@ -637,34 +638,39 @@ func TestOutlineHierarchyAndUnexpandedArcs(t *testing.T) {
 	rows := m.outlineRows()
 	line := func(index int, selected bool) string { return ansi.Strip(m.outlineRowLine(rows[index], selected, 40)) }
 	column := func(text, symbol string) int { return ansi.StringWidth(text[:strings.Index(text, symbol)]) }
-	for index, want := range map[int]string{0: "▾ 第 1 卷 · 漏根", 1: "▾ 残页", 4: "清辉楼 · 待展开", 5: "▾ 第 2 卷 · 入山", 6: "云麓外门 · 待展开"} {
+	for index, want := range map[int]string{0: "全书", 1: "▾ 第 1 卷 · 漏根", 2: "▾ 残页", 5: "清辉楼 · 待展开", 6: "▾ 第 2 卷 · 入山", 7: "云麓外门 · 待展开", 8: "··· 后续随创作推进规划"} {
 		if !strings.Contains(line(index, false), want) {
 			t.Fatalf("row %d = %q, want %q", index, line(index, false), want)
 		}
 	}
-	if strings.Contains(line(4, false), "▾") || strings.Contains(line(6, false), "▾") {
-		t.Fatalf("unexpanded arcs have no fold arrow: %q %q", line(4, false), line(6, false))
+	if len(rows) != 9 || !rows[8].placeholder {
+		t.Fatalf("the open period ends with one note on later planning: %d rows", len(rows))
 	}
-	if column(line(1, false), "▾") != column(line(0, false), "第") || column(line(2, false), "✓") != column(line(1, false), "残页") {
-		t.Fatalf("each level indents under its parent's title:\n%s\n%s\n%s", line(0, false), line(1, false), line(2, false))
+	if strings.Contains(line(5, false), "▾") || strings.Contains(line(7, false), "▾") {
+		t.Fatalf("unexpanded arcs have no fold arrow: %q %q", line(5, false), line(7, false))
 	}
-	if column(line(4, false), "清辉楼") != column(line(1, false), "残页") {
-		t.Fatalf("unexpanded arc title aligns with other arcs: %q %q", line(4, false), line(1, false))
+	if column(line(0, false), "全书") != column(line(1, false), "第") || column(line(2, false), "▾") != column(line(1, false), "第") ||
+		column(line(3, false), "✓") != column(line(2, false), "残页") {
+		t.Fatalf("each level indents under its parent's title:\n%s\n%s\n%s\n%s", line(0, false), line(1, false), line(2, false), line(3, false))
 	}
-	if column(line(3, true), "◉") != column(line(2, false), "✓") || column(line(1, true), "▾") != column(line(1, false), "▾") {
-		t.Fatalf("selection shifts the row: %q %q", line(3, true), line(1, true))
+	if column(line(5, false), "清辉楼") != column(line(2, false), "残页") {
+		t.Fatalf("unexpanded arc title aligns with other arcs: %q %q", line(5, false), line(2, false))
+	}
+	if column(line(4, true), "◉") != column(line(3, false), "✓") || column(line(2, true), "▾") != column(line(2, false), "▾") ||
+		column(line(0, true), "全书") != column(line(0, false), "全书") {
+		t.Fatalf("selection shifts the row: %q %q %q", line(4, true), line(2, true), line(0, true))
 	}
 
-	m.bench.pane, m.bench.cursor = benchPaneOutline, 4
+	m.bench.pane, m.bench.cursor = benchPaneOutline, 5
 	m, _ = press(t, m, tea.KeyEnter)
 	if m.bench.collapsed["a2"] || len(m.outlineRows()) != len(rows) {
 		t.Fatalf("enter on an unexpanded arc must not fold it: %v", m.bench.collapsed)
 	}
-	m.clickOutlineRow(6)
-	if m.bench.collapsed["a3"] || m.bench.cursor != 6 {
+	m.clickOutlineRow(7)
+	if m.bench.collapsed["a3"] || m.bench.cursor != 7 {
 		t.Fatalf("click on an unexpanded arc selects without folding: %v cursor=%d", m.bench.collapsed, m.bench.cursor)
 	}
-	m.clickOutlineRow(5)
+	m.clickOutlineRow(6)
 	if !m.bench.collapsed["v2"] {
 		t.Fatal("a volume holding unexpanded arcs still folds")
 	}
@@ -688,7 +694,7 @@ func TestFoldPreferencePersistsAcrossReopen(t *testing.T) {
 			{Node: domainmodel.PlanNode{ID: "c1", Kind: domainmodel.PlanChapter, ParentID: "a1", Title: "第一章"}, Number: 1},
 		},
 	}
-	m.bench.cursor, m.bench.pane = 0, benchPaneOutline // 卷一头行
+	m.bench.cursor, m.bench.pane = 1, benchPaneOutline // 卷一头行（行 0 是全书）
 	m, _ = press(t, m, tea.KeyEnter)
 	if !m.bench.collapsed["v1"] {
 		t.Fatalf("enter on header must fold: %v", m.bench.collapsed)
@@ -729,7 +735,7 @@ func TestMouseWheelScrollsAndClickSelectsOutline(t *testing.T) {
 			{Node: domainmodel.PlanNode{ID: "c3", Kind: domainmodel.PlanChapter, ParentID: "a2", Title: "第三章"}, Number: 3, State: workbench.ChapterPlanned},
 		},
 	}
-	m.bench.cursor = anchorOutlineCursor(m.outlineRows(), "", 0) // c1，行 2
+	m.bench.cursor = anchorOutlineCursor(m.outlineRows(), "", 0) // c1，行 3（行 0 是全书）
 
 	click := func(x, y int) {
 		updated, _ := m.Update(tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
@@ -745,19 +751,19 @@ func TestMouseWheelScrollsAndClickSelectsOutline(t *testing.T) {
 	}
 
 	l := m.benchLayout()
-	// 点击第 2 章（目录行 3）。
-	click(5, l.outlineY+3)
-	if m.bench.cursor != 3 || m.bench.pane != benchPaneOutline {
+	// 点击第 2 章（目录行 4）。
+	click(5, l.outlineY+4)
+	if m.bench.cursor != 4 || m.bench.pane != benchPaneOutline {
 		t.Fatalf("click chapter: cursor=%d pane=%d", m.bench.cursor, m.bench.pane)
 	}
-	// 点击卷二头行（行 4）折叠：光标落在头行，弧二与第三章消失。
-	click(5, l.outlineY+4)
-	if !m.bench.collapsed["v2"] || m.bench.cursor != 4 || strings.Contains(m.View(), "第三章") {
+	// 点击卷二头行（行 5）折叠：光标落在头行，弧二与第三章消失。
+	click(5, l.outlineY+5)
+	if !m.bench.collapsed["v2"] || m.bench.cursor != 5 || strings.Contains(m.View(), "第三章") {
 		t.Fatalf("click header must collapse: collapsed=%v cursor=%d", m.bench.collapsed, m.bench.cursor)
 	}
-	// 目录上滚轮：光标上移到第 2 章（行 3）。
+	// 目录上滚轮：光标上移到第 2 章（行 4）。
 	wheel(5, l.outlineY, true)
-	if m.bench.cursor != 3 {
+	if m.bench.cursor != 4 {
 		t.Fatalf("wheel over outline: cursor=%d", m.bench.cursor)
 	}
 	// 点击「活动」标签切视图；活动视图里滚轮向上冻结跟随，向下到底恢复。
@@ -790,7 +796,7 @@ func TestMouseWheelScrollsAndClickSelectsOutline(t *testing.T) {
 	// 正文视图里滚轮只动正文，不碰目录。
 	click(tabs[0].x0, l.tabsY)
 	wheel(l.mainX+5, l.contentY+3, true)
-	if m.bench.cursor != 3 || m.bench.view != viewProse {
+	if m.bench.cursor != 4 || m.bench.view != viewProse {
 		t.Fatalf("wheel over prose leaked: cursor=%d view=%d", m.bench.cursor, m.bench.view)
 	}
 }
@@ -822,7 +828,7 @@ func TestWorkbenchTargetPromptContinuesWithNewGoal(t *testing.T) {
 	}
 }
 
-// 头部进度三态（D63）：固定篇幅给分母；AI 收官后给分母并注明；开放期只有已入稿与上限。
+// 头部进度三态（D63）：固定篇幅给分母；AI 收官后给分母并注明；开放期是已入稿、已规划与预计篇幅。
 func TestProgressLabelFollowsLength(t *testing.T) {
 	for _, c := range []struct {
 		length novel.Length
@@ -830,10 +836,10 @@ func TestProgressLabelFollowsLength(t *testing.T) {
 	}{
 		{novel.Length{Fixed: 8, Final: 8}, "已入稿 3 / 8 章"},
 		{novel.Length{Compass: &domainmodel.Compass{ScaleMax: 60, Ending: "e", Final: 40}, Final: 40}, "已入稿 3 / 40 章 · 收官"},
-		{novel.Length{Compass: &domainmodel.Compass{ScaleMax: 60, Ending: "e"}}, "已入稿 3 章 · 预计 60"},
+		{novel.Length{Compass: &domainmodel.Compass{ScaleMax: 60, Ending: "e"}}, "已入稿 3 章 · 已规划 8 · 预计 60"},
 		{novel.Length{}, "已入稿 3 章 · 篇幅待定"},
 	} {
-		if got := progressLabel(3, c.length); got != c.want {
+		if got := progressLabel(3, 8, c.length); got != c.want {
 			t.Fatalf("progress %+v = %q, want %q", c.length, got, c.want)
 		}
 	}
@@ -887,6 +893,11 @@ func TestWorkbenchDirectivePromptRecordsRequirement(t *testing.T) {
 		ProjectID: "book-1", Intent: domainmodel.Intent{Premise: "写书"}, Length: novel.Length{Fixed: 1, Final: 1},
 		Outline: []workbench.OutlineNode{{Node: plan[0]}, {Node: plan[1]}, {Node: plan[2], Number: 1}},
 	}
+	// 全书行只管后续章节：不回头覆盖已写章节。
+	if scope, label := m.directiveScope(); scope != "from_chapter:1" || label != "第 1 章起的章节" {
+		t.Fatalf("book row scopes from the next chapter: %s %s", scope, label)
+	}
+	m.bench.cursor = 1
 	if scope, label := m.directiveScope(); scope != "plan_node:volume-1" || label != "「第一卷」" {
 		t.Fatalf("scope follows the selected outline row: %s %s", scope, label)
 	}
@@ -1091,6 +1102,7 @@ func TestRewriteCandidateTakesPrecedenceOverOldAuthorityChapter(t *testing.T) {
 			},
 		}},
 	}
+	m.bench.cursor = anchorOutlineCursor(m.outlineRows(), "", 0)
 	m, _ = press(t, m, tea.KeyEnter)
 	view := m.View()
 	if !strings.Contains(view, "重写后的正文") || !strings.Contains(view, "候选稿") {
@@ -1222,13 +1234,13 @@ func TestOutlineViewportFollowsCursorAndPaneFocusCycles(t *testing.T) {
 	}
 	snap.Manuscript = []domainmodel.ManuscriptChapter{{ID: "ch-25", Number: 25, Title: "第25回", Blocks: blocks}}
 	m.bench.snap = snap
-	m.bench.cursor = 25 // 行索引：0 是卷头行，章 N 在第 N 行
+	m.bench.cursor = 26 // 行索引：0 是全书，1 是卷头行，章 N 在第 N+1 行
 	view := m.View()
 	if !strings.Contains(view, "25  第25回") || !strings.Contains(view, "前面还有") {
 		t.Fatalf("outline viewport must follow cursor:\n%s", view)
 	}
 	m, _ = press(t, m, tea.KeyDown)
-	if m.bench.cursor != 25 || m.bench.proseOffset != 1 {
+	if m.bench.cursor != 26 || m.bench.proseOffset != 1 {
 		t.Fatalf("main focus must scroll prose: cursor=%d offset=%d", m.bench.cursor, m.bench.proseOffset)
 	}
 	m, _ = press(t, m, tea.KeyTab)
@@ -1236,7 +1248,7 @@ func TestOutlineViewportFollowsCursorAndPaneFocusCycles(t *testing.T) {
 		t.Fatalf("pane = %d, want outline", m.bench.pane)
 	}
 	m, _ = press(t, m, tea.KeyDown)
-	if m.bench.cursor != 26 || m.bench.proseOffset != 0 {
+	if m.bench.cursor != 27 || m.bench.proseOffset != 0 {
 		t.Fatalf("outline focus must move cursor and reset offsets: cursor=%d offset=%d", m.bench.cursor, m.bench.proseOffset)
 	}
 }
@@ -1261,9 +1273,9 @@ func TestManualSelectionPinsMainPaneDuringWriting(t *testing.T) {
 			{ID: "ch-2", Number: 2, Title: "转折", Blocks: []domainmodel.ManuscriptBlock{{ID: "b1", Text: "第二章内容"}}},
 		},
 	}
-	m.bench.pane = benchPaneOutline
+	m.bench.pane, m.bench.cursor = benchPaneOutline, anchorOutlineCursor(m.outlineRows(), "", 0)
 	m, _ = press(t, m, tea.KeyDown)
-	if !m.bench.pinned || m.bench.cursor != 1 {
+	if !m.bench.pinned || m.bench.cursor != 2 {
 		t.Fatalf("selection during writing must pin: pinned=%v cursor=%d", m.bench.pinned, m.bench.cursor)
 	}
 	view := m.View()

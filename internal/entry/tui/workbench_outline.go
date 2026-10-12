@@ -14,11 +14,12 @@ import (
 	appconfig "github.com/voocel/ainovel-cli/internal/infra/config"
 )
 
-// outlineRow 是折叠过滤后的目录可见行：卷/弧头行（回车折叠/展开）、章行或未规划占位行。
+// outlineRow 是折叠过滤后的目录可见行：顶部的全书行、卷/弧头行（回车折叠/展开）、章行，
+// 或末尾交代还没规划的后续的占位行。
 type outlineRow struct {
 	context     string
 	node        workbench.OutlineNode
-	endChapter  int
+	endChapter  int // 占位行的末章；0 表示开放期，后续章数未定
 	chapter     int // 章行与占位行的章节号
 	level       int // 目录层级：上方实际存在的卷、弧层数，每级缩进两列
 	placeholder bool
@@ -29,6 +30,10 @@ type outlineRow struct {
 	confirmed   int
 }
 
+// bookRowID 是全书行的界面身份：刷新后按它找回光标，不是作品计划里的节点。
+const bookRowID = "ui:book"
+
+func (r outlineRow) isBook() bool    { return r.node.Node.ID == bookRowID }
 func (r outlineRow) isChapter() bool { return r.node.Node.Kind == domainmodel.PlanChapter }
 func (r outlineRow) header() bool {
 	return r.node.Node.Kind == domainmodel.PlanVolume || r.node.Node.Kind == domainmodel.PlanArc
@@ -126,7 +131,8 @@ func (m model) directoryEntries() []workbench.OutlineNode {
 	return entries
 }
 
-// buildOutlineRows 先序快照按折叠状态过滤（折叠头行吞掉整棵子树），末尾补未规划占位。
+// buildOutlineRows 先序快照按折叠状态过滤（折叠头行吞掉整棵子树）；有目录时顶部是全书行，
+// 末尾交代还没规划的后续。
 func (m model) buildOutlineRows() []outlineRow {
 	bench := m.bench
 	entries := m.directoryEntries()
@@ -174,10 +180,16 @@ func (m model) buildOutlineRows() []outlineRow {
 		}
 		rows = append(rows, row)
 	}
-	// 占位只在全书章数已知时出现（D63）：开放期不知道还有多少章。
-	target := m.bench.snap.Length.Final
-	if number := chapterCount(bench.snap) + 1; number <= target {
-		rows = append(rows, outlineRow{chapter: number, endChapter: target, placeholder: true})
+	if len(rows) > 0 {
+		rows = append([]outlineRow{{node: workbench.OutlineNode{Node: domainmodel.PlanNode{ID: bookRowID, Title: "全书"}}}}, rows...)
+	}
+	// 全书章数已知时末尾是待规划区间（还没有目录时也有）；开放期章数未定，有目录时交代后续
+	// 随创作推进规划（D63/D73）。
+	switch count, target := chapterCount(bench.snap), bench.snap.Length.Final; {
+	case count < target:
+		rows = append(rows, outlineRow{chapter: count + 1, endChapter: target, placeholder: true})
+	case target == 0 && len(rows) > 0:
+		rows = append(rows, outlineRow{chapter: count + 1, placeholder: true})
 	}
 	return rows
 }
@@ -557,10 +569,13 @@ func (m model) directoryNote() []string {
 }
 
 // outlineRowLine 一行目录：两列选中标记，每级缩进两列，两列行标（折叠箭头或章节状态），
-// 再接文字。卷标出序号；下面还没有节点的卷弧没有箭头，注明待展开（滚动规划，D67/D73）。
+// 再接文字。卷标出序号；下面还没有节点的卷弧没有箭头，注明待展开，开放期末尾交代后续
+// 随创作推进规划（滚动规划，D67/D73）。全书行与卷名对齐。
 func (m model) outlineRowLine(row outlineRow, selected bool, width int) string {
 	indent := strings.Repeat("  ", row.level)
 	switch {
+	case row.placeholder && row.endChapter == 0:
+		return benchTheme.Muted.Render("  " + indent + "··· 后续随创作推进规划")
 	case row.placeholder:
 		label := fmt.Sprintf("%02d", row.chapter)
 		if row.endChapter > row.chapter {
@@ -569,6 +584,11 @@ func (m model) outlineRowLine(row outlineRow, selected bool, width int) string {
 		return benchTheme.Muted.Render("  " + indent + "○ " + label + "  待规划")
 	case row.isChapter():
 		return m.outlineChapterLine(row.node, indent, selected, width)
+	case row.isBook():
+		if selected {
+			return benchTheme.Selected.Render(fitLine("▎   全书", width))
+		}
+		return "    " + benchTheme.Title.Render("全书")
 	}
 	fold, style, title := "▾ ", benchTheme.Title, row.node.Node.Title
 	if row.node.Volume > 0 {

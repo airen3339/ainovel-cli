@@ -101,6 +101,8 @@ type WorkbenchSnapshot struct {
 	Adjudications []model.Adjudication `json:"adjudications,omitempty"`
 	// Briefs 是各已规划章节的依据（键为章号）：覆盖它的要求与结论、它记下的设定。
 	Briefs map[int]ChapterBrief `json:"briefs,omitempty"`
+	// Cast 是出过场的人物，涉及章数多的在前。
+	Cast []CastMember `json:"cast,omitempty"`
 	// Length 是篇幅口径（D63）：固定章数、故事罗盘与全书章数，与推导器同一规则。
 	Length novel.Length `json:"length"`
 }
@@ -157,6 +159,7 @@ func (s *Query) snapshotFromProject(ctx context.Context, project projectdoc.Snap
 	snapshot.Outline = buildOutline(plan, proposed, project.Manuscript, snapshot.Candidates, writingPlanID)
 	snapshot.Length = novel.LengthOf(project, snapshot.Run)
 	snapshot.Briefs = chapterBriefs(project, snapshot.Length.Final, current)
+	snapshot.Cast = castOf(project)
 	return snapshot, nil
 }
 

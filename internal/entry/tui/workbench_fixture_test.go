@@ -74,7 +74,7 @@ func studioModel(t *testing.T, width, height int) model {
 		{ID: "f1", ReviewFinding: domainmodel.ReviewFinding{ChapterID: "ch-3", Severity: domainmodel.FindingBlocking, Note: "回信背面的笔迹提前揭示了门后人的身份"}},
 		{ID: "f2", ReviewFinding: domainmodel.ReviewFinding{ChapterID: "ch-3", Severity: domainmodel.FindingNote, Note: "雨声意象连续三章出现"}},
 	}
-	m.bench.cursor = 4 // 行 0 是卷头，第 4 章在行 4
+	m.bench.cursor = 5 // 行 0 是全书，行 1 是卷头，第 4 章在行 5
 	at := time.Now().Add(-12 * time.Second)
 	thinking := "保留上一章的雨声作为过渡。门后的人可以认出他的脚步，但暂时不解释身份。用声音与一个具体动作承接悬念，让读者先感到异常。"
 	prose := "雨停了，屋檐却还在滴水。\n\n陈渡站在门前，把那封没有邮戳的信翻了过来。收件人的名字已经被雨水洇开，只有最后一个“渡”字，还像一枚钉子，牢牢留在纸上。\n\n他没有敲门。\n\n门后却传来一个声音：“你今天来晚了。”"

@@ -89,6 +89,19 @@ func formatTokens(n int) string {
 	}
 }
 
+// formatWindow 上下文窗口按厂商的写法：整千的按 1000 进位（200K、1M），按 2 的幂给的
+// 按 1024 进位（131072 写 128K）。
+func formatWindow(n int) string {
+	unit := 1000
+	if n%1000 != 0 && n%1024 == 0 {
+		unit = 1024
+	}
+	if n >= unit*unit {
+		return fmt.Sprintf("%gM", float64(n)/float64(unit*unit))
+	}
+	return fmt.Sprintf("%dK", n/unit)
+}
+
 func formatCost(usd float64) string {
 	if usd < 0.01 {
 		return fmt.Sprintf("$%.4f", usd)

@@ -18,8 +18,8 @@ func (m model) reviewing() bool {
 }
 
 // directiveScope 按目录选中行定要求的作用域（§4.9）：章行只管该章，卷/弧行管整个子树，
-// 占位行或尚无目录时从下一章起生效。方案里尚未生效的节点不能被引用：章行按章号，
-// 卷/弧行从下一章起。target 是给人看的短语。
+// 全书行、占位行或尚无目录时从下一章起生效——不回头覆盖已写章节，免得全书重审。方案里
+// 尚未生效的节点不能被引用：章行按章号，卷/弧行从下一章起。target 是给人看的短语。
 func (m model) directiveScope() (scope, target string) {
 	next := len(m.bench.snap.Manuscript) + 1
 	rows := m.outlineRows()
@@ -27,18 +27,25 @@ func (m model) directiveScope() (scope, target string) {
 		row := rows[cursor]
 		switch {
 		case row.placeholder:
-			return domainmodel.DirectiveScopeFromChapter(row.chapter), fmt.Sprintf("第 %d 章起", row.chapter)
+			return scopeFromChapter(row.chapter)
+		case row.isBook():
+			return scopeFromChapter(next)
 		case row.node.Proposed && row.isChapter():
 			return domainmodel.DirectiveScopeChapters(row.chapter, row.chapter), fmt.Sprintf("第 %d 章", row.chapter)
 		case row.node.Proposed:
-			return domainmodel.DirectiveScopeFromChapter(next), fmt.Sprintf("第 %d 章起", next)
+			return scopeFromChapter(next)
 		case row.isChapter():
 			return domainmodel.DirectiveScopePlanNode(row.node.Node.ID), fmt.Sprintf("第 %d 章", row.chapter)
 		default:
 			return domainmodel.DirectiveScopePlanNode(row.node.Node.ID), "「" + row.node.Node.Title + "」"
 		}
 	}
-	return domainmodel.DirectiveScopeFromChapter(next), fmt.Sprintf("第 %d 章起", next)
+	return scopeFromChapter(next)
+}
+
+// scopeFromChapter 是从第 number 章起生效的作用域；短语接得上「给……提一个要求」。
+func scopeFromChapter(number int) (scope, target string) {
+	return domainmodel.DirectiveScopeFromChapter(number), fmt.Sprintf("第 %d 章起的章节", number)
 }
 
 // composerScope 草稿在第一个字时锁定作用域，之后切章不改变它的语义。
@@ -296,12 +303,12 @@ func (m model) firstBlockingFinding() (workbench.WorkbenchFinding, bool) {
 	return workbench.WorkbenchFinding{}, false
 }
 
-// detailReport 完整详情（/view 全屏）：选中章的全部依据（与右栏同序，放不下的在这里读全），
-// 再是全书的创作意图与要求。
+// detailReport 完整详情（/view 全屏）：选中章的全部依据（与右栏同序，放不下的在这里读全）；
+// 选中全书时是篇幅、终局与全部人物；最后都是全书的创作意图与要求。
 func (m model) detailReport() string {
 	bench := m.bench
 	number := m.selectedChapterNumber()
-	title := "详情"
+	title := "全书详情"
 	if number > 0 {
 		title = fmt.Sprintf("第 %d 章详情", number)
 	}
@@ -346,6 +353,19 @@ func (m model) detailReport() string {
 			view.WriteString(mark + factLine(fact.Fact) + "\n")
 		}
 	}
+	if number == 0 {
+		section("篇幅与终局")
+		view.WriteString(lengthStatus(bench.snap.Length) + "\n")
+		if compass := bench.snap.Length.Compass; compass != nil && compass.Ending != "" {
+			view.WriteString(styleHint.Render("终局 ") + compass.Ending + "\n")
+		}
+		if len(bench.snap.Cast) > 0 {
+			section(fmt.Sprintf("人物 · %d 位", len(bench.snap.Cast)))
+			for _, member := range bench.snap.Cast {
+				view.WriteString(castLine(member) + "\n")
+			}
+		}
+	}
 	intent := bench.snap.Intent
 	section("创作意图")
 	if len(intent.Required) > 0 {
@@ -367,4 +387,13 @@ func (m model) detailReport() string {
 		}
 	}
 	return view.String()
+}
+
+// castLine 一位人物：名字、别名，涉及的已写章数与最近一章。
+func castLine(member workbench.CastMember) string {
+	line := member.Name
+	if len(member.Aliases) > 0 {
+		line += "（又名 " + strings.Join(member.Aliases, "、") + "）"
+	}
+	return line + styleHint.Render(fmt.Sprintf(" · %d 章 · 最近第 %d 章", member.Chapters, member.Latest))
 }

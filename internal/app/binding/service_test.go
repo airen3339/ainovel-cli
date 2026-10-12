@@ -1,6 +1,9 @@
 package binding
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -145,5 +148,31 @@ func TestVerifyAndUnassembledRuntime(t *testing.T) {
 	}
 	if _, err := modelConfigFor(testConfig(), "missing", "gpt-5", ""); err == nil {
 		t.Fatal("missing connection accepted")
+	}
+}
+
+// 模型清单里有的模型，绑定时附上标价、Current 给出上下文窗口；没有的不附，用量不计花费。
+// 本地清单在有效期内时不联网、不重绑。
+func TestBindingsCarryPricesFromTheModelList(t *testing.T) {
+	dir := t.TempDir()
+	list := `{"deepseek-chat": {"mode": "chat", "litellm_provider": "deepseek", "max_input_tokens": 131072,
+		"input_cost_per_token": 3e-7, "output_cost_per_token": 1.2e-6, "cache_read_input_token_cost": 6e-9}}`
+	if err := os.WriteFile(filepath.Join(dir, "models.json"), []byte(list), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	binder := &fakeBinder{}
+	service := New(dir, binder)
+	config := testConfig().WithRole("writer", "proxy", "gpt-5", "")
+	if err := service.Apply(config); err != nil {
+		t.Fatal(err)
+	}
+	if pricing := binder.bindings.Default.Chat.Pricing; pricing == nil || pricing.Input != 3e-7 || binder.bindings.Roles["writer"].Chat.Pricing != nil {
+		t.Fatalf("pricing = %+v / %+v", pricing, binder.bindings.Roles["writer"].Chat.Pricing)
+	}
+	if window := service.Current("").ContextWindow; window != 131072 || service.Current("writer").ContextWindow != 0 {
+		t.Fatalf("context window = %d", window)
+	}
+	if err := service.RefreshFacts(context.Background()); err != nil || binder.calls != 1 {
+		t.Fatalf("a fresh list must not download or rebind: err=%v calls=%d", err, binder.calls)
 	}
 }

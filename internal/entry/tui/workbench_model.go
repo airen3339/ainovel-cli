@@ -33,12 +33,13 @@ func thinkingLabel(level string) string {
 	return level
 }
 
-// bindingLabel 是页脚与右栏的当前绑定摘要：模型 · 思考强度（非自动时）· 角色覆盖数。
+// bindingLabel 是底栏与欢迎页的默认绑定摘要：连接/模型 · 思考强度 · 上下文窗口（模型
+// 清单查得到时）· 角色覆盖数。
 func (m model) bindingLabel() string {
 	current := m.api.Models.Current("")
-	parts := []string{current.Model}
-	if current.Thinking != "" {
-		parts = append(parts, "思考 "+thinkingLabel(current.Thinking))
+	parts := []string{current.Connection + "/" + current.Model, "思考 " + thinkingLabel(current.Thinking)}
+	if current.ContextWindow > 0 {
+		parts = append(parts, "上下文 "+formatWindow(current.ContextWindow))
 	}
 	if roles := len(m.api.Models.Config().Roles); roles > 0 {
 		parts = append(parts, fmt.Sprintf("角色 %d", roles))
@@ -82,16 +83,8 @@ type modelPanel struct {
 	message      string
 }
 
-// roleNames 是模型角色的读者用语；有哪些角色、按什么顺序以 Models.Roles 为准。
-var roleNames = map[string]string{"": "默认", "architect": "策划", "writer": "作者", "editor": "编辑"}
-
-// roleLabel 面板与提示里的角色名：中文名附配置键，默认绑定只写「默认」。
-func roleLabel(role string) string {
-	if role == "" {
-		return roleNames[role]
-	}
-	return roleNames[role] + " " + role
-}
+// roleNames 是模型角色的名字，与配置键同词；有哪些角色、按什么顺序以 Models.Roles 为准。
+var roleNames = map[string]string{"": "默认", "architect": "Architect", "writer": "Writer", "editor": "Editor"}
 
 func (p *modelPanel) role() string       { return p.roles[p.roleIdx] }
 func (p *modelPanel) connection() string { return pick(p.connections, p.connIdx) }
@@ -252,8 +245,8 @@ func (m model) applyModelPanel(p *modelPanel) model {
 	if current.Inherited {
 		target = "跟随默认（" + target + "）"
 	}
-	m.bench.notice = fmt.Sprintf("已切换：%s → %s · 思考 %s · %s", roleLabel(role), target, thinkingLabel(current.Thinking), when)
-	m.bench.addEcho(fmt.Sprintf("你把%s换成 %s · 思考 %s", roleLabel(role), target, thinkingLabel(current.Thinking)))
+	m.bench.notice = fmt.Sprintf("已切换：%s → %s · 思考 %s · %s", roleNames[role], target, thinkingLabel(current.Thinking), when)
+	m.bench.addEcho(fmt.Sprintf("你把%s换成 %s · 思考 %s", roleNames[role], target, thinkingLabel(current.Thinking)))
 	m.bench.modelPanel = nil
 	return m
 }
@@ -262,7 +255,7 @@ func (m model) applyModelPanel(p *modelPanel) model {
 func (m model) modelPanelLines(width int) []string {
 	p := m.bench.modelPanel
 	lines := []string{sectionTitle(benchTheme.Muted.Render("模型 · ←→ 切换 · Tab 换行 · Enter 应用 · Esc 取消"), width)}
-	values := [panelFieldCount]string{roleLabel(p.role()), p.connection(), p.model(), thinkingLabel(p.level())}
+	values := [panelFieldCount]string{roleNames[p.role()], p.connection(), p.model(), thinkingLabel(p.level())}
 	if p.role() != "" && p.connection() == followDefault {
 		values[panelConnection], values[panelModel] = "跟随默认", "跟随默认"
 	}

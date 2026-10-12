@@ -14,12 +14,13 @@ import (
 // 「创作团队」钉在底部——谁在干活、用哪个模型、这本书上各自用了多少与多久，最后是合计。
 // 两块都来自落盘数据，重启、空闲时照样完整。运行明细在 /diag。
 
-// railLimits 是一段文字最多占几行：先按宽松的排，放不下再收紧，仍放不下才指向 /view。
-type railLimits struct{ summary, item int }
+// railLimits 是一段文字最多占几行、人物最多列几位：先按宽松的排，放不下再收紧，仍放不下
+// 才指向 /view。
+type railLimits struct{ summary, item, cast int }
 
 var (
-	railRoomy   = railLimits{summary: 12, item: 6}
-	railCompact = railLimits{summary: 4, item: 2}
+	railRoomy   = railLimits{summary: 12, item: 6, cast: 10}
+	railCompact = railLimits{summary: 4, item: 2, cast: 5}
 )
 
 // railColumn 右栏：上块依据从顶部排，下块创作团队钉在底部，中间留白。
@@ -45,9 +46,9 @@ func (m model) railColumn(l benchLayout) []string {
 }
 
 // briefCard 写作依据：标题线下是光标所在处的依据——章行是这一章的，卷/弧头行是这一部分的，
-// 没有大纲时是全书的。
+// 全书行与还没有大纲时是全书的。
 func (m model) briefCard(width int, limits railLimits) []string {
-	r := railText{width: width, limits: limits, lines: []string{railRule("写作依据", "", width)}}
+	r := railText{width: width, limits: limits, lines: []string{railRule(benchTheme.Muted.Render("写作依据"), "", width)}}
 	rows := m.outlineRows()
 	if cursor := m.bench.cursor; cursor >= 0 && cursor < len(rows) {
 		switch row := rows[cursor]; {
@@ -221,7 +222,7 @@ func (m model) sectionBrief(r *railText, row outlineRow) {
 	}
 }
 
-// bookBrief 还没有大纲时：篇幅、终局、创作意图与全部要求。
+// bookBrief 全书：篇幅、终局、出过场的人物（涉及章数多的在前），创作意图与全部要求。
 func (m model) bookBrief(r *railText) {
 	snap := m.bench.snap
 	r.head("全书", benchTheme.Muted.Render(lengthStatus(snap.Length)))
@@ -232,6 +233,15 @@ func (m model) bookBrief(r *railText) {
 	if ending != "" {
 		r.section("终局", "")
 		r.paragraph(ending)
+	}
+	if len(snap.Cast) > 0 {
+		r.section("人物", benchTheme.Muted.Render(fmt.Sprintf("%d 位", len(snap.Cast))))
+		for _, member := range snap.Cast[:min(len(snap.Cast), r.limits.cast)] {
+			r.body(alignRight(benchTheme.Text.Render(member.Name), benchTheme.Muted.Render(fmt.Sprintf("%d 章", member.Chapters)), r.inner()))
+		}
+		if more := len(snap.Cast) - r.limits.cast; more > 0 {
+			r.body(benchTheme.Muted.Render(fmt.Sprintf("… 另 %d 位 · /view 查看全部", more)))
+		}
 	}
 	count := len(snap.Intent.Required) + len(snap.Intent.Forbidden) + len(snap.Directives)
 	if count == 0 {
@@ -255,8 +265,8 @@ func (m model) bookBrief(r *railText) {
 }
 
 // crewCard 创作团队在这本书上的累计：标题线右端是花费（有定价时）与用时；其下每个角色
-// 两行；最后是合计。数字来自落盘的执行记录，重启后照样完整。协调器按缺口派活，策划、
-// 作者、编辑一次一个接力，所以同一时刻至多一个角色亮着。还没有执行记录时整块不出现。
+// 两行；最后是合计。数字来自落盘的执行记录，重启后照样完整。协调器按缺口派活，Architect、
+// Writer、Editor 一次一个接力，所以同一时刻至多一个角色亮着。还没有执行记录时整块不出现。
 func (m model) crewCard(width int) []string {
 	usage := m.bench.snap.Usage
 	if len(usage.Roles) == 0 {
@@ -266,7 +276,7 @@ func (m model) crewCard(width int) []string {
 	if usage.Total.Cost > 0 {
 		note = formatCost(usage.Total.Cost) + " · " + note
 	}
-	lines := []string{"", railRule("创作团队", benchTheme.Muted.Render(note), width)}
+	lines := []string{"", railRule(benchTheme.Muted.Render("创作团队"), benchTheme.Muted.Render(note), width)}
 	for _, role := range m.api.Models.Roles()[1:] {
 		lines = append(lines, m.crewLines(role, width)...)
 	}
@@ -333,15 +343,17 @@ func spendLine(usage domainmodel.Usage) string {
 	return tokensLine(usage)
 }
 
-// railRule 右栏两块的标题线：与「AI 创作现场」同一写法，右端可带说明。
+// railRule 右栏的标题线：与「AI 创作现场」同一写法，右端可带说明。两块的标题淡色，
+// 依据里的分区名用强调色，由调用方上色。
 func railRule(title, note string, width int) string {
 	if note != "" {
 		note = " " + note
 	}
-	return sectionTitle(benchTheme.Muted.Render(title), width-lipgloss.Width(note)) + note
+	return sectionTitle(title, width-lipgloss.Width(note)) + note
 }
 
-// railText 收集依据的行：分区名用强调色、分区之间空一行；正文用正文色，次要的淡下去。
+// railText 收集依据的行：分区名用强调色，其后横线补满；分区里的行左侧一道竖线，与横线
+// 合成一个半框，标出这一段到哪为止；分区之间空一行。正文用正文色，次要的淡下去。
 type railText struct {
 	width  int
 	limits railLimits
@@ -353,12 +365,20 @@ func (r *railText) head(title, state string) {
 }
 
 func (r *railText) section(title, note string) {
-	r.lines = append(r.lines, "", alignRight(benchTheme.Accent.Render(title), note, r.width))
+	r.lines = append(r.lines, "", railRule(benchTheme.Accent.Render(title), note, r.width))
 }
+
+// body 分区里的一行，前面是竖线。
+func (r *railText) body(line string) {
+	r.lines = append(r.lines, benchTheme.Border.Render("│")+" "+line)
+}
+
+// inner 是分区里竖线之后的宽度。
+func (r *railText) inner() int { return r.width - 2 }
 
 func (r *railText) paragraph(text string) {
 	for _, line := range r.wrap(text, 0, r.limits.summary) {
-		r.lines = append(r.lines, benchTheme.Text.Render(line))
+		r.body(benchTheme.Text.Render(line))
 	}
 }
 
@@ -369,7 +389,7 @@ func (r *railText) item(mark, text string, style lipgloss.Style) {
 		if i == 0 {
 			lead = mark + " "
 		}
-		r.lines = append(r.lines, lead+style.Render(line))
+		r.body(lead + style.Render(line))
 	}
 }
 
@@ -383,20 +403,20 @@ func (r *railText) fact(fact workbench.BriefFact) {
 	indent := lipgloss.Width(label) + 1
 	for i, line := range r.wrap(fact.Subject+"："+fact.Text, indent, r.limits.item) {
 		if i > 0 {
-			r.lines = append(r.lines, strings.Repeat(" ", indent)+benchTheme.Text.Render(line))
+			r.body(strings.Repeat(" ", indent) + benchTheme.Text.Render(line))
 			continue
 		}
 		body := benchTheme.Text.Render(line)
 		if rest, ok := strings.CutPrefix(line, fact.Subject); ok {
 			body = benchTheme.Title.Render(fact.Subject) + benchTheme.Text.Render(rest)
 		}
-		r.lines = append(r.lines, tag.Render(label)+" "+body)
+		r.body(tag.Render(label) + " " + body)
 	}
 }
 
-// wrap 把 text 折成宽 width-indent 的行，超出 rows 行的末行以省略号收尾。
+// wrap 把 text 折成分区里宽 inner-indent 的行，超出 rows 行的末行以省略号收尾。
 func (r *railText) wrap(text string, indent, rows int) []string {
-	lines := readingLines(oneLine(text), r.width-indent)
+	lines := readingLines(oneLine(text), r.inner()-indent)
 	if len(lines) > rows {
 		lines = lines[:rows]
 		last := []rune(lines[rows-1])

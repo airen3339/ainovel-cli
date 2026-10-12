@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +15,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
+	"github.com/voocel/ainovel-cli/internal/app/binding"
 	"github.com/voocel/ainovel-cli/internal/app/workbench"
 	domainmodel "github.com/voocel/ainovel-cli/internal/domain/model"
 	"github.com/voocel/ainovel-cli/internal/domain/narrative"
@@ -99,6 +102,37 @@ func TestProsePageFillsMainColumn(t *testing.T) {
 	}
 }
 
+// railView 是右栏这一列的纯文字。
+func railView(m model) string {
+	l := m.benchLayout()
+	var cells []string
+	for _, row := range strings.Split(frame(m), "\n")[l.bodyY:l.footerY] {
+		cells = append(cells, ansi.Cut(row, l.railX, l.railX+l.railWidth))
+	}
+	return strings.Join(cells, "\n")
+}
+
+// 全书行在目录顶部：右栏是全书的依据，人物按涉及章数排、放不下的指向 /view；/view 列出全部
+// 人物与别名。全书行上提的要求从下一章起生效。
+func TestBookRowShowsTheWholeBookWithItsCast(t *testing.T) {
+	m := studioModel(t, 200, 50)
+	m.bench.snap.Cast = nil
+	for i := 1; i <= 12; i++ {
+		m.bench.snap.Cast = append(m.bench.snap.Cast, workbench.CastMember{Name: fmt.Sprintf("人物%02d", i), Chapters: 20 - i, Latest: 4})
+	}
+	m.bench.snap.Cast[0].Aliases = []string{"邮差"}
+	m.bench.cursor = 0
+	requireContains(t, railView(m), "全书", "人物", "12 位", "人物01", "19 章", "人物10", "… 另 2 位 · /view 查看全部")
+	if view := railView(m); strings.Contains(view, "人物11") {
+		t.Fatalf("the rail lists the leading members only:\n%s", view)
+	}
+	report := ansi.Strip(m.detailReport())
+	requireContains(t, report, "全书详情", "人物 · 12 位", "人物01（又名 邮差） · 19 章 · 最近第 4 章", "人物12")
+	if scope, target := m.directiveScope(); scope != "from_chapter:4" || target != "第 4 章起的章节" {
+		t.Fatalf("book row scope = %q %q", scope, target)
+	}
+}
+
 func TestRailShowsTheBriefOfWhatTheMainViewShows(t *testing.T) {
 	narrow := studioModel(t, 150, 40)
 	if l := narrow.benchLayout(); l.railWidth != 0 || strings.Contains(frame(narrow), "写作依据") {
@@ -109,22 +143,16 @@ func TestRailShowsTheBriefOfWhatTheMainViewShows(t *testing.T) {
 	if l.railWidth != 42 || l.inner != mainTargetWidth || l.railX+l.railWidth != 200 {
 		t.Fatalf("200 columns must give the rail the slack beyond the main target width: %+v", l)
 	}
-	rail := func(m model) string {
-		l := m.benchLayout()
-		var cells []string
-		for _, row := range strings.Split(frame(m), "\n")[l.bodyY:l.footerY] {
-			cells = append(cells, ansi.Cut(row, l.railX, l.railX+l.railWidth))
-		}
-		return strings.Join(cells, "\n")
-	}
-	// 上块是正在写的章的依据：规划、覆盖它的要求（没审过是一个点）；下块创作团队钉在底部：
-	// 这本书上的花费与用时、每个角色的模型、用时、用量、缓存命中与花费，最后是合计。
+	rail := railView
+	// 上块是正在写的章的依据：规划、覆盖它的要求（没审过是一个点），分区名后横线补满、
+	// 分区里的行左侧一道竖线；下块创作团队钉在底部：这本书上的花费与用时、每个角色的模型、
+	// 用时、用量、缓存命中与花费，最后是合计。
 	view := rail(wide)
 	requireContains(t, view,
-		"写作依据 ─", "第 4 章 · 门后的声音", "◉ 写作中", "规划", "陈渡循着回信找到老宅",
-		"要求", "3 条", "· 禁止 主角死亡", "· 用声音与一个具体动作承接悬念 · 第 4 章",
-		"创作团队 ─", "$0.42 · 4m12s", "✓ 策划 deepseek-v4-pro", "4m00s", "↑41K ↓9.0K · 缓存 12%", "$0.31",
-		"◉ 作者 deepseek-v4-flash", "↑192K ↓49K · 缓存 95%", "$0.11", "○ 编辑 deepseek-v4-flash", "还没出场",
+		"写作依据 ─", "第 4 章 · 门后的声音", "◉ 写作中", "规划 ─", "│ 陈渡循着回信找到老宅",
+		"要求 ─", "3 条", "│ · 禁止 主角死亡", "│ · 用声音与一个具体动作承接悬念 · 第 4",
+		"创作团队 ─", "$0.42 · 4m12s", "✓ Architect deepseek-v4-pro", "4m00s", "↑41K ↓9.0K · 缓存 12%", "$0.31",
+		"◉ Writer deepseek-v4-flash", "↑192K ↓49K · 缓存 95%", "$0.11", "○ Editor deepseek-v4-flash", "还没出场",
 		"合计 ↑233K ↓58K · 缓存 80%",
 	)
 	if cells := strings.Split(view, "\n"); !strings.Contains(cells[len(cells)-1], "合计") {
@@ -141,7 +169,7 @@ func TestRailShowsTheBriefOfWhatTheMainViewShows(t *testing.T) {
 			Model: "glm-5", State: domainmodel.OperationFailed,
 		}},
 	}
-	if view := rail(crew); strings.Contains(view, "$") || !strings.Contains(view, "! 编辑 glm-5") || !strings.Contains(view, "3m00s") ||
+	if view := rail(crew); strings.Contains(view, "$") || !strings.Contains(view, "! Editor glm-5") || !strings.Contains(view, "3m00s") ||
 		!strings.Contains(view, "↑50K ↓8.0K · 缓存 50%") || strings.Count(view, "还没出场") != 2 {
 		t.Fatalf("crew must come from the persisted usage and hide unknown prices:\n%s", view)
 	}
@@ -166,28 +194,31 @@ func TestRailShowsTheBriefOfWhatTheMainViewShows(t *testing.T) {
 		t.Fatalf("a run without any attempt has no crew card:\n%s", view)
 	}
 	// 选中审过的章：要求带审阅结论，审阅意见与本章设定各成一段，计数标出要紧的。
-	reviewed := clickBench(wide, 6, l.outlineY+3)
+	reviewed := clickBench(wide, 6, l.outlineY+4)
 	requireContains(t, rail(reviewed),
 		"第 3 章 · 回信", "✓ ", " 字", "违反 1 · 2 条", "✓ 禁止 主角死亡", "! 保持悬疑氛围",
 		"审阅意见", "阻塞 1 · 2 条", "! 回信背面的笔迹提前揭示了门后人的身份", "· 雨声意象连续三章出现",
-		"本章设定", "待核验 1 · 2 条", "事件 陈渡：在口袋里摸到一把陌生的钥匙", "伏笔 回信：背面是陈渡本人的笔迹",
+		"本章设定", "待核验 1 · 2 条", "│ 事件 陈渡：在口袋里摸到一把陌生的钥", "│ 伏笔 回信：背面是陈渡本人的笔迹",
 	)
 	// 卷头行：这一部分的进度（点击头行会折叠，这里直接移光标）。
 	section := wide
-	section.bench.cursor = 0
+	section.bench.cursor = 1
 	requireContains(t, rail(section), "第一卷 · 未寄出的信", "3/4 章")
-	// 最窄的右栏（170 列，32 列宽）每一行都放得下，不出现截断省略号。
+	// 最窄的右栏（170 列，32 列宽）依据每一行都放得下，不出现截断省略号；团队里放不下时
+	// 只截短模型名，角色名与用时完整。
 	narrowRail := studioModel(t, 170, 45)
 	nl := narrowRail.benchLayout()
 	if nl.railWidth != railMinWidth || studioModel(t, 169, 45).benchLayout().railWidth != 0 {
 		t.Fatalf("rail must appear at exactly %d columns with the minimum width: %+v", railThreshold, nl)
 	}
-	if view := rail(narrowRail); strings.Contains(view, "…") {
-		t.Fatalf("rail truncated at 32 columns:\n%s", view)
+	brief, team, _ := strings.Cut(rail(narrowRail), "创作团队")
+	if strings.Contains(brief, "…") {
+		t.Fatalf("brief truncated at 32 columns:\n%s", brief)
 	}
+	requireContains(t, team, "✓ Architect deepseek-v4", "4m00s", "◉ Writer deepseek-v4-flash", "12s")
 	// 右栏只读：滚轮不滚正文，点击不命中任何区域。
 	wide.bench.snap.Manuscript[1].Blocks[0].Text = strings.Repeat(wide.bench.snap.Manuscript[1].Blocks[0].Text, 6)
-	wide = clickBench(wide, 6, l.outlineY+2)
+	wide = clickBench(wide, 6, l.outlineY+3)
 	wide = wheelBench(wide, l.railX+3, l.contentY+3, false)
 	if wide.bench.proseOffset != 0 || wide.selectedChapterNumber() != 2 {
 		t.Fatal("wheel over the rail must not scroll the prose")
@@ -402,12 +433,12 @@ func TestBlueprintProposalReadsAsStoryAndPreviewsInOutline(t *testing.T) {
 		"◇ 创作方案 · 等待你确认", "新增 1 个故事弧 · 1 章 · 新增人物地点 1 个 · 设定 1 条 · 终局：真相大白",
 		"y 通过 · 写下修改意见后回车重新规划（意见留作后续章节的要求） · /review 查看全部", "门后 ◇", "◇ 05  旧友",
 	)
-	m.bench.cursor = 6 // 行 5 是方案里的新故事弧，行 6 是它的第 5 章
+	m.bench.cursor = 7 // 行 6 是方案里的新故事弧，行 7 是它的第 5 章
 	requireContains(t, frame(m), "◇ 方案待你确认 · 尚未生效", "苏晚认出陈渡")
 	if scope, target := m.directiveScope(); scope != "chapter_range:5-5" || target != "第 5 章" || m.directiveScopeLabel(scope) != "第 5 章" {
 		t.Fatalf("proposed chapter scope = %q %q", scope, target)
 	}
-	m.bench.cursor = 5
+	m.bench.cursor = 6
 	if scope, _ := m.directiveScope(); scope != "from_chapter:4" {
 		t.Fatalf("proposed arc must not be referenced before it exists: %q", scope)
 	}
@@ -557,7 +588,7 @@ func TestFocusAndEnterFollowThePane(t *testing.T) {
 	}
 	m, _ = press(t, m, tea.KeyEsc)
 	m, _ = press(t, m, tea.KeyTab)
-	m.bench.cursor = 0
+	m.bench.cursor = 1
 	m, _ = press(t, m, tea.KeyEnter)
 	if !m.bench.collapsed["v1"] || !strings.Contains(frame(m), "▸ 第一卷") {
 		t.Fatal("empty Enter on a header row must fold it")
@@ -573,7 +604,7 @@ func TestMouseHitsUseTheSharedLayout(t *testing.T) {
 	m := studioModel(t, 150, 40)
 	m.bench.snap.Manuscript[1].Blocks[0].Text = strings.Repeat(m.bench.snap.Manuscript[1].Blocks[0].Text, 4)
 	l := m.benchLayout()
-	m = clickBench(m, 6, l.outlineY+2)
+	m = clickBench(m, 6, l.outlineY+3)
 	if m.selectedChapterNumber() != 2 || m.bench.pane != benchPaneOutline || !m.bench.pinned {
 		t.Fatalf("click must select the chapter row: number=%d", m.selectedChapterNumber())
 	}
@@ -652,7 +683,20 @@ func TestTooSmallTerminalAsksToMaximize(t *testing.T) {
 
 func TestFooterShowsUsageContextAndPrimaryAction(t *testing.T) {
 	m := studioModel(t, 150, 40)
-	requireContains(t, frame(m), "deepseek-v4-flash · ↑233K ↓58K · 缓存 80% · $0.42", "/pause 暂停推进", "要求 · 第 4 章")
+	requireContains(t, frame(m), "deepseek/deepseek-v4-flash · 思考 自动 · ↑233K ↓58K · 缓存 80% · $0.42", "/pause 暂停推进", "要求 · 第 4 章")
+	// 模型清单查得到时附上下文窗口；最窄时提示完整，模型摘要与用量截掉尾部。
+	list := `{"deepseek-v4-flash": {"mode": "chat", "litellm_provider": "deepseek", "max_input_tokens": 1000000}}`
+	if err := os.WriteFile(filepath.Join(m.deps.ConfigDir, "models.json"), []byte(list), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.api.Models = binding.New(m.deps.ConfigDir, &testExecutor{})
+	if err := m.api.Models.Apply(testConfig()); err != nil {
+		t.Fatal(err)
+	}
+	requireContains(t, frame(m), "deepseek/deepseek-v4-flash · 思考 自动 · 上下文 1M · ↑233K ↓58K")
+	narrow := m
+	narrow.width = 120
+	requireContains(t, frame(narrow), "Esc 返回", "deepseek/deepseek-v4-flash · 思考 自动 · 上下文 1M")
 	m.bench.snap.Usage = workbench.TeamUsage{}
 	if view := frame(m); strings.Contains(view, "↑233K") || !strings.Contains(view, "deepseek-v4-flash") {
 		t.Fatal("no usage yet must show only the model")
@@ -814,5 +858,17 @@ func TestUserActionsEchoOnTheRunTimeline(t *testing.T) {
 	m.bench.addEcho("你把修订预算调到 3 次")
 	if len(m.bench.echoes) != 1 || m.bench.echoRun != "next" {
 		t.Fatalf("a new run starts a fresh echo list: %#v", m.bench.echoes)
+	}
+}
+
+// 上下文窗口按厂商的写法：整千按 1000 进位，2 的幂按 1024 进位。
+func TestFormatWindowFollowsHowVendorsQuoteIt(t *testing.T) {
+	for n, want := range map[int]string{
+		1000000: "1M", 1048576: "1M", 2000000: "2M", 1500000: "1.5M",
+		200000: "200K", 256000: "256K", 131072: "128K", 163840: "160K", 32768: "32K",
+	} {
+		if got := formatWindow(n); got != want {
+			t.Errorf("formatWindow(%d) = %q, want %q", n, got, want)
+		}
 	}
 }

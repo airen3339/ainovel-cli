@@ -123,22 +123,22 @@ func (m model) benchHeader(l benchLayout) []string {
 		title = m.bench.projectID
 	}
 	done, length := len(m.bench.snap.Manuscript), m.bench.snap.Length
-	right := m.benchStateBadge() + benchTheme.Muted.Render("  ·  "+progressLabel(done, length)) + " "
+	right := m.benchStateBadge() + benchTheme.Muted.Render("  ·  "+progressLabel(done, chapterCount(m.bench.snap), length)) + " "
 	brand := " " + benchTheme.Accent.Bold(true).Render("AINOVEL") + benchTheme.Muted.Render("  /  ")
 	left := brand + benchTheme.Title.Render(truncate(title, max(4, l.width-lipgloss.Width(right)-lipgloss.Width(brand)-2)))
 	return []string{alignRight(left, right, l.width), progressRule(done, length.Final, l.width)}
 }
 
 // progressLabel 是头部的入稿进度（D63 三态）：全书章数已知时给分母，AI 收官后注明；
-// 开放期只有已入稿章数与预计篇幅。
-func progressLabel(done int, length novel.Length) string {
+// 开放期还有已规划到第几章与预计篇幅（滚动规划，D73）。
+func progressLabel(done, planned int, length novel.Length) string {
 	switch {
 	case length.Final > 0 && length.Fixed == 0:
 		return fmt.Sprintf("已入稿 %d / %d 章 · 收官", done, length.Final)
 	case length.Final > 0:
 		return fmt.Sprintf("已入稿 %d / %d 章", done, length.Final)
-	case length.Fixed == 0 && length.Compass != nil && length.Compass.ScaleMax > 0:
-		return fmt.Sprintf("已入稿 %d 章 · 预计 %d", done, length.Compass.ScaleMax)
+	case length.Compass != nil && length.Compass.ScaleMax > 0:
+		return fmt.Sprintf("已入稿 %d 章 · 已规划 %d · 预计 %d", done, planned, length.Compass.ScaleMax)
 	default:
 		return fmt.Sprintf("已入稿 %d 章 · 篇幅待定", done)
 	}
@@ -338,6 +338,7 @@ func (m model) benchFooter(l benchLayout) []string {
 	case b.notice != "":
 		feedback = benchTheme.Accent.Render(oneLine(b.notice))
 	}
+	hints := m.actionHints()
 	rule := benchRule(l.width)
 	if strings.TrimSpace(ansi.Strip(feedback)) != "" {
 		feedback = truncate(feedback, inner-4)
@@ -346,7 +347,7 @@ func (m model) benchFooter(l benchLayout) []string {
 	return []string{
 		rule,
 		" " + alignRight(input.View(), context, inner),
-		" " + alignRight(m.actionHints(), m.usageLabel(l), inner),
+		" " + alignRight(hints, m.usageLabel(l, inner-lipgloss.Width(hints)-2), inner),
 	}
 }
 
@@ -376,13 +377,14 @@ func (m model) composerContext() string {
 	return benchTheme.Accent.Render("要求 · " + target)
 }
 
-// usageLabel 模型名与全书累计用量；没有用量、或右栏已在分列展示时只显示模型。
-func (m model) usageLabel(l benchLayout) string {
+// usageLabel 模型摘要与全书累计用量，占提示之外的宽度，放不下时截掉尾部；没有用量、
+// 或右栏已在分列展示时只显示模型摘要。
+func (m model) usageLabel(l benchLayout, room int) string {
 	parts := []string{m.bindingLabel()}
 	if total := m.bench.snap.Usage.Total; total.Input > 0 && l.railWidth == 0 {
 		parts = append(parts, spendLine(total))
 	}
-	return benchTheme.Muted.Render(truncate(strings.Join(parts, " · "), (l.width-2)/2))
+	return benchTheme.Muted.Render(truncate(strings.Join(parts, " · "), room))
 }
 
 type benchAction struct{ key, label string }

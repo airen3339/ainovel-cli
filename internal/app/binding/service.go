@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -29,10 +30,14 @@ type Service struct {
 	dir    string
 	config appconfig.Config
 	binder Binder
+	facts  *models.Facts
 }
 
+// New 装配绑定用例，并读本地的模型清单：绑定时据此给模型附上标价，用量随之计花费。
 func New(dir string, binder Binder) *Service {
-	return &Service{dir: dir, binder: binder}
+	facts := models.NewFacts(filepath.Join(dir, "models.json"))
+	facts.Read()
+	return &Service{dir: dir, binder: binder, facts: facts}
 }
 
 // Selection 是某个角色当前生效的绑定。
@@ -42,8 +47,10 @@ type Selection struct {
 	Provider   string `json:"provider"`
 	Model      string `json:"model"`
 	Thinking   string `json:"thinking,omitempty"`
-	Inherited  bool   `json:"inherited,omitempty"` // 角色未覆盖，跟随默认
-	Bound      bool   `json:"bound"`
+	// ContextWindow 是模型的上下文窗口（token），模型清单里查不到为 0。
+	ContextWindow int  `json:"context_window,omitempty"`
+	Inherited     bool `json:"inherited,omitempty"` // 角色未覆盖，跟随默认
+	Bound         bool `json:"bound"`
 }
 
 // Choice 是配置里一条可切换的「连接 / 模型」。
@@ -176,8 +183,24 @@ func (s *Service) Current(role string) Selection {
 	if pc, err := s.config.Connection(selection.Connection); err == nil {
 		selection.Provider = pc.Type
 	}
+	selection.ContextWindow = s.facts.ContextWindow(selection.Provider, selection.Model)
 	selection.Bound = s.binder != nil && s.binder.Bound()
 	return selection
+}
+
+// RefreshFacts 本地模型清单缺失或过期时联网更新，更新后重绑：之后开始的尝试按新清单
+// 计花费（D57 的换绑语义，正在执行的尝试不变）。取不到不影响创作，只是没有上下文窗口与花费。
+func (s *Service) RefreshFacts(ctx context.Context) error {
+	updated, err := s.facts.Refresh(ctx)
+	if !updated {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.binder == nil || !s.binder.Bound() {
+		return err
+	}
+	return errors.Join(err, s.bindLocked(s.config))
 }
 
 // Levels 返回某连接/模型可选的思考档位；构建失败时给全部档位，由执行时折算。
@@ -241,6 +264,7 @@ func Verify(ctx context.Context, config appconfig.Config) error {
 }
 
 // build 按配置构建整套绑定：默认一套，角色覆盖各一套；同一「连接 / 模型 / 强度」复用实例。
+// 模型清单有标价时附上，用量按它计花费。
 func (s *Service) build(config appconfig.Config) (models.Bindings, error) {
 	if s.binder == nil {
 		return models.Bindings{}, errors.New("model runtime is not assembled")
@@ -265,6 +289,7 @@ func (s *Service) build(config appconfig.Config) (models.Bindings, error) {
 		if err != nil {
 			return models.Binding{}, err
 		}
+		binding.Chat.Pricing = s.facts.Pricing(modelConfig.Provider, model)
 		built[key] = binding
 		return binding, nil
 	}

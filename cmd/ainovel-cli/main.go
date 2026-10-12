@@ -120,6 +120,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 	// 终止信号取消 ctx：在途创作收到取消后把任务放回队列再退出，不留悬空租约。
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// 模型清单只关系到上下文窗口与花费的显示，后台更新，取不到不耽误创作。
+	go func() { _ = api.Models.RefreshFacts(ctx) }()
 	var runErr error
 	if *headlessMode {
 		runErr = headless.Run(ctx, api, commands, stdout, stderr)

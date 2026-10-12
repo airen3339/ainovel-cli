@@ -78,7 +78,7 @@ func TestModelPanelSwitchesConnectionModelAndThinking(t *testing.T) {
 func TestModelPanelRoleOverrideAndFollowDefault(t *testing.T) {
 	m := modelPanelFixture(t)
 	m, _ = submit(t, m, "/model writer")
-	requireContains(t, frame(m), "‹ 作者 writer ›", "跟随默认")
+	requireContains(t, frame(m), "‹ Writer ›", "跟随默认")
 	// 角色行的连接首项是「跟随默认」；向右一格才是真实连接。
 	m, _ = press(t, m, tea.KeyDown)
 	m, _ = press(t, m, tea.KeyRight)
@@ -86,13 +86,13 @@ func TestModelPanelRoleOverrideAndFollowDefault(t *testing.T) {
 	m, _ = press(t, m, tea.KeyRight)
 	requireContains(t, frame(m), "‹ deepseek-reasoner ›")
 	m, _ = press(t, m, tea.KeyEnter)
-	if m.bench.notice != "已切换：作者 writer → deepseek/deepseek-reasoner · 思考 高 · 当前任务写完后生效" {
+	if m.bench.notice != "已切换：Writer → deepseek/deepseek-reasoner · 思考 高 · 当前任务写完后生效" {
 		t.Fatalf("notice = %q", m.bench.notice)
 	}
 	if saved := savedConfig(t, m); saved.Roles["writer"] != (appconfig.RoleConfig{Provider: "deepseek", Model: "deepseek-reasoner"}) || saved.Model != "deepseek-v4-flash" {
 		t.Fatalf("saved = %#v", saved)
 	}
-	requireContains(t, frame(m), "deepseek-v4-flash · 思考 高 · 角色 1")
+	requireContains(t, frame(m), "deepseek/deepseek-v4-flash · 思考 高 · 角色 1")
 	// 再打开时预选已覆盖的连接；换回「跟随默认」清除覆盖。
 	m, _ = submit(t, m, "/model writer")
 	requireContains(t, frame(m), "deepseek-reasoner")
@@ -100,7 +100,7 @@ func TestModelPanelRoleOverrideAndFollowDefault(t *testing.T) {
 	m, _ = press(t, m, tea.KeyLeft)
 	requireContains(t, frame(m), "‹ 跟随默认 ›")
 	m, _ = press(t, m, tea.KeyEnter)
-	if !strings.HasPrefix(m.bench.notice, "已切换：作者 writer → 跟随默认（deepseek/deepseek-v4-flash）") {
+	if !strings.HasPrefix(m.bench.notice, "已切换：Writer → 跟随默认（deepseek/deepseek-v4-flash）") {
 		t.Fatalf("notice = %q", m.bench.notice)
 	}
 	if saved := savedConfig(t, m); len(saved.Roles) != 0 {
