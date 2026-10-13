@@ -82,10 +82,13 @@ func requirements(project projectdoc.Snapshot, final int) (list []requirement, d
 		if directive.Scope != model.DirectiveScopeProject {
 			scopeLabel = story.DescribeScope(directive)
 		}
-		add(requirement{Requirement: model.Requirement{ID: "directive:" + directive.ID, Text: directive.Text}, scope: scopeLabel, covers: covers, end: end})
+		add(requirement{Requirement: model.Requirement{ID: DirectiveRequirementID(directive.ID), Text: directive.Text}, scope: scopeLabel, covers: covers, end: end})
 	}
 	return list, dropped
 }
+
+// DirectiveRequirementID 是用户要求在审阅核验项里的 ID。
+func DirectiveRequirementID(directiveID string) string { return "directive:" + directiveID }
 
 // ChapterRequirement 是覆盖某一章的一项要求：与审阅闸门同一份清单、同一覆盖规则。
 type ChapterRequirement struct {

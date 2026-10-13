@@ -118,9 +118,10 @@ func NewConversation(config ConversationConfig) (*Conversation, error) {
 type Message = agentcore.Message
 
 // UserMessage 是用户的一句话：前一块是宿主渲染的书况，后一块是用户的原话。界面与引用
-// 校验只认后一块。
+// 校验只认后一块。分界也写进文字：有的服务会把多个文字块首尾相接成一段，用户的话就读成
+// 了书况的末尾。
 func UserMessage(brief, words string) Message {
-	return agentcore.User(litellm.Text(brief), litellm.Text(words))
+	return agentcore.User(litellm.Text(brief+"\n\n【用户的话】\n"), litellm.Text(words))
 }
 
 // Send 以 binding 跑一次，直到主编停下、ctx 取消或出错。

@@ -245,6 +245,12 @@ func (s *Coordinator) drive(
 		if err != nil {
 			return Outcome{}, err
 		}
+		if operation.State == model.OperationAwaitingApproval {
+			// 等待期间作品变了：候选不再成立就转 stale，下一轮由后继按当前内容重做。
+			if operation, err = tasks.Revalidate(ctx, operation, clock.next()); err != nil {
+				return Outcome{}, err
+			}
+		}
 		if operation.State == model.OperationQueued {
 			ran, err := tasks.Run(ctx, work, operation, command.WorkerID, command.LeaseDuration, clock.next())
 			// 暂停、进程退出等取消不是创作失败：引擎已把任务放回队列，Run 的状态由取消方决定
@@ -293,7 +299,7 @@ func (s *Coordinator) drive(
 			settled, err := s.settleRun(ctx, run, model.RunTransition{To: model.RunCancelled, Reason: reasonCancelJob}, clock.next())
 			return Outcome{Run: settled, Revision: decision.Revision}, err
 		case model.OperationStale:
-			// 控制收紧或基线漂移导致失效：下一轮由 ensureChainedOperation 安全迁移到后继。
+			// 控制收紧、基线漂移或等待期间作品变了：下一轮由 ensureChainedOperation 安全迁移到后继。
 		case model.OperationRunning:
 			return Outcome{}, fmt.Errorf("operation %q: %w", operation.ID, model.ErrOperationHeld)
 		}

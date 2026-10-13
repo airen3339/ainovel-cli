@@ -29,6 +29,7 @@ type Store interface {
 		kind, key string,
 	) (model.DerivedDocument, error)
 	GetProposalByOperation(ctx context.Context, operationID string) (model.Proposal, error)
+	TransitionOperation(ctx context.Context, id string, from, to model.OperationState, message string, now time.Time) (model.Operation, error)
 	RenewOperationLease(ctx context.Context, id, workerID string, attempt int, leaseDuration time.Duration, now time.Time) (model.Operation, error)
 	SaveExecutionArtifacts(ctx context.Context, artifacts []model.Artifact, operationID string, attempt int) error
 	SaveExecutionDerivedDocument(

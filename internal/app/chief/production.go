@@ -121,27 +121,45 @@ func (s *Session) stop() {
 }
 
 func (s *Service) write(ctx context.Context, projectID, userID string, params WriteParams) (novel.QuickWriteResult, error) {
-	now := time.Now().UTC()
-	premise := params.Premise
 	if params.Intent != nil {
 		if _, err := s.projects.CreateProject(ctx, projectdoc.CreateProjectCommand{
 			ProjectID: projectID, ChangeID: projectID + ":create", UserID: userID, Reason: "完善设定后创建作品",
-			Draft: projectdoc.ProjectDraft{Intent: *params.Intent, Approval: params.Approval}, CreatedAt: now,
+			Draft: projectdoc.ProjectDraft{Intent: *params.Intent, Approval: params.Approval}, CreatedAt: time.Now().UTC(),
 		}); err != nil {
 			return novel.QuickWriteResult{}, err
 		}
-		premise = params.Intent.Premise
+		params.Premise = params.Intent.Premise
 	}
+	command, err := s.command(ctx, projectID, userID, params)
+	if err != nil {
+		return novel.QuickWriteResult{}, err
+	}
+	return s.novels.QuickWrite(ctx, command)
+}
+
+// round 是这本书接下来的工作归属的那一轮创作：进行中的那一轮；已完本或停止的开新一轮
+// （D29：完本之后的修改是新一轮创作），篇幅沿用。不推进。
+func (s *Service) round(ctx context.Context, projectID, userID string) (model.CreationRun, error) {
+	command, err := s.command(ctx, projectID, userID, WriteParams{Chapters: novel.KeepChapters})
+	if err != nil {
+		return model.CreationRun{}, err
+	}
+	return s.novels.EnsureRun(ctx, command)
+}
+
+// command 是一次推进的命令：没给前提时取作品的。
+func (s *Service) command(ctx context.Context, projectID, userID string, params WriteParams) (novel.QuickWriteCommand, error) {
+	premise := params.Premise
 	if premise == "" {
 		project, err := s.projects.Project(ctx, projectID, model.InitialRevision)
 		if err != nil {
-			return novel.QuickWriteResult{}, fmt.Errorf("read premise: %w", err)
+			return novel.QuickWriteCommand{}, fmt.Errorf("read premise: %w", err)
 		}
 		premise = project.Intent.Premise
 	}
-	return s.novels.QuickWrite(ctx, novel.QuickWriteCommand{
+	return novel.QuickWriteCommand{
 		ProjectID: projectID, UserID: userID, Premise: premise,
 		Chapters: params.Chapters, Extend: params.Extend, RenewRepairBudget: params.Renew, Approval: params.Approval,
-		WorkerID: "desk-" + userID, CreatedAt: now,
-	})
+		WorkerID: "desk-" + userID, CreatedAt: time.Now().UTC(),
+	}, nil
 }

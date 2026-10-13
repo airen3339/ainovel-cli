@@ -128,6 +128,27 @@ func (s *Story) fact(subjectID, predicate, sourceChapterID string) (model.CanonF
 	return model.CanonFact{}, false
 }
 
+// namesake 说出用这个谓词的现有事实（主体与来源章），让引用错了的一方照着改。事件按主体、
+// 谓词与来源章区分，引用时要给章号。
+func (s *Story) namesake(predicate string) string {
+	var found []string
+	for _, fact := range s.content.Canon {
+		if fact.Predicate != predicate {
+			continue
+		}
+		view := s.factView(fact)
+		label := "「" + view.Subject + "」" + view.Predicate
+		if view.Chapter > 0 {
+			label += fmt.Sprintf("（chapter=%d）", view.Chapter)
+		}
+		found = append(found, label)
+	}
+	if len(found) == 0 {
+		return "没有用这个谓词的事实"
+	}
+	return "用这个谓词的事实有：" + strings.Join(found, "、")
+}
+
 // Apply 返回应用补丁后的故事；标签查不到的文档（被删除的）回退到当前故事。
 func (s *Story) Apply(patches []model.Patch) (*Story, error) {
 	plan := byID(s.content.Plan, func(v model.PlanNode) string { return v.ID })

@@ -45,11 +45,13 @@ type ChapterEdit struct {
 	Summary string `json:"summary,omitempty"`
 }
 
-// EntityEdit 按本名定位：已有实体合并别名，否则新建。
+// EntityEdit 按本名定位：已有实体合并别名，否则新建。Rename 把已有实体改叫别的本名（用户
+// 说它其实叫别的、其实是别的东西）；这次修改里新旧两个名字都指它。
 type EntityEdit struct {
 	Name    string           `json:"name"`
 	Kind    model.EntityKind `json:"kind"`
 	Aliases []string         `json:"aliases,omitempty"`
+	Rename  string           `json:"rename,omitempty"`
 }
 
 // FactEdit 写入一条事实；种类由谓词前缀决定。Chapter 是来源章，单章任务由宿主填。
@@ -235,6 +237,7 @@ func (r *resolver) entities(edits []EntityEdit) error {
 			return fmt.Errorf("实体「%s」提交了两次: %w", name, model.ErrInvalid)
 		}
 		entity, err := r.story.entity(name)
+		rename := strings.TrimSpace(edit.Rename)
 		changed := true
 		switch {
 		case err == nil && entity.Name != name:
@@ -246,14 +249,28 @@ func (r *resolver) entities(edits []EntityEdit) error {
 					aliases = append(aliases, alias)
 				}
 			}
-			changed = edit.Kind != entity.Kind || len(aliases) != len(entity.Aliases)
-			entity.Kind, entity.Aliases = edit.Kind, aliases
+			changed = edit.Kind != entity.Kind || len(aliases) != len(entity.Aliases) || rename != "" && rename != entity.Name
+			entity.Kind, entity.Aliases = edit.Kind, slices.DeleteFunc(aliases, func(alias string) bool { return alias == rename })
+			if rename != "" {
+				entity.Name = rename
+			}
+		case errors.Is(err, model.ErrNotFound) && rename != "":
+			return fmt.Errorf("实体「%s」不存在，无从改名: %w", name, model.ErrInvalid)
 		case errors.Is(err, model.ErrNotFound):
 			entity = model.Entity{ID: r.ids.allocate(entityPrefix), Kind: edit.Kind, Name: name, Aliases: edit.Aliases}
 		default:
 			return err
 		}
+		// 一个名字只指一个实体：本名与别名不得是别的实体的名字。
 		for _, known := range append([]string{entity.Name}, entity.Aliases...) {
+			if owner, ok := r.names[known]; ok && owner != entity.ID {
+				return fmt.Errorf("「%s」在这次修改里已指别的实体: %w", known, model.ErrInvalid)
+			}
+			if other, err := r.story.entity(known); err == nil && other.ID != entity.ID {
+				return fmt.Errorf("「%s」已是实体「%s」的名字；要让「%s」改叫别的，用 rename: %w", known, other.Name, other.Name, model.ErrInvalid)
+			}
+		}
+		for _, known := range append([]string{name, entity.Name}, entity.Aliases...) {
 			r.names[known] = entity.ID
 		}
 		// 没有变化就不写：锁定的实体被原样引用不算改动。
@@ -392,7 +409,7 @@ func (r *resolver) references(refs []FactRef, confirm bool) error {
 		}
 		fact, exists := r.story.fact(subject, ref.Predicate, source)
 		if !exists {
-			return fmt.Errorf("没有这条事实：「%s」%s: %w", ref.Subject, ref.Predicate, model.ErrInvalid)
+			return fmt.Errorf("没有这条事实：「%s」%s；%s: %w", ref.Subject, ref.Predicate, r.story.namesake(ref.Predicate), model.ErrInvalid)
 		}
 		if err := r.touch(fact, ref.Subject); err != nil {
 			return err

@@ -277,7 +277,8 @@ func (m model) decisionCard(width int) []string {
 		summary = m.candidateSummary()
 		actions = m.decisionActions() + " · 回车查看全部"
 		if d.stale {
-			summary = benchTheme.Warning.Render("基线已过期 · 稿件完成后书又有了新变化，不能直接通过")
+			actions = m.decisionActions()
+			summary = benchTheme.Warning.Render("已过时 · 稿件完成后书又有了新变化，不能直接通过")
 		}
 	}
 	return []string{

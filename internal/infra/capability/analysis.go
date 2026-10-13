@@ -8,6 +8,7 @@ import (
 
 	"github.com/voocel/ainovel-cli/internal/domain/change"
 	"github.com/voocel/ainovel-cli/internal/domain/model"
+	"github.com/voocel/ainovel-cli/internal/domain/narrative"
 	"github.com/voocel/ainovel-cli/internal/infra/capability/prompt"
 	"github.com/voocel/ainovel-cli/internal/infra/llm"
 	"github.com/voocel/litellm"
@@ -66,51 +67,37 @@ func (r *Runtime) AnalyzePreference(ctx context.Context, input model.PreferenceL
 	return candidate, nil
 }
 
+// Analyze 判断改动与已写的故事是否冲突（S4）。分析器只看故事语言（D66）：改前改后的那几处、
+// 可能受牵连的章节正文与设定，章节按章号说，宿主再换回文档引用。
 func (r *Runtime) Analyze(
 	ctx context.Context,
 	proposal model.Proposal,
 	structural change.StructuralImpact,
 ) (json.RawMessage, error) {
-	type authorityDocument struct {
-		Ref     model.DocumentRef `json:"ref"`
-		Content json.RawMessage   `json:"content"`
-	}
-	documents := make([]authorityDocument, 0, len(structural.Direct)+len(structural.Affected))
-	refs := append(append([]model.DocumentRef(nil), structural.Direct...), structural.Affected...)
-	for _, ref := range refs {
-		document, err := r.store.GetDocument(ctx, proposal.Target, ref, proposal.BaseRevision)
-		if errors.Is(err, model.ErrNotFound) {
-			continue
-		}
-		if err != nil {
-			return nil, err
-		}
-		documents = append(documents, authorityDocument{Ref: ref, Content: document.Content})
-	}
-	input, err := json.Marshal(struct {
-		Proposal   model.Proposal          `json:"proposal"`
-		Structural change.StructuralImpact `json:"structural_impact"`
-		Documents  []authorityDocument     `json:"base_documents"`
-	}{Proposal: proposal, Structural: structural, Documents: documents})
-	if err != nil {
-		return nil, fmt.Errorf("encode semantic impact input: %w", err)
-	}
-	cacheKey, err := prompt.CacheKey(proposal.Target.ID, "semantic.impact@1", model.Digest(input), proposal.ID)
+	story, err := r.storyAt(ctx, proposal.Target, proposal.BaseRevision)
 	if err != nil {
 		return nil, err
 	}
-	documentSchema := map[string]any{
-		"type":       "object",
-		"properties": map[string]any{"kind": map[string]any{"type": "string"}, "id": map[string]any{"type": "string"}},
-		"required":   []string{"kind", "id"}, "additionalProperties": false,
+	impact, err := story.Impact(proposal.Reason, proposal.Patches, structural.Direct, structural.Affected)
+	if err != nil {
+		return nil, err
+	}
+	input, err := json.Marshal(impact)
+	if err != nil {
+		return nil, fmt.Errorf("encode semantic impact input: %w", err)
+	}
+	cacheKey, err := prompt.CacheKey(proposal.Target.ID, "semantic.impact@2", model.Digest(input), proposal.ID)
+	if err != nil {
+		return nil, err
 	}
 	binding, ok := r.bindingFor("")
 	if !ok {
 		return nil, fmt.Errorf("%w: model is not bound", change.ErrSemanticUnavailable)
 	}
-	var report model.SemanticImpactReport
+	chapters := map[string]any{"type": "array", "items": map[string]any{"type": "integer", "minimum": 1}}
+	var report narrative.ImpactReport
 	if _, err := llm.Structured(ctx, binding, llm.Call{
-		System: "你是小说变更影响分析器。判断候选变更与已经发生的故事事实、人物动机和因果链是否冲突。consistent 时 findings/options 必须为空；conflict 或 uncertain 时必须给出 rewrite_affected、reinterpret_future、abandon 三种明确选项。不得替用户作决定。",
+		System: "你是小说变更影响分析器。对照改前改后与已写章节，判断这次改动与已经发生的故事事实、人物动机和因果链是否冲突。consistent 时 findings/options 必须为空；conflict 或 uncertain 时必须给出 rewrite_affected、reinterpret_future、abandon 三种明确选项，rewrite_affected 列出要重写的章号。章节一律按章号说。不得替用户作决定。",
 		Input:  string(input),
 		Schema: llm.Schema{
 			Name: "story_semantic_impact", Description: "分析故事变更的语义影响和可选处理方案",
@@ -120,13 +107,14 @@ func (r *Runtime) Analyze(
 					"status": map[string]any{"type": "string", "enum": []string{"consistent", "conflict", "uncertain"}},
 					"findings": map[string]any{"type": "array", "items": map[string]any{
 						"type": "object", "properties": map[string]any{
-							"document": documentSchema, "explanation": map[string]any{"type": "string"},
+							"chapter":     map[string]any{"type": "integer", "minimum": 1, "description": "出入所在的章号；不落在某一章时省略"},
+							"explanation": map[string]any{"type": "string"},
 						}, "required": []string{"explanation"}, "additionalProperties": false,
 					}},
 					"options": map[string]any{"type": "array", "items": map[string]any{
 						"type": "object", "properties": map[string]any{
 							"strategy":    map[string]any{"type": "string", "enum": []string{"rewrite_affected", "reinterpret_future", "abandon"}},
-							"chapter_ids": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+							"chapters":    chapters,
 							"explanation": map[string]any{"type": "string"},
 						}, "required": []string{"strategy", "explanation"}, "additionalProperties": false,
 					}},
@@ -138,10 +126,14 @@ func (r *Runtime) Analyze(
 	}, &report); err != nil {
 		return nil, err
 	}
-	if err := report.Validate(); err != nil {
+	converted, err := story.Report(report)
+	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(report)
+	if err := converted.Validate(); err != nil {
+		return nil, err
+	}
+	return json.Marshal(converted)
 }
 
 func (r *Runtime) AnalyzeSemanticCompliance(

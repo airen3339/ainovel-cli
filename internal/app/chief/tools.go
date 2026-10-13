@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -78,8 +79,9 @@ func (s *Session) tools() []tool {
 			"type":"object","properties":{"chapter":{"type":"integer","minimum":1}},
 			"required":["chapter"],"additionalProperties":false}`, s.reviews),
 		define(toolDraft, "看等用户决定的稿件：为什么等用户、改了什么，候选章节通过后的规划、全文与设定", empty, s.draft),
-		define(toolNote, "把用户对之后怎么写的要求记下来：之后作用域内的写作都会看到它，审阅逐条核验。"+
-			"text 逐字摘自用户的话；scope 省略即全书。只记要求，不要把对已有内容的修改记成要求", `{
+		define(toolNote, "把用户对怎么写的要求记下来：之后作用域内的写作都会看到它，审阅逐条核验。"+
+			"text 逐字摘自用户的话；scope 省略即全书。用户说已入稿的章不满足、要按这条重写时，rework 为 true，作用域里已入稿的章会按它重写；等用户决定的稿件不满意用 reject_draft。"+
+			"改大纲、设定这类对已有内容的修改用 propose_change，不记成要求", `{
 			"type":"object",
 			"properties":{
 				"text":{"type":"string","minLength":1,"description":"用户的原话，逐字摘录，可以只摘与这条要求有关的部分"},
@@ -94,7 +96,8 @@ func (s *Session) tools() []tool {
 					"additionalProperties":false},
 				"target_words":{"type":"integer","minimum":1,"description":"每章字数目标（用户提到字数时）"},
 				"min_words":{"type":"integer","minimum":1},
-				"max_words":{"type":"integer","minimum":1}
+				"max_words":{"type":"integer","minimum":1},
+				"rework":{"type":"boolean","description":"用户明确要已入稿的正文按这条要求重写时为 true"}
 			},
 			"required":["text"],"additionalProperties":false}`, s.note),
 		define(toolRetire, "退掉一条要求（用户说不要了或记错了）；编号见 book_requirements", `{
@@ -175,10 +178,11 @@ func (s *Session) requirements(ctx context.Context, _ none) (string, error) {
 		Scope       string                      `json:"scope"`
 		Text        string                      `json:"text"`
 		Constraints *model.DirectiveConstraints `json:"constraints,omitempty"`
+		Rework      bool                        `json:"rework,omitempty"`
 	}
 	list := []requirement{}
 	for _, directive := range model.ActiveDirectives(project.Directives) {
-		list = append(list, requirement{directive.ID, story.DescribeScope(directive), directive.Text, directive.Constraints})
+		list = append(list, requirement{directive.ID, story.DescribeScope(directive), directive.Text, directive.Constraints, directive.Rework})
 	}
 	return encode(list)
 }
@@ -257,16 +261,43 @@ func (s *Session) draft(ctx context.Context, _ none) (string, error) {
 	}{decision.Reason, decision.Stale, decision.View, chapters})
 }
 
-// quote 校验 text 逐字出自用户说过的话（D74：引用即署名），返回最近那句话的来源引用。
-func (s *Session) quote(text string) (string, error) {
+// quote 校验 text 逐字出自用户说过的话（D74：引用即署名），返回用户的原文与最近那句话的
+// 来源引用。模型摘录时常把全角标点写成半角，比对不计标点的全半角，入账的是用户的写法。
+func (s *Session) quote(text string) (string, string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := len(s.said) - 1; i >= 0; i-- {
-		if strings.Contains(s.said[i].words, text) {
-			return model.ConversationSource(s.said[i].sequence), nil
+		if original, ok := excerpt(s.said[i].words, text); ok {
+			return original, model.ConversationSource(s.said[i].sequence), nil
 		}
 	}
-	return "", fmt.Errorf("「%s」不是用户说过的原话：以用户名义写入的文字必须逐字摘自用户的消息", text)
+	return "", "", fmt.Errorf("「%s」不是用户说过的原话：以用户名义写入的文字必须逐字摘自用户的消息", text)
+}
+
+// excerpt 在 words 里找 text（标点不计全半角），返回 words 里的那一段。
+func excerpt(words, text string) (string, bool) {
+	w, t := []rune(words), []rune(text)
+	for start := 0; start+len(t) <= len(w); start++ {
+		if slices.EqualFunc(w[start:start+len(t)], t, func(a, b rune) bool { return halfWidth(a) == halfWidth(b) }) {
+			return string(w[start : start+len(t)]), true
+		}
+	}
+	return "", false
+}
+
+// halfWidth 把全角字符与中文引号、句号归成半角，只用于比对。
+func halfWidth(r rune) rune {
+	switch {
+	case r >= '！' && r <= '～':
+		return r - 0xFEE0
+	case r == '。':
+		return '.'
+	case r == '“' || r == '”':
+		return '"'
+	case r == '‘' || r == '’':
+		return '\''
+	}
+	return r
 }
 
 type scopeArgs struct {
@@ -310,19 +341,31 @@ func (s *Session) note(ctx context.Context, args struct {
 	TargetWords int        `json:"target_words"`
 	MinWords    int        `json:"min_words"`
 	MaxWords    int        `json:"max_words"`
+	Rework      bool       `json:"rework"`
 }) (string, error) {
-	text := strings.TrimSpace(args.Text)
-	source, err := s.quote(text)
+	text, source, err := s.quote(strings.TrimSpace(args.Text))
 	if err != nil {
 		return "", err
 	}
-	_, story, err := s.project(ctx)
+	project, story, err := s.project(ctx)
 	if err != nil {
 		return "", err
 	}
 	scope, err := args.Scope.resolve(story)
 	if err != nil {
 		return "", err
+	}
+	reworked := 0
+	if args.Rework {
+		plans, directive := model.IndexPlan(project.Plan), model.Directive{Scope: scope}
+		for _, chapter := range project.Manuscript {
+			if directive.Covers(model.DirectiveTarget{ChapterNumber: chapter.Number, PlanNodeIDs: plans.Ancestry(chapter.PlanNodeID)}) {
+				reworked++
+			}
+		}
+		if reworked == 0 {
+			return "", errors.New("作用域里还没有入稿的章，不用返工：等用户决定的稿件不满意用 reject_draft 退回，其余去掉 rework 记成之后写作的要求")
+		}
 	}
 	var constraints *model.DirectiveConstraints
 	if args.TargetWords+args.MinWords+args.MaxWords > 0 {
@@ -331,12 +374,16 @@ func (s *Session) note(ctx context.Context, args struct {
 	now := time.Now().UTC()
 	result, err := s.service.projects.AddDirective(ctx, projectdoc.AddDirectiveCommand{
 		ProjectID: s.projectID, ChangeID: projectdoc.NewID("directive", now), UserID: s.userID,
-		Scope: scope, Text: text, Constraints: constraints, Source: source, Reason: "主编记下用户的要求", CreatedAt: now,
+		Scope: scope, Text: text, Constraints: constraints, Source: source, Rework: args.Rework, Reason: "主编记下用户的要求", CreatedAt: now,
 	})
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("记下要求 · %s ·「%s」", story.DescribeScope(result.Directive), text), nil
+	receipt := fmt.Sprintf("记下要求 · %s ·「%s」", story.DescribeScope(result.Directive), text)
+	if reworked > 0 {
+		receipt += fmt.Sprintf(" · 已写的 %d 章按它重写", reworked)
+	}
+	return s.settled(ctx, receipt, reworked > 0)
 }
 
 func (s *Session) retire(ctx context.Context, args struct {
@@ -357,7 +404,7 @@ func (s *Session) retire(ctx context.Context, args struct {
 		}); err != nil {
 			return "", err
 		}
-		return "退掉要求 ·「" + directive.Text + "」", nil
+		return s.settled(ctx, "退掉要求 ·「"+directive.Text+"」", false)
 	}
 	return "", fmt.Errorf("没有生效中的要求 %q，先用 book_requirements 查编号", args.ID)
 }
@@ -365,8 +412,7 @@ func (s *Session) retire(ctx context.Context, args struct {
 func (s *Session) reject(ctx context.Context, args struct {
 	Reason string `json:"reason"`
 }) (string, error) {
-	reason := strings.TrimSpace(args.Reason)
-	source, err := s.quote(reason)
+	reason, source, err := s.quote(strings.TrimSpace(args.Reason))
 	if err != nil {
 		return "", err
 	}

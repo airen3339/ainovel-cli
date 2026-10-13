@@ -54,3 +54,16 @@ func TestConversationHistoryResumesFromTheLatestSummary(t *testing.T) {
 		t.Fatalf("entries = %+v", entries)
 	}
 }
+
+// 有的服务把多个文字块首尾相接成一段：书况与用户的话之间的分界写在文字里，接起来也分得清；
+// 界面与引用校验仍只拿到用户的原话。
+func TestUserWordsStayApartWhenBlocksAreJoined(t *testing.T) {
+	message := UserMessage("【书况】宿主此刻的记录\n生效的要求：0 条", "每章两千字左右")
+	joined := ""
+	for _, block := range message.Blocks {
+		joined += block.(litellm.TextBlock).Text
+	}
+	if joined != "【书况】宿主此刻的记录\n生效的要求：0 条\n\n【用户的话】\n每章两千字左右" || UserWords(message) != "每章两千字左右" {
+		t.Fatalf("joined = %q, words = %q", joined, UserWords(message))
+	}
+}

@@ -793,7 +793,9 @@ func usedJSONSchema(model *litellmtest.Provider) bool {
 	return len(requests) > 0 && requests[0].ResponseFormat != nil && requests[0].ResponseFormat.Type == litellm.ResponseFormatJSONSchema
 }
 
-func TestRuntimeAnalyzesSemanticImpactWithStrictContract(t *testing.T) {
+// 语义影响分析只看故事语言（D66）：改前改后的设定与可能受牵连的正文，章节按章号；结论里
+// 的章号由宿主换回正文引用。分析器看不到任何内部 ID。
+func TestRuntimeAnalyzesSemanticImpactInStoryLanguage(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
 	authorityStore, err := store.Open(ctx, filepath.Join(t.TempDir(), "ainovel.db"))
@@ -802,10 +804,25 @@ func TestRuntimeAnalyzesSemanticImpactWithStrictContract(t *testing.T) {
 	}
 	defer authorityStore.Close()
 	target := domainmodel.AuthorityTarget{Kind: domainmodel.AuthorityProject, ID: "semantic-book"}
-	seed := approvedRuntimeProposal("seed-semantic", target, 0, now, domainmodel.Patch{
-		Document: domainmodel.DocumentRef{Kind: domainmodel.DocumentIntent, ID: "root"}, Operation: domainmodel.PatchPut,
-		Content: json.RawMessage(`{"premise":"旧事实已经进入正文"}`),
-	})
+	put := func(kind domainmodel.DocumentKind, id string, value any) domainmodel.Patch {
+		content, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return domainmodel.Patch{Document: domainmodel.DocumentRef{Kind: kind, ID: id}, Operation: domainmodel.PatchPut, Content: content}
+	}
+	fact := domainmodel.CanonFact{
+		ID: "fact-key", Kind: domainmodel.CanonEvent, SubjectID: "hero", Predicate: "event.find",
+		Value: json.RawMessage(`"捡到一把铜钥匙"`), SourceChapterID: "chapter-1",
+	}
+	seed := approvedRuntimeProposal("seed-semantic", target, 0, now,
+		put(domainmodel.DocumentPlan, "plan-1", domainmodel.PlanNode{ID: "plan-1", Kind: domainmodel.PlanChapter, Order: 1, Title: "来信"}),
+		put(domainmodel.DocumentEntity, "hero", domainmodel.Entity{ID: "hero", Kind: domainmodel.EntityCharacter, Name: "陈渡"}),
+		put(domainmodel.DocumentManuscript, "chapter-1", domainmodel.ManuscriptChapter{
+			ID: "chapter-1", PlanNodeID: "plan-1", Number: 1, Blocks: []domainmodel.ManuscriptBlock{{ID: "b1", Text: "陈渡捡到一把铜钥匙。"}},
+		}),
+		put(domainmodel.DocumentCanon, "fact-key", fact),
+	)
 	pending := seed
 	pending.ApprovalState, pending.DecidedBy, pending.DecidedAt = domainmodel.ApprovalPending, nil, nil
 	if _, err := authorityStore.SaveProposal(ctx, pending); err != nil {
@@ -816,23 +833,22 @@ func TestRuntimeAnalyzesSemanticImpactWithStrictContract(t *testing.T) {
 	}
 	model := litellmtest.New(litellmtest.Text(`{
 		"status":"conflict",
-		"findings":[{"document":{"kind":"intent","id":"root"},"explanation":"新前提与旧前提冲突"}],
+		"findings":[{"chapter":1,"explanation":"第 1 章写的是铜钥匙"}],
 		"options":[
-			{"strategy":"rewrite_affected","chapter_ids":["chapter-1"],"explanation":"重写受影响章节"},
+			{"strategy":"rewrite_affected","chapters":[1],"explanation":"重写第 1 章"},
 			{"strategy":"reinterpret_future","explanation":"在后文重新解释"},
 			{"strategy":"abandon","explanation":"放弃变更"}
 		]}`))
 	runtime := boundRuntime(authorityStore, testChat(model))
+	fact.Value = json.RawMessage(`"捡到一枚旧邮票"`)
 	proposal := domainmodel.Proposal{
 		ID: "semantic-change", Target: target, BaseRevision: 1,
-		Author: domainmodel.Author{Kind: domainmodel.AuthorUser, ID: "user-1"}, Reason: "修改前提",
-		Patches: []domainmodel.Patch{{
-			Document: domainmodel.DocumentRef{Kind: domainmodel.DocumentIntent, ID: "root"}, Operation: domainmodel.PatchPut,
-			Content: json.RawMessage(`{"premise":"新的前提"}`),
-		}}, ApprovalState: domainmodel.ApprovalPending, CreatedAt: now.Add(time.Minute),
+		Author: domainmodel.Author{Kind: domainmodel.AuthorUser, ID: "user-1"}, Reason: "钥匙改成邮票",
+		Patches: []domainmodel.Patch{put(domainmodel.DocumentCanon, "fact-key", fact)}, ApprovalState: domainmodel.ApprovalPending, CreatedAt: now.Add(time.Minute),
 	}
 	reportJSON, err := runtime.Analyze(ctx, proposal, change.StructuralImpact{
-		Direct: []domainmodel.DocumentRef{{Kind: domainmodel.DocumentIntent, ID: "root"}},
+		Direct:   []domainmodel.DocumentRef{{Kind: domainmodel.DocumentCanon, ID: "fact-key"}},
+		Affected: []domainmodel.DocumentRef{{Kind: domainmodel.DocumentManuscript, ID: "chapter-1"}},
 	})
 	if err != nil {
 		t.Fatalf("analyze semantic impact: %v", err)
@@ -840,6 +856,24 @@ func TestRuntimeAnalyzesSemanticImpactWithStrictContract(t *testing.T) {
 	var report domainmodel.SemanticImpactReport
 	if err := json.Unmarshal(reportJSON, &report); err != nil || report.Status != domainmodel.SemanticImpactConflict || !usedJSONSchema(model) {
 		t.Fatalf("report = %#v, schema = %v, error = %v", report, usedJSONSchema(model), err)
+	}
+	if document := report.Findings[0].Document; document == nil || *document != (domainmodel.DocumentRef{Kind: domainmodel.DocumentManuscript, ID: "chapter-1"}) ||
+		!slices.Equal(report.Options[0].ChapterIDs, []string{"chapter-1"}) {
+		t.Fatalf("report = %#v", report)
+	}
+	request, err := json.Marshal(model.Requests()[0].Messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"陈渡捡到一把铜钥匙", "捡到一把铜钥匙", "捡到一枚旧邮票"} {
+		if !strings.Contains(string(request), want) {
+			t.Fatalf("analyzer input misses %q: %s", want, request)
+		}
+	}
+	for _, id := range []string{"chapter-1", "plan-1", "fact-key", "hero", "b1"} {
+		if strings.Contains(string(request), `"`+id+`"`) {
+			t.Fatalf("analyzer input leaks %q: %s", id, request)
+		}
 	}
 }
 

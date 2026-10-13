@@ -21,7 +21,9 @@ type AddDirectiveCommand struct {
 	Text        string
 	Constraints *model.DirectiveConstraints
 	// Source 是主编代录时用户说这句话的对话消息（D74），用户直接录入为空。
-	Source    string
+	Source string
+	// Rework 声明作用域内已写的正文不满足这条要求，要按它重写（D78）。
+	Rework    bool
 	Reason    string
 	CreatedAt time.Time
 }
@@ -53,7 +55,7 @@ func (s *Repository) AddDirective(ctx context.Context, command AddDirectiveComma
 	}
 	directive := model.Directive{
 		ID: id, Scope: strings.TrimSpace(command.Scope), Text: strings.TrimSpace(command.Text),
-		Constraints: command.Constraints, Status: model.DirectiveActive, Source: command.Source,
+		Constraints: command.Constraints, Status: model.DirectiveActive, Source: command.Source, Rework: command.Rework,
 	}
 	if err := directive.Validate(); err != nil {
 		return DirectiveResult{}, err

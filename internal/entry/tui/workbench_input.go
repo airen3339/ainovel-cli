@@ -203,8 +203,9 @@ func (m model) submitInput() (tea.Model, tea.Cmd) {
 	return m.sendCmd(text)
 }
 
-// enterPane 空回车：正文焦点有稿件等你确认时看全部内容，创作停着时继续创作，否则全屏阅读当前
-// 内容；目录焦点折叠卷弧（尚未展开的空弧无动作）、全屏阅读选中章。批准必须由 y 明确确认。
+// enterPane 空回车：正文焦点有稿件等你确认时看全部内容（稿件过时了就按现在的内容重写），创作
+// 停着时继续创作，否则全屏阅读当前内容；目录焦点折叠卷弧（尚未展开的空弧无动作）、全屏阅读
+// 选中章。批准必须由 y 明确确认。
 func (m model) enterPane() (tea.Model, tea.Cmd) {
 	b := &m.bench
 	if b.pane == benchPaneOutline {
@@ -219,6 +220,9 @@ func (m model) enterPane() (tea.Model, tea.Cmd) {
 	}
 	if b.pane == benchPaneMain && b.snap.Change != nil {
 		return m.openChange(), nil
+	}
+	if b.pane == benchPaneMain && m.reviewing() && b.decision.stale {
+		return m.continueRun()
 	}
 	if b.pane == benchPaneMain && m.reviewing() {
 		return m.openReview(), nil
@@ -262,8 +266,8 @@ func (m model) approve() (tea.Model, tea.Cmd) {
 	case bench.writing:
 		bench.notice = "创作进行中，稿件写完后再裁决"
 	case bench.decision.stale:
-		// 过期稿件不能直接通过（会撞版本冲突）：只留重写路径。
-		bench.notice = "这份稿件完成后书又有了新变化，不能直接通过；跟主编说修改意见，让它基于最新内容重写"
+		// 过时的稿件不能直接通过（会撞版本冲突）：续跑时由后继按现在的内容重写（§5.5 第 4 条）。
+		bench.notice = "这份稿件完成后书又有了新变化，不能直接通过；回车按现在的内容重写"
 	default:
 		return m.decideCmd(true, "")
 	}

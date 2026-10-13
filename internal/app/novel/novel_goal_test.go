@@ -307,3 +307,53 @@ func assertStep(t *testing.T, project projectdoc.Snapshot, run model.CreationRun
 		}
 	}
 }
+
+// noteDirective 模拟用户在 revision 记下一条要求。
+func noteDirective(project *projectdoc.Snapshot, directive model.Directive, revision model.Revision) {
+	project.Directives = append(project.Directives, directive)
+	ref := model.DocumentRef{Kind: model.DocumentDirective, ID: directive.ID}
+	project.Index[ref.Key()] = projectdoc.DocumentEntry{Ref: ref, Revision: revision}
+}
+
+// rewritten 模拟一章在 revision 重写入稿：正文与随章事实一起前进。
+func rewritten(project *projectdoc.Snapshot, chapterID string, revision model.Revision) {
+	editChapter(project, chapterID, revision)
+	key := (model.DocumentRef{Kind: model.DocumentCanon, ID: chapterID + "-outcome"}).Key()
+	entry := project.Index[key]
+	entry.Revision = revision
+	project.Index[key] = entry
+}
+
+// 返工要求（D78）：作用域内、正文写在要求入账之前的章按章号逐一重写，先于审阅；重写过的
+// 不再返工；返工不计入自动修订预算。
+func TestReworkRewritesChaptersWrittenBeforeTheRequirement(t *testing.T) {
+	run := testRun(5, 1)
+	project := novelFixture(t, 3, 3)
+	noteDirective(&project, model.Directive{
+		ID: "rework", Scope: model.DirectiveScopeChapters(2, 3), Text: "太拖了，紧凑点重写", Status: model.DirectiveActive, Rework: true,
+	}, 3)
+	noteDirective(&project, model.Directive{
+		ID: "later", Scope: model.DirectiveScopeChapters(1, 3), Text: "多写雨声", Status: model.DirectiveActive,
+	}, 3)
+	for _, want := range []string{"chapter-ii", "chapter-iii"} {
+		next, err := Policy{}.Next(project, run, Evidence{})
+		if err != nil || next.Work == nil {
+			t.Fatalf("next = %#v, %v", next, err)
+		}
+		input, ok := next.Work.Input.(model.RewriteChapterInput)
+		if !ok || next.Work.ID != "run:book:1:rework:"+want+":r3" || input.ChapterID != want || !input.Rework || len(input.Findings) != 0 {
+			t.Fatalf("rework of %s = %#v", want, next.Work)
+		}
+		if err := input.Validate(); err != nil || len(input.Directives) != 2 || !strings.Contains(next.Work.Reasons.Start, "「太拖了，紧凑点重写」") {
+			t.Fatalf("rework input = %#v, %v", input, err)
+		}
+		if repairs := model.RepairChapters(&input); len(repairs) != 0 {
+			t.Fatalf("rework counted as a repair: %v", repairs)
+		}
+		rewritten(&project, want, 4)
+	}
+	next, err := Policy{}.Next(project, run, Evidence{})
+	if err != nil || next.Work == nil || next.Work.Kind != model.OperationReviewRange {
+		t.Fatalf("after rework = %#v, %v", next, err)
+	}
+}

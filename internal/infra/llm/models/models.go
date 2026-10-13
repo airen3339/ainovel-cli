@@ -143,6 +143,11 @@ func (b Binding) Routed(cacheKey, sessionID string) agentcore.Model {
 
 const requiredMaxTokens = 32000
 
+// streamIdle 是流式响应的静默上限。连接挂住时（合盖睡眠后醒来、换网、中转卡死）模型调用
+// 永远等不到数据，任务却因心跳照常续租、不会被回收，创作就停在那里。超过它按临时网络错误
+// 失败，交给 Retry 重试；厂商读长提示词、思考时可能一阵不发数据，所以留足余量。
+const streamIdle = 3 * time.Minute
+
 func New(config Config) (agentcore.Model, error) {
 	if strings.TrimSpace(config.Provider) == "" || strings.TrimSpace(config.Model) == "" {
 		return agentcore.Model{}, fmt.Errorf("model provider and name are required: %w", model.ErrInvalid)
@@ -151,7 +156,7 @@ func New(config Config) (agentcore.Model, error) {
 	if err != nil {
 		return agentcore.Model{}, err
 	}
-	client, err := litellm.New(p)
+	client, err := litellm.New(p, litellm.WithStreamIdleTimeout(streamIdle))
 	if err != nil {
 		return agentcore.Model{}, err
 	}

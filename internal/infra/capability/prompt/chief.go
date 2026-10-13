@@ -71,12 +71,17 @@ func ChangeSchema() json.RawMessage {
 	list := func(description string) map[string]any {
 		return map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": description + "；整张替换，每条逐字摘自用户的话或沿用原有的"}
 	}
+	// 主编的实体修改还能改名：用户说某个人物、地点、物品其实叫别的、其实是别的东西。
+	entities := entitiesSchema("人物、地点、物品、组织：与已有实体同名即修改它（合并别名），否则新建；它其实叫别的、其实是别的东西时用 rename，别另建一个")
+	entities["items"].(map[string]any)["properties"].(map[string]any)["rename"] = map[string]any{
+		"type": "string", "description": "改成的本名；name 写它现在的本名，旧名还要用时列进 aliases",
+	}
 	properties := map[string]any{
 		"reason":       map[string]any{"type": "string", "description": "一句话说明为什么这么改，给用户看"},
 		"volumes":      planEditSchema("volume", "", ""),
 		"arcs":         planEditSchema("arc", "volume", "所属卷序号，新增时必填"),
 		"chapters":     planEditSchema("chapter", "arc", "所属故事弧序号，新增时必填"),
-		"entities":     entitiesSchema("人物、地点、物品、组织：与已有实体同名即修改它（合并别名），否则新建"),
+		"entities":     entities,
 		"facts":        map[string]any{"type": "array", "items": fact, "description": "要确立或改变的设定"},
 		"remove_facts": map[string]any{"type": "array", "items": ref, "description": "不再成立的设定"},
 		"intent": map[string]any{"type": "object", "description": "作品方向：给出的字段整体替换，没给的不变", "properties": map[string]any{

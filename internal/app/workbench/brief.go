@@ -17,13 +17,15 @@ type ChapterBrief struct {
 }
 
 // BriefRequirement 是覆盖这一章的一项要求；Status 是包含这一章的当前裁定对它的结论
-// （model.CheckSatisfied / CheckViolated / CheckPending），还没有有效裁定时为空。
+// （model.CheckSatisfied / CheckViolated / CheckPending），还没有有效裁定时为空。Rework 表示
+// 这一章的正文写在这条返工要求之前，要按它重写（D78）。
 type BriefRequirement struct {
 	ID        string `json:"id"`
 	Text      string `json:"text"`
 	Scope     string `json:"scope,omitempty"` // 用户要求的作用域（故事语言）；全书为空
 	Forbidden bool   `json:"forbidden,omitempty"`
 	Status    string `json:"status,omitempty"`
+	Rework    bool   `json:"rework,omitempty"`
 }
 
 // BriefFact 是这一章记下的一条设定；Pending 表示正文改动后待核验（D41）。
@@ -54,6 +56,12 @@ func chapterBriefs(project projectdoc.Snapshot, final int, current map[string]*n
 		written[chapter.PlanNodeID], numbers[chapter.ID] = chapter, chapter.Number
 	}
 	briefs := make(map[int]ChapterBrief, len(plans))
+	reworks := make(map[string]model.Revision) // 返工要求的核验项 id → 要求入账的 revision
+	for _, directive := range model.ActiveDirectives(project.Directives) {
+		if directive.Rework {
+			reworks[novel.DirectiveRequirementID(directive.ID)] = project.Index[(model.DocumentRef{Kind: model.DocumentDirective, ID: directive.ID}).Key()].Revision
+		}
+	}
 	effective := make(map[string]model.ReviewVerdict)
 	for number, requirements := range novel.RequirementsByChapter(project, final) {
 		var verdict model.ReviewVerdict
@@ -64,10 +72,14 @@ func chapterBriefs(project projectdoc.Snapshot, final int, current map[string]*n
 			verdict = effective[stored.Key]
 		}
 		brief := briefs[number]
+		chapter, isWritten := written[plans[number-1].ID]
+		revision := project.Index[(model.DocumentRef{Kind: model.DocumentManuscript, ID: chapter.ID}).Key()].Revision
 		for _, requirement := range requirements {
+			noted, rework := reworks[requirement.ID]
 			brief.Requirements = append(brief.Requirements, BriefRequirement{
 				ID: requirement.ID, Text: requirement.Text, Scope: requirement.Scope,
 				Forbidden: requirement.Forbidden, Status: verdict.CheckStatus(requirement.ID),
+				Rework: rework && isWritten && revision < noted,
 			})
 		}
 		briefs[number] = brief

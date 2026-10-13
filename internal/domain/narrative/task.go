@@ -14,6 +14,8 @@ type DirectiveView struct {
 	Text        string                      `json:"text"`
 	Scope       string                      `json:"scope"`
 	Constraints *model.DirectiveConstraints `json:"constraints,omitempty"`
+	// Rework 表示用户同时说了已写的正文不满足这条要求（D78）。
+	Rework bool `json:"rework,omitempty"`
 }
 
 // Task 把任务输入渲染成故事语言（D66）：章号代替章节 ID，待核验事实给出内容，
@@ -54,7 +56,7 @@ func (s *Story) Task(kind model.OperationKind, raw json.RawMessage) (json.RawMes
 	case *model.RewriteChapterInput:
 		view = struct {
 			Chapter    int             `json:"chapter"`
-			Findings   []string        `json:"findings"`
+			Findings   []string        `json:"findings,omitempty"`
 			Directives []DirectiveView `json:"directives,omitempty"`
 			Goal       string          `json:"goal,omitempty"`
 		}{input.ChapterNumber, input.Findings, s.directives(input.Directives), input.Goal}
@@ -84,7 +86,7 @@ func (s *Story) Task(kind model.OperationKind, raw json.RawMessage) (json.RawMes
 func (s *Story) directives(directives []model.Directive) []DirectiveView {
 	views := make([]DirectiveView, 0, len(directives))
 	for _, directive := range directives {
-		views = append(views, DirectiveView{Text: directive.Text, Scope: s.DescribeScope(directive), Constraints: directive.Constraints})
+		views = append(views, DirectiveView{Text: directive.Text, Scope: s.DescribeScope(directive), Constraints: directive.Constraints, Rework: directive.Rework})
 	}
 	return views
 }

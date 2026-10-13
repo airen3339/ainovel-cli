@@ -58,7 +58,7 @@ func (r *Runtime) storyLoader(operation model.Operation) func(context.Context) (
 		if cached != nil {
 			return cached, nil
 		}
-		story, err := r.loadStory(ctx, operation)
+		story, err := r.storyAt(ctx, operation.Target, operation.Snapshot.BaseRevision)
 		if err != nil {
 			return nil, err
 		}
@@ -67,30 +67,31 @@ func (r *Runtime) storyLoader(operation model.Operation) func(context.Context) (
 	}
 }
 
-// loadStory 读冻结基线，从不读最新 Revision：之后的用户修改不会成为 old_value 的来源。
-func (r *Runtime) loadStory(ctx context.Context, operation model.Operation) (*narrative.Story, error) {
+// storyAt 是作品在 revision 上的故事索引。任务读冻结基线，从不读最新 Revision：之后的用户
+// 修改不会成为 old_value 的来源。
+func (r *Runtime) storyAt(ctx context.Context, target model.AuthorityTarget, revision model.Revision) (*narrative.Story, error) {
 	var content narrative.Content
-	if operation.Snapshot.BaseRevision <= model.InitialRevision {
+	if revision <= model.InitialRevision {
 		return narrative.New(content), nil
 	}
 	var err error
-	if content.Plan, err = baseDocuments[model.PlanNode](ctx, r.store, operation, model.DocumentPlan); err != nil {
+	if content.Plan, err = documentsAt[model.PlanNode](ctx, r.store, target, revision, model.DocumentPlan); err != nil {
 		return nil, err
 	}
-	if content.Entities, err = baseDocuments[model.Entity](ctx, r.store, operation, model.DocumentEntity); err != nil {
+	if content.Entities, err = documentsAt[model.Entity](ctx, r.store, target, revision, model.DocumentEntity); err != nil {
 		return nil, err
 	}
-	if content.Canon, err = baseDocuments[model.CanonFact](ctx, r.store, operation, model.DocumentCanon); err != nil {
+	if content.Canon, err = documentsAt[model.CanonFact](ctx, r.store, target, revision, model.DocumentCanon); err != nil {
 		return nil, err
 	}
-	if content.Manuscript, err = baseDocuments[model.ManuscriptChapter](ctx, r.store, operation, model.DocumentManuscript); err != nil {
+	if content.Manuscript, err = documentsAt[model.ManuscriptChapter](ctx, r.store, target, revision, model.DocumentManuscript); err != nil {
 		return nil, err
 	}
 	return narrative.New(content), nil
 }
 
-func baseDocuments[T any](ctx context.Context, store runtimeStore, operation model.Operation, kind model.DocumentKind) ([]T, error) {
-	documents, err := store.ListDocuments(ctx, operation.Target, kind, operation.Snapshot.BaseRevision)
+func documentsAt[T any](ctx context.Context, store runtimeStore, target model.AuthorityTarget, revision model.Revision, kind model.DocumentKind) ([]T, error) {
+	documents, err := store.ListDocuments(ctx, target, kind, revision)
 	if err != nil {
 		return nil, fmt.Errorf("read %s baseline: %w", kind, err)
 	}

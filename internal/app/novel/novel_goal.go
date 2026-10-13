@@ -39,6 +39,8 @@ const (
 	// workAffected 是用户在语义影响处置里选的“重写受影响章”（S4，D77）：任务已由用户的
 	// 选择建好，推导只负责把它排进这次运行。
 	workAffected
+	// workRework 是用户点名的返工（D78）：返工要求作用域内、正文写在要求入账之前的章。
+	workRework
 )
 
 type novelItem struct {
@@ -52,8 +54,8 @@ type novelItem struct {
 	span      [2]int                // review：窗口的首末章号
 	reviewed  []string              // review：上一轮已审且正文未变、只作上下文的章（D68）
 	prior     []model.ReviewFinding // review：焦点章上一轮的阻塞意见
-	notes     []string              // rewrite：阻塞意见；extend：上一窗口的审阅意见
-	revision  model.Revision        // review：绑定的 Revision；rewrite：所依据裁定的 Revision（槽位 ID）
+	notes     []string              // rewrite：阻塞意见；extend：上一窗口的审阅意见；rework：返工要求原话
+	revision  model.Revision        // review：绑定的 Revision；rewrite：所依据裁定的 Revision；rework：返工要求入账的 Revision（槽位 ID）
 	// requirements 是窗口要逐项核验的要求（D62）；pending 是扩窗时仍待兑现的要求原文。
 	requirements []model.Requirement
 	pending      []string
@@ -70,7 +72,7 @@ type novelItem struct {
 }
 
 // Next 的顺序即小说的推进规则：主编的修改等用户确认时先停下（D77）→ 蓝图超出固定篇幅
-// 先停下 → 事实缺口先核验（D41）→ 用户发起的任务（S4）→ 审阅闸门（D62：写满一个窗口
+// 先停下 → 事实缺口先核验（D41）→ 用户发起的任务（S4）→ 用户点名的返工（D78）→ 审阅闸门（D62：写满一个窗口
 // 先审、先审后扩，阻塞发现按预算重写，到期要求必须兑现）→ 完成契约（D29/§6.4）→ 写章
 // 或扩窗（D63：全书章数未知或蓝图未到末章时扩窗）。
 func (p Policy) Next(project projectdoc.Snapshot, run model.CreationRun, evidence Evidence) (creation.Step, error) {
@@ -112,6 +114,9 @@ func (Policy) next(project projectdoc.Snapshot, run model.CreationRun, evidence 
 		if item, err = affectedItem(project, evidence.Requested[0]); err != nil {
 			return creation.Step{}, "", err
 		}
+	} else if rework, ok := reworkItem(project); ok {
+		// 用户说已写的不满足：先按要求重写，审阅再核验它，不把旧正文带进后面的审阅与写作。
+		item = rework
 	} else {
 		// 完成契约（§6.4）：内容齐全不等于完成，全书每章都要有基线仍成立的通过裁定、
 		// 每项要求都已兑现；相干文档或要求再变化时旧证据随基线自动失效。
@@ -264,6 +269,40 @@ func rewriteItem(project projectdoc.Snapshot, verdict model.ReviewVerdict, chapt
 	return novelItem{}
 }
 
+// reworkItem 是最靠前的待返工章（D78）：作用域命中它的返工要求里，有入账晚于它正文最后
+// 一次变化的。重写之后正文更新，缺口自然关闭；审阅随后按同一条要求核验。没有时 ok=false。
+func reworkItem(project projectdoc.Snapshot) (novelItem, bool) {
+	var reworks []model.Directive
+	for _, directive := range model.ActiveDirectives(project.Directives) {
+		if directive.Rework {
+			reworks = append(reworks, directive)
+		}
+	}
+	if len(reworks) == 0 {
+		return novelItem{}, false
+	}
+	plans := model.IndexPlan(project.Plan)
+	chapters := slices.Clone(project.Manuscript)
+	slices.SortFunc(chapters, func(a, b model.ManuscriptChapter) int { return a.Number - b.Number })
+	for _, chapter := range chapters {
+		written := project.Index[manuscriptRef(chapter.ID).Key()].Revision
+		target := directiveTarget(plans, chapter.Number, chapter.PlanNodeID)
+		item := novelItem{kind: workRework, chapterID: chapter.ID, number: chapter.Number, plan: plans[chapter.PlanNodeID]}
+		for _, directive := range reworks {
+			noted := project.Index[(model.DocumentRef{Kind: model.DocumentDirective, ID: directive.ID}).Key()].Revision
+			if directive.Covers(target) && noted > written {
+				item.notes = append(item.notes, directive.Text)
+				item.revision = max(item.revision, noted)
+			}
+		}
+		if len(item.notes) > 0 {
+			item.basis = chapterBasis(project, chapter.Number, chapter.PlanNodeID)
+			return item, true
+		}
+	}
+	return novelItem{}, false
+}
+
 // affectedItem 排入用户选的“重写受影响章”任务。
 func affectedItem(project projectdoc.Snapshot, operation model.Operation) (novelItem, error) {
 	input, err := model.TaskInputAs[model.RewriteAffectedInput](operation)
@@ -364,7 +403,7 @@ func manuscriptsByPlanNode(manuscript []model.ManuscriptChapter) map[string]mode
 // 规划面向未来取全部 active。它只做装配，不参与推导。
 func coveringDirectives(project projectdoc.Snapshot, item novelItem) []model.Directive {
 	switch item.kind {
-	case workWriteChapter, workRewrite:
+	case workWriteChapter, workRewrite, workRework:
 		return model.ActiveDirectivesFor(project.Directives, directiveTarget(model.IndexPlan(project.Plan), item.number, item.plan.ID))
 	case workReview, workVerifyCanon:
 		// 审阅的要求以三态核验项投递（D62），事实核验不涉及要求。
@@ -441,6 +480,14 @@ func (item novelItem) work(run model.CreationRun, premise string, length Length)
 			ChapterID: item.chapterID, FactIDs: item.facts, Reason: reason,
 			Goal: "对照本章正文逐条核验 pending_facts 列出的事实：原样确认、更新或删除，并补记正文里新出现的关键事实；只提交事实（facts、confirm_facts、remove_facts），来源章就是本章",
 		}
+	case workRework:
+		work.ID = runQuickID(run.ID, "rework", item.chapterID, "r"+strconv.FormatInt(int64(item.revision), 10))
+		work.Kind = model.OperationRewriteChapter
+		work.Input = model.RewriteChapterInput{
+			ChapterID: item.chapterID, ChapterPlanID: item.plan.ID, ChapterNumber: item.number,
+			Rework: true, Directives: item.directives, Basis: item.basis,
+			Goal: "按用户的返工要求重写本章：directives 里 rework 为 true 的要求是用户对现有正文的意见，针对它修改，不引入新的越界改动，与前后章节的衔接保持一致；重申报本章全部既有事实（确认、更新或删除）；严格满足 directives 列出的每条创作要求（用户原话），字数约束按 constraints 执行",
+		}
 	case workRewrite:
 		work.ID = runQuickID(run.ID, "rewrite", item.chapterID, "r"+strconv.FormatInt(int64(item.revision), 10))
 		work.Kind = model.OperationRewriteChapter
@@ -516,6 +563,14 @@ func (item novelItem) reasons() creation.WorkReasons {
 			Waiting: item.label + "已按改过的设定重写，等你过目后继续",
 			Failure: item.label + "按改过的设定重写失败",
 			Stuck:   item.label + "的重写已结束但任务没有完成，需要人工检查",
+		}
+	case workRework:
+		return creation.WorkReasons{
+			Start:   "按你的要求重写" + chapter + "：「" + strings.Join(item.notes, "」「") + "」",
+			Done:    chapter + "已按你的要求重写",
+			Waiting: chapter + "已按你的要求重写，等你过目后继续",
+			Failure: chapter + "按你的要求重写失败",
+			Stuck:   chapter + "的返工已结束但正文没有更新，需要人工检查",
 		}
 	case workRewrite:
 		return creation.WorkReasons{

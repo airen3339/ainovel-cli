@@ -225,6 +225,23 @@ func (e *Engine) stale(ctx context.Context, operation model.Operation, cause err
 	return RunResult{Operation: stale}, errors.Join(cause, err)
 }
 
+// Revalidate 重判等待审批的任务（§5.5 第 4 条）：候选在当前 Revision 仍能重定位（D51）就
+// 照旧等待；正文、规划或相干要求变过、不能重定位时转 stale，由后继继承工作区按当前内容
+// 重做。与执行收尾、用户批准、工作台的过期判定是同一条规则。用户同时裁决了它就以用户为准。
+func (e *Engine) Revalidate(ctx context.Context, operation model.Operation, now time.Time) (model.Operation, error) {
+	proposal, err := e.store.GetProposalByOperation(ctx, operation.ID)
+	if err != nil {
+		return model.Operation{}, err
+	}
+	if _, _, err := e.changes.Relocate(ctx, proposal); !errors.Is(err, model.ErrRevisionConflict) {
+		return operation, err
+	} else if stale, err := e.store.TransitionOperation(ctx, operation.ID,
+		model.OperationAwaitingApproval, model.OperationStale, err.Error(), now); !errors.Is(err, model.ErrStateConflict) {
+		return stale, err
+	}
+	return e.store.GetOperation(ctx, operation.ID)
+}
+
 // finalizeVerdict 收尾无 Proposal 的 Operation（D30）：裁定绑定启动快照的 Revision
 // （§6.4），有效性按基线判定（D48）——基线在当前 Revision 不再成立即转 stale，
 // 不相干的变化不作废裁定；落盘为派生文档后成功收尾。

@@ -17,6 +17,11 @@ func (awaitingTasks) Start(_ context.Context, runID string, work creation.WorkIt
 	return model.Operation{ID: work.ID, Kind: work.Kind, RunID: runID, State: model.OperationAwaitingApproval}, nil
 }
 
+// Revalidate：刚建的稿件在当前 Revision 上，照旧等待。
+func (awaitingTasks) Revalidate(_ context.Context, operation model.Operation, _ time.Time) (model.Operation, error) {
+	return operation, nil
+}
+
 // TestDriverSupersedesOnlyReplacedAwaitingWork 钉住 D64 的取代口径：待审批的是槽位 write:ch4
 // 后继链上的 r2。推导给出同种类的另一项工作时旧稿转 stale；推导仍指向它的槽位、暂时去做
 // 别的种类或停下等待时旧稿保留，仍可批准。

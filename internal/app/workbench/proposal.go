@@ -181,10 +181,14 @@ func changeLine(project projectdoc.Snapshot, base, next *narrative.Story, patch 
 		if err := json.Unmarshal(patch.Content, &entity); err != nil {
 			return "", fmt.Errorf("decode proposed entity: %w", err)
 		}
-		if _, existed := base.Label(ref); !existed {
+		was, existed := base.Label(ref)
+		if !existed {
 			return fmt.Sprintf("新增%s「%s」", entity.Kind.Noun(), entity.Name), nil
 		}
 		line := fmt.Sprintf("「%s」是%s", entity.Name, entity.Kind.Noun())
+		if was != "「"+entity.Name+"」" {
+			line = fmt.Sprintf("%s改名「%s」，是%s", was, entity.Name, entity.Kind.Noun())
+		}
 		if len(entity.Aliases) > 0 {
 			line += "，又名" + strings.Join(entity.Aliases, "、")
 		}

@@ -4,11 +4,9 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/voocel/ainovel-cli/internal/app/decision"
 	"github.com/voocel/ainovel-cli/internal/app/workbench"
 	domainmodel "github.com/voocel/ainovel-cli/internal/domain/model"
 )
@@ -96,7 +94,8 @@ func (m model) openChange() model {
 	return m.openBody(m.changeContent())
 }
 
-// confirmChange 是 y：没有出入的修改直接确认；有出入的要选处置，过时的要主编重提。
+// confirmChange 是 y：没有出入的修改直接确认；有出入的要选处置，过时的要主编重提。生效
+// 之后的推进归会话。
 func (m model) confirmChange() (tea.Model, tea.Cmd) {
 	c := m.bench.snap.Change
 	switch {
@@ -107,15 +106,13 @@ func (m model) confirmChange() (tea.Model, tea.Cmd) {
 		m.bench.notice = "这份修改与已写章节有出入：输入序号选怎么处理"
 		return m, nil
 	}
-	api, ctx, user, gen := m.api, m.ctx, m.deps.UserID, m.bench.gen
-	id, continueAfter := c.Proposal.ID, m.waitingRun()
+	session, ctx, gen, id := m.bench.session, m.ctx, m.bench.gen, c.Proposal.ID
 	return m, func() tea.Msg {
-		_, err := api.Decisions.Approve(ctx, id, user, time.Now().UTC())
-		return decisionDoneMsg{gen: gen, continueAfter: continueAfter, err: err, echo: "你确认了主编的修改"}
+		return decisionDoneMsg{gen: gen, err: session.Confirm(ctx, id), echo: "你确认了主编的修改"}
 	}
 }
 
-// resolveChange 按序号选处置（S4）：重写受影响的章要归进进行中的创作，由它接着写。
+// resolveChange 按序号选处置（S4）：重写受影响的章归进哪一轮创作、之后怎么推进，都归会话。
 func (m model) resolveChange(choice int) (tea.Model, tea.Cmd) {
 	c := m.bench.snap.Change
 	if c.Stale {
@@ -123,22 +120,9 @@ func (m model) resolveChange(choice int) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	option := c.Options[choice-1]
-	runID := ""
-	if run := m.bench.snap.Run; run != nil && activeRun(run.State) {
-		runID = run.ID
-	}
-	if option.Strategy == domainmodel.ResolutionRewriteAffected && runID == "" {
-		m.bench.notice = "现在没有进行中的创作，重写已写章节要等创作开始后再选"
-		return m, nil
-	}
-	api, ctx, user, gen := m.api, m.ctx, m.deps.UserID, m.bench.gen
-	id, continueAfter := c.Proposal.ID, m.waitingRun()
-	echo := "你选了：" + optionLabel(option)
+	session, ctx, gen, id := m.bench.session, m.ctx, m.bench.gen, c.Proposal.ID
 	return m, func() tea.Msg {
-		_, err := api.Decisions.ResolveProposal(ctx, decision.ResolveProposalCommand{
-			ProposalID: id, UserID: user, Strategy: string(option.Strategy), RunID: runID, CreatedAt: time.Now().UTC(),
-		})
-		return decisionDoneMsg{gen: gen, continueAfter: continueAfter, err: err, echo: echo}
+		return decisionDoneMsg{gen: gen, err: session.Resolve(ctx, id, option.Strategy), echo: "你选了：" + optionLabel(option)}
 	}
 }
 
@@ -153,17 +137,4 @@ func (m model) changeChoice(text string) int {
 		return 0
 	}
 	return choice
-}
-
-// waitingRun 报告创作停着等你：确认之后接着写。用户暂停的、已完本的不动。
-func (m model) waitingRun() bool {
-	return m.bench.hasRun() && m.bench.run().State == domainmodel.RunWaitingUser
-}
-
-func activeRun(state domainmodel.CreationRunState) bool {
-	switch state {
-	case domainmodel.RunRunning, domainmodel.RunWaitingUser, domainmodel.RunPaused:
-		return true
-	}
-	return false
 }

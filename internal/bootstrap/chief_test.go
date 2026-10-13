@@ -74,16 +74,17 @@ func settle(t *testing.T, session *chief.Session) chief.Thread {
 }
 
 // 用户说一句话，主编按原话记下要求：作用域照用户说的章号，不按用户正在看的章；来源指回
-// 那句话；对话里留下回执，重开这本书时对话还在。
+// 那句话；模型把全角标点摘成半角也认，入账的是用户的写法；对话里留下回执，重开这本书时
+// 对话还在。
 func TestChiefNotesARequirementQuotingTheUser(t *testing.T) {
 	api, provider := newChiefApp(t,
-		chiefCall("note", "note_requirement", `{"text":"第二章结尾留个钩子","scope":{"chapter":2}}`),
+		chiefCall("note", "note_requirement", `{"text":"第二章结尾,留个钩子","scope":{"chapter":2}}`),
 		litellmtest.Text("记下了，第 2 章结尾会留钩子。"),
 	)
 	ctx := context.Background()
 	session := api.Chief.Open(ctx, "chief-book", "user-1")
 	defer session.Close()
-	if err := session.Send(ctx, "第二章结尾留个钩子吧", chief.View{Chapter: 21}); err != nil {
+	if err := session.Send(ctx, "第二章结尾，留个钩子吧", chief.View{Chapter: 21}); err != nil {
 		t.Fatal(err)
 	}
 	thread := settle(t, session)
@@ -91,17 +92,17 @@ func TestChiefNotesARequirementQuotingTheUser(t *testing.T) {
 		t.Fatalf("thread = %+v", thread)
 	}
 	action := thread.Entries[1]
-	if action.Kind != chief.EntryAction || !action.Done || action.Failed || !action.Change || action.Text != "记下要求 · 第 2 章 ·「第二章结尾留个钩子」" {
+	if action.Kind != chief.EntryAction || !action.Done || action.Failed || !action.Change || action.Text != "记下要求 · 第 2 章 ·「第二章结尾，留个钩子」" {
 		t.Fatalf("receipt = %+v", action)
 	}
-	if thread.Entries[0].Text != "第二章结尾留个钩子吧" || thread.Entries[2].Text != "记下了，第 2 章结尾会留钩子。" {
+	if thread.Entries[0].Text != "第二章结尾，留个钩子吧" || thread.Entries[2].Text != "记下了，第 2 章结尾会留钩子。" {
 		t.Fatalf("entries = %+v", thread.Entries)
 	}
 	snap, err := api.Workbench.WorkbenchSnapshot(ctx, "chief-book")
 	if err != nil || len(snap.Directives) != 1 {
 		t.Fatalf("directives = %+v, %v", snap.Directives, err)
 	}
-	if directive := snap.Directives[0]; directive.Scope != model.DirectiveScopeChapters(2, 2) || directive.Text != "第二章结尾留个钩子" || directive.Source != model.ConversationSource(1) {
+	if directive := snap.Directives[0]; directive.Scope != model.DirectiveScopeChapters(2, 2) || directive.Text != "第二章结尾，留个钩子" || directive.Source != model.ConversationSource(1) {
 		t.Fatalf("directive = %+v", directive)
 	}
 	// 书况在用户的话之前，告诉主编用户正在看哪一章。
@@ -393,29 +394,36 @@ func TestInterruptKeepsWordsSentMeanwhile(t *testing.T) {
 
 // 有稿件等用户决定：主编先看稿，再按用户的原话退回；退稿理由入账为该章要求，来源指回
 // 那句话，创作随即按意见重写，写完又停下等用户。
-func TestChiefReadsTheDraftAndRejectsItInTheUsersWords(t *testing.T) {
+// draftWaiting 是逐章确认、第 1 章稿件等用户决定的书：主编用 provider 回话。
+func draftWaiting(t *testing.T, provider litellm.Provider) (*testApp, *chief.Session) {
+	t.Helper()
 	authorityStore := openTestStore(t)
-	provider := litellmtest.New(
-		chiefCall("draft", "book_draft", `{}`),
-		chiefCall("reject", "reject_draft", `{"reason":"结尾太仓促了"}`),
-		litellmtest.Text("退回了，按你的意见重写。"),
-	)
 	api := newTestApp(authorityStore, bootstrap.Options{
 		Executors:   task.ExecutorSet{LLM: &scriptedQuickExecutor{now: time.Now().UTC(), authorityStore: authorityStore}},
 		ChiefModels: scriptedModels{provider},
 	})
-	ctx := context.Background()
-	session := api.Chief.Open(ctx, "draft-book", "user-1")
-	defer session.Close()
+	session := api.Chief.Open(context.Background(), "draft-book", "user-1")
+	t.Cleanup(session.Close)
 	session.Write(chief.WriteParams{Premise: "一个失忆的邮差替亡者送完最后一封信", Chapters: 1, Approval: model.ApprovalManual})
 	plan := driven(t, session, 1)
-	if _, err := api.Decisions.Approve(ctx, plan.Result.WaitingOperationID+"-proposal", "user-1", time.Now().UTC()); err != nil {
+	if _, err := api.Decisions.Approve(context.Background(), plan.Result.WaitingOperationID+"-proposal", "user-1", time.Now().UTC()); err != nil {
 		t.Fatal(err)
 	}
 	session.Write(chief.WriteParams{Chapters: novelapp.KeepChapters})
 	if waiting := driven(t, session, 2); waiting.Err != nil || waiting.Result.RunState != model.RunWaitingUser {
 		t.Fatalf("chapter draft = %+v", waiting)
 	}
+	return api, session
+}
+
+func TestChiefReadsTheDraftAndRejectsItInTheUsersWords(t *testing.T) {
+	provider := litellmtest.New(
+		chiefCall("draft", "book_draft", `{}`),
+		chiefCall("reject", "reject_draft", `{"reason":"结尾太仓促了"}`),
+		litellmtest.Text("退回了，按你的意见重写。"),
+	)
+	api, session := draftWaiting(t, provider)
+	ctx := context.Background()
 
 	thread := talk(t, session, "这稿结尾太仓促了，重写")
 	if len(thread.Entries) != 4 || thread.Entries[1].Text != "看待定稿件" || thread.Entries[2].Text != "退回稿件 ·「结尾太仓促了」· 按这条意见重写" {
@@ -441,6 +449,23 @@ func TestChiefReadsTheDraftAndRejectsItInTheUsersWords(t *testing.T) {
 	}
 	if rewritten := driven(t, session, 3); rewritten.Err != nil || rewritten.Result.RunState != model.RunWaitingUser {
 		t.Fatalf("rewrite = %+v", rewritten)
+	}
+}
+
+// 稿件等决定时记下落在这一章的要求：稿件过时了，回执写明，创作随即由后继按新要求重写，
+// 不停在不能再通过的旧稿上（§5.5 第 4 条）。
+func TestChiefRequirementOnAWaitingDraftRedoesIt(t *testing.T) {
+	_, session := draftWaiting(t, litellmtest.New(
+		chiefCall("note", "note_requirement", `{"text":"开头直接从拆信写起","scope":{"chapter":1}}`),
+		litellmtest.Text("记下了，这一章按它重写。"),
+	))
+	thread := talk(t, session, "开头直接从拆信写起")
+	if receipt := lastReceipt(t, thread); receipt.Text != "记下要求 · 第 1 章 ·「开头直接从拆信写起」 · 待定的稿件过时了，按现在的内容重写" {
+		t.Fatalf("receipt = %+v", receipt)
+	}
+	redone := driven(t, session, 3)
+	if redone.Err != nil || redone.Result.RunState != model.RunWaitingUser || !strings.HasSuffix(redone.Result.WaitingOperationID, ":r2") {
+		t.Fatalf("redone = %+v", redone)
 	}
 }
 

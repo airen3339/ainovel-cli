@@ -309,3 +309,36 @@ func TestFindingsLandOnChaptersInRange(t *testing.T) {
 		}
 	}
 }
+
+// “苏晴其实叫苏雨”：改名后新旧两个名字在这次修改里都指她，事实照旧挂在她身上。一个名字
+// 只指一个实体：新实体不能把已有实体的名字占作别名，那样后面按这个名字的引用会指错。
+func TestEntityRenameKeepsOneNamePerEntity(t *testing.T) {
+	story := fixture()
+	patches, _, err := story.ResolveEdit(Edit{
+		Entities: []EntityEdit{{Name: "苏晴", Kind: model.EntityCharacter, Rename: "苏雨"}},
+		Remove:   []FactRef{{Subject: "苏晴", Predicate: "rule.spirit_cost"}},
+	}, Settings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamed := decodePatch[model.Entity](t, patches, "entity:e2"); renamed.Name != "苏雨" || len(renamed.Aliases) != 0 {
+		t.Fatalf("renamed = %+v", renamed)
+	}
+	if !slices.Contains(patchIDs(patches), "canon:f3/delete") {
+		t.Fatalf("patches = %v", patchIDs(patches))
+	}
+	if _, _, err := story.ResolveEdit(Edit{Entities: []EntityEdit{{Name: "苏雨", Kind: model.EntityCharacter, Aliases: []string{"苏晴"}}}}, Settings{}); err == nil || !strings.Contains(err.Error(), "用 rename") {
+		t.Fatalf("a new entity taking an existing name: %v", err)
+	}
+	if _, _, err := story.ResolveEdit(Edit{Entities: []EntityEdit{{Name: "无名", Kind: model.EntityCharacter, Rename: "有名"}}}, Settings{}); err == nil {
+		t.Fatal("renaming a missing entity must fail")
+	}
+}
+
+// 事实引用错了时，报错说出用这个谓词的现有事实：事件按来源章区分，没给章号的照着补上。
+func TestMissingFactReferenceNamesTheExistingOnes(t *testing.T) {
+	_, _, err := fixture().ResolveEdit(Edit{Remove: []FactRef{{Subject: "林凡", Predicate: "event.oath"}}}, Settings{})
+	if err == nil || !strings.Contains(err.Error(), "用这个谓词的事实有：「林凡」event.oath（chapter=2）") {
+		t.Fatalf("err = %v", err)
+	}
+}

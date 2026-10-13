@@ -112,6 +112,65 @@ func TestQuickWriteManualApprovalWaitsForUserAndResumes(t *testing.T) {
 	}
 }
 
+// 稿件等确认时用户又提了要求（§5.5 第 4 条）：与这一章不相干的不动它，照旧等确认；落在这
+// 一章上的使它过时，续跑时转 stale，由后继带着新要求重写，不会一直停在过时的稿件上。
+func TestQuickWriteDraftOutdatedWhileWaitingIsRedoneBySuccessor(t *testing.T) {
+	ctx := context.Background()
+	executor := &scriptedQuickExecutor{now: testTime()}
+	api := newQuickTestApp(t, executor)
+	command := novelapp.QuickWriteCommand{
+		ProjectID: "outdated-book", UserID: "user-1", Premise: "一个失忆的邮差替亡者送完最后一封信",
+		Chapters: 2, Approval: model.ApprovalManual,
+		WorkerID: "quick-worker", LeaseDuration: time.Minute, CreatedAt: testTime(),
+	}
+	result, err := api.Novels.QuickWrite(ctx, command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := api.Decisions.Approve(ctx, planID(result.RunID, command.Chapters)+"-proposal", command.UserID, testTime().Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	draft := runQuickID(result.RunID, "chapter", "chapter-plan-1")
+	note := func(id string, from, to int, at time.Time) {
+		t.Helper()
+		if _, err := api.Projects.AddDirective(ctx, projectdoc.AddDirectiveCommand{
+			ProjectID: command.ProjectID, ChangeID: id, UserID: command.UserID, DirectiveID: id,
+			Scope: model.DirectiveScopeChapters(from, to), Text: id, Reason: "用户的要求", CreatedAt: at,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		command.CreatedAt = at.Add(time.Minute)
+		if result, err = api.Novels.QuickWrite(ctx, command); err != nil {
+			t.Fatal(err)
+		}
+	}
+	command.CreatedAt = testTime().Add(2 * time.Hour)
+	if result, err = api.Novels.QuickWrite(ctx, command); err != nil || result.WaitingOperationID != draft {
+		t.Fatalf("chapter 1 draft = %#v, %v", result, err)
+	}
+	calls := executor.calls
+
+	note("later", 2, 2, testTime().Add(3*time.Hour))
+	if result.WaitingOperationID != draft || executor.calls != calls {
+		t.Fatalf("a requirement on chapter 2 must leave the chapter 1 draft waiting: %#v, calls %d", result, executor.calls)
+	}
+	note("opening", 1, 1, testTime().Add(4*time.Hour))
+	if result.RunState != model.RunWaitingUser || result.WaitingOperationID != draft+":r2" || executor.calls != calls+1 {
+		t.Fatalf("an outdated draft must be redone by its successor: %#v, calls %d", result, executor.calls)
+	}
+	if old, err := api.Tasks.Operation(ctx, draft); err != nil || old.State != model.OperationStale {
+		t.Fatalf("outdated draft = %s, %v", old.State, err)
+	}
+	successor, err := api.Tasks.Operation(ctx, draft+":r2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var input model.WriteChapterInput
+	if err := json.Unmarshal(successor.Input, &input); err != nil || !slices.ContainsFunc(input.Directives, func(d model.Directive) bool { return d.ID == "opening" }) {
+		t.Fatalf("successor input = %s, %v", successor.Input, err)
+	}
+}
+
 func TestQuickWriteMilestonePresetPausesOnlyAtMilestones(t *testing.T) {
 	ctx := context.Background()
 	executor := &scriptedQuickExecutor{now: testTime()}
@@ -912,37 +971,32 @@ func (e *scriptedQuickExecutor) Execute(ctx context.Context, operation model.Ope
 		if err != nil {
 			return model.OperationOutcome{}, err
 		}
-		chapter := model.ManuscriptChapter{
-			ID: input.ChapterID, PlanNodeID: input.ChapterPlanID,
-			Number: input.ChapterNumber, Author: model.AuthorAI,
-			Blocks: []model.ManuscriptBlock{{
-				ID:   fmt.Sprintf("chapter-%d-block-1", input.ChapterNumber),
-				Text: fmt.Sprintf("第%d章正文（按审阅意见重写：%s）", input.ChapterNumber, strings.Join(input.Findings, "；")),
-			}},
+		note := "按审阅意见重写：" + strings.Join(input.Findings, "；")
+		if input.Rework {
+			note = "按返工要求重写"
 		}
-		content, err := json.Marshal(chapter)
+		if patches, err = e.rewrite(input.ChapterID, input.ChapterPlanID, input.ChapterNumber, note); err != nil {
+			return model.OperationOutcome{}, err
+		}
+	case model.OperationRewriteAffected:
+		input, err := model.TaskInputAs[model.RewriteAffectedInput](operation)
 		if err != nil {
 			return model.OperationOutcome{}, err
 		}
-		if e.rewrites == nil {
-			e.rewrites = map[string]int{}
-		}
-		round := e.rewrites[chapter.ID]
-		e.rewrites[chapter.ID] = round + 1
-		fact := model.CanonFact{
-			ID: chapter.ID + "-outcome", Kind: model.CanonEvent, SubjectID: "hero",
-			Predicate:       "event.chapter_outcome",
-			PreviousValue:   json.RawMessage(fmt.Sprintf("%q", fmt.Sprintf("第%d章", input.ChapterNumber)+strings.Repeat("（重写）", round))),
-			Value:           json.RawMessage(fmt.Sprintf("%q", fmt.Sprintf("第%d章", input.ChapterNumber)+strings.Repeat("（重写）", round+1))),
-			SourceChapterID: chapter.ID,
-		}
-		canon, err := json.Marshal(fact)
-		if err != nil {
-			return model.OperationOutcome{}, err
-		}
-		patches = []model.Patch{
-			{Document: model.DocumentRef{Kind: model.DocumentManuscript, ID: chapter.ID}, Operation: model.PatchPut, Content: content},
-			{Document: model.DocumentRef{Kind: model.DocumentCanon, ID: fact.ID}, Operation: model.PatchPut, Content: canon},
+		for _, id := range input.ChapterIDs {
+			stored, err := e.authorityStore.GetDocument(ctx, operation.Target, model.DocumentRef{Kind: model.DocumentManuscript, ID: id}, operation.Snapshot.BaseRevision)
+			if err != nil {
+				return model.OperationOutcome{}, err
+			}
+			var chapter model.ManuscriptChapter
+			if err := json.Unmarshal(stored.Content, &chapter); err != nil {
+				return model.OperationOutcome{}, err
+			}
+			rewritten, err := e.rewrite(chapter.ID, chapter.PlanNodeID, chapter.Number, "按改过的设定重写")
+			if err != nil {
+				return model.OperationOutcome{}, err
+			}
+			patches = append(patches, rewritten...)
 		}
 	case model.OperationReviseCanon:
 		input, err := model.TaskInputAs[model.ReviseCanonInput](operation)
@@ -986,6 +1040,37 @@ func (e *scriptedQuickExecutor) Execute(ctx context.Context, operation model.Ope
 		Reason:       "quick write candidate", Patches: patches,
 		ApprovalState: model.ApprovalPending, CreatedAt: e.now.Add(time.Duration(e.calls) * time.Second),
 	}}, nil
+}
+
+// rewrite 是重写一章的提交：正文写明为什么重写，随章事实按轮次连续更新。
+func (e *scriptedQuickExecutor) rewrite(chapterID, planID string, number int, note string) ([]model.Patch, error) {
+	content, err := json.Marshal(model.ManuscriptChapter{
+		ID: chapterID, PlanNodeID: planID, Number: number, Author: model.AuthorAI,
+		Blocks: []model.ManuscriptBlock{{ID: fmt.Sprintf("chapter-%d-block-1", number), Text: fmt.Sprintf("第%d章正文（%s）", number, note)}},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if e.rewrites == nil {
+		e.rewrites = map[string]int{}
+	}
+	round := e.rewrites[chapterID]
+	e.rewrites[chapterID] = round + 1
+	fact := model.CanonFact{
+		ID: chapterID + "-outcome", Kind: model.CanonEvent, SubjectID: "hero",
+		Predicate:       "event.chapter_outcome",
+		PreviousValue:   json.RawMessage(fmt.Sprintf("%q", fmt.Sprintf("第%d章", number)+strings.Repeat("（重写）", round))),
+		Value:           json.RawMessage(fmt.Sprintf("%q", fmt.Sprintf("第%d章", number)+strings.Repeat("（重写）", round+1))),
+		SourceChapterID: chapterID,
+	}
+	canon, err := json.Marshal(fact)
+	if err != nil {
+		return nil, err
+	}
+	return []model.Patch{
+		{Document: model.DocumentRef{Kind: model.DocumentManuscript, ID: chapterID}, Operation: model.PatchPut, Content: content},
+		{Document: model.DocumentRef{Kind: model.DocumentCanon, ID: fact.ID}, Operation: model.PatchPut, Content: canon},
+	}, nil
 }
 
 // D67：规划者一次铺满固定篇幅，提交边界照收；短章在审阅容量内同窗审完即完成。

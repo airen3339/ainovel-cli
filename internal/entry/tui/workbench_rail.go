@@ -82,6 +82,10 @@ func (m model) chapterBrief(r *railText, number int) {
 		}
 		r.section("要求", railCount(len(brief.Requirements), violated, benchTheme.Error, "违反"))
 		for _, requirement := range brief.Requirements {
+			if requirement.Rework {
+				r.item(benchTheme.Warning.Render("↻"), requirementText(requirement)+" · 待按它重写", benchTheme.Text)
+				continue
+			}
 			r.item(checkMark(requirement.Status), requirementText(requirement), benchTheme.Text)
 		}
 	}

@@ -178,20 +178,27 @@ func (v WriteChapterInput) Validate() error {
 	return v.Basis.Validate()
 }
 
+// RewriteChapterInput 是重写一章：按审阅的阻塞意见（Findings），或是用户点名的返工
+// （Rework，D78）——没有审阅意见，按 Directives 里标了 rework 的要求重写，不计入自动修订
+// 预算。
 type RewriteChapterInput struct {
 	ChapterID     string        `json:"chapter_id"`
 	ChapterPlanID string        `json:"chapter_plan_id"`
 	ChapterNumber int           `json:"chapter_number"`
-	Findings      []string      `json:"findings"`
+	Findings      []string      `json:"findings,omitempty"`
+	Rework        bool          `json:"rework,omitempty"`
 	Directives    []Directive   `json:"directives,omitempty"`
 	Basis         EvidenceBasis `json:"basis,omitzero"`
 	Goal          string        `json:"goal,omitempty"`
 }
 
 func (v RewriteChapterInput) Validate() error {
-	if strings.TrimSpace(v.ChapterID) == "" || strings.TrimSpace(v.ChapterPlanID) == "" ||
-		v.ChapterNumber <= 0 || len(v.Findings) == 0 {
-		return fmt.Errorf("chapter, plan, number and findings are required: %w", ErrInvalid)
+	if strings.TrimSpace(v.ChapterID) == "" || strings.TrimSpace(v.ChapterPlanID) == "" || v.ChapterNumber <= 0 {
+		return fmt.Errorf("chapter, plan and number are required: %w", ErrInvalid)
+	}
+	reworks := slices.ContainsFunc(v.Directives, func(directive Directive) bool { return directive.Rework })
+	if v.Rework != (len(v.Findings) == 0) || v.Rework && !reworks {
+		return fmt.Errorf("a rewrite follows either review findings or a rework directive: %w", ErrInvalid)
 	}
 	if err := validateTaskDirectives(v.Directives); err != nil {
 		return err
@@ -342,8 +349,9 @@ func TaskDirectives(input TaskInput) []Directive {
 }
 
 // RepairChapters 返回自动修订任务（KindSpec.Repair）针对的章节，修订预算按章计（D63）。
+// 用户点名的返工不是自动修订，不计入（D78）。
 func RepairChapters(input TaskInput) []string {
-	if value, ok := input.(*RewriteChapterInput); ok {
+	if value, ok := input.(*RewriteChapterInput); ok && !value.Rework {
 		return []string{value.ChapterID}
 	}
 	return nil

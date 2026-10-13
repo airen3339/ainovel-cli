@@ -11,7 +11,8 @@ import (
 // Directive 是用户对 AI 的正式创作要求（§4.9）：回答"用户要什么"，与 Ownership
 // （AI 不得动什么）、Intent（这本书是什么）正交。作者只能是用户，原话保留不翻译；
 // 按作用域进入任务输入，由审阅逐项核验，可机械校验的字段走确定性校验器。Source 是
-// 主编代录时用户说这句话的对话消息（D74：引用即署名），用户直接录入的为空。
+// 主编代录时用户说这句话的对话消息（D74：引用即署名），用户直接录入的为空。Rework 表示
+// 这条要求同时声明作用域内已写的正文不满足它（D78）：入账前写成的章要按它重写。
 type Directive struct {
 	ID          string                `json:"id"`
 	Scope       string                `json:"scope"`
@@ -19,6 +20,7 @@ type Directive struct {
 	Constraints *DirectiveConstraints `json:"constraints,omitempty"`
 	Status      DirectiveStatus       `json:"status"`
 	Source      string                `json:"source,omitempty"`
+	Rework      bool                  `json:"rework,omitempty"`
 }
 
 type DirectiveStatus string

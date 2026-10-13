@@ -257,7 +257,7 @@ func TestChiefCanonChangeConflictingWithWrittenChaptersOffersChoices(t *testing.
 	defer session.Close()
 
 	thread := talk(t, session, "主角的底线改成可以为目的伤害无辜")
-	if receipt := lastReceipt(t, thread); receipt.Text != "设定 · 「主角」可以为目的伤害无辜 · 与已写的章节有出入，等你在确认卡上选怎么处理" {
+	if receipt := lastReceipt(t, thread); receipt.Text != "设定 · 「主角」可以为目的伤害无辜 · 与已写的章节有出入，等你在确认卡上输入序号选怎么处理" {
 		t.Fatalf("receipt = %+v", receipt)
 	}
 	snap, err := api.Workbench.WorkbenchSnapshot(ctx, "chief-book")

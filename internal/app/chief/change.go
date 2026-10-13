@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/voocel/ainovel-cli/internal/app/decision"
 	"github.com/voocel/ainovel-cli/internal/app/novel"
 	projectdoc "github.com/voocel/ainovel-cli/internal/app/project"
 	"github.com/voocel/ainovel-cli/internal/domain/model"
@@ -37,6 +38,7 @@ func (s *Session) proposeChange(ctx context.Context, args changeArgs) (string, e
 	if err != nil {
 		return "", err
 	}
+	s.own(&args.Edit)
 	patches, intent, err := story.ResolveEdit(args.Edit, narrative.Settings{Intent: project.Intent, Ownership: project.Ownership})
 	if err != nil {
 		return "", err
@@ -84,11 +86,34 @@ func (s *Session) authored(project projectdoc.Snapshot, intent *model.Intent, lo
 		}
 	}
 	for _, text := range texts {
-		if _, err := s.quote(text); err != nil {
+		if _, _, err := s.quote(text); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// own 把修改里出自用户的文字换回用户的写法（见 quote）；不出自用户的原样留给 authored 核对。
+func (s *Session) own(edit *narrative.Edit) {
+	var texts []*string
+	if intent := edit.Intent; intent != nil {
+		texts = append(texts, &intent.Premise, &intent.Audience, &intent.EndingDirection)
+		for _, list := range [][]string{intent.DesiredExperience, intent.Required, intent.Forbidden} {
+			for i := range list {
+				texts = append(texts, &list[i])
+			}
+		}
+	}
+	for _, lock := range edit.Locks {
+		for i := range lock.Guidance {
+			texts = append(texts, &lock.Guidance[i])
+		}
+	}
+	for _, text := range texts {
+		if original, _, err := s.quote(*text); err == nil && *text != "" {
+			*text = original
+		}
+	}
 }
 
 // proposal 是主编署名的提案外壳：来源是促成它的那句用户的话。
@@ -130,23 +155,63 @@ func (s *Session) submit(ctx context.Context, proposal model.Proposal) (string, 
 	}
 	switch {
 	case submitted.ChangeSet != nil:
-		return receipt + " · 已生效，可撤销", s.proceed(ctx)
+		return s.settled(ctx, receipt+" · 已生效，可撤销", false)
 	case submitted.Conflicted:
-		return receipt + " · 与已写的章节有出入，等你在确认卡上选怎么处理", nil
+		return receipt + " · 与已写的章节有出入，等你在确认卡上输入序号选怎么处理", nil
 	}
 	return receipt + " · 等你确认", nil
 }
 
-// proceed 让停下等用户的创作重新对账：它等的事可能已经没了。用户暂停的不动。
-func (s *Session) proceed(ctx context.Context) error {
+// settled 收尾一次作品变化：等用户决定的稿件因此过时的（§5.5 第 4 条），回执写明它会按现在
+// 的内容重写，不能再照它通过；然后让创作接着对账。
+func (s *Session) settled(ctx context.Context, receipt string, newRound bool) (string, error) {
+	snap, err := s.service.bench.WorkbenchSnapshot(ctx, s.projectID)
+	if err != nil {
+		return "", err
+	}
+	if snap.Decision != nil && snap.Decision.Stale {
+		receipt += " · 待定的稿件过时了，按现在的内容重写"
+	}
+	return receipt, s.proceed(ctx, newRound)
+}
+
+// proceed 让作品变化之后的创作接着对账：它等的事可能已经没了，也可能多了要做的事。进行中的
+// 创作就推进（已经在写时什么也不做），用户暂停的不动；newRound 时已完本或停止的书开新一轮
+// （D29：完本之后的修改是新一轮创作），用于用户点名的返工。
+func (s *Session) proceed(ctx context.Context, newRound bool) error {
 	run, ok, err := s.service.runs.ActiveCreationRun(ctx, s.projectID)
 	if err != nil {
 		return err
 	}
-	if ok && run.State == model.RunWaitingUser {
+	if ok && run.State != model.RunPaused || !ok && newRound {
 		s.Write(WriteParams{Chapters: novel.KeepChapters})
 	}
 	return nil
+}
+
+// Confirm 是用户按 y 确认主编的修改（D77）：生效之后创作接着对账。
+func (s *Session) Confirm(ctx context.Context, proposalID string) error {
+	if _, err := s.service.decisions.Approve(ctx, proposalID, s.userID, time.Now().UTC()); err != nil {
+		return err
+	}
+	return s.proceed(ctx, false)
+}
+
+// Resolve 是用户在确认卡上选的处置（S4）。重写受影响的章是要归属一轮创作的任务：已完本或
+// 停止的书先开新一轮；之后创作接着对账。
+func (s *Session) Resolve(ctx context.Context, proposalID string, strategy model.ResolutionStrategy) error {
+	command := decision.ResolveProposalCommand{ProposalID: proposalID, UserID: s.userID, Strategy: string(strategy), CreatedAt: time.Now().UTC()}
+	if strategy == model.ResolutionRewriteAffected {
+		run, err := s.service.round(ctx, s.projectID, s.userID)
+		if err != nil {
+			return err
+		}
+		command.RunID = run.ID
+	}
+	if _, err := s.service.decisions.ResolveProposal(ctx, command); err != nil {
+		return err
+	}
+	return s.proceed(ctx, false)
 }
 
 func (s *Session) history(ctx context.Context, _ none) (string, error) {
@@ -209,7 +274,7 @@ func (s *Session) revert(ctx context.Context, args struct {
 		if err := s.service.decisions.Withdraw(ctx, pending.ID, now); err != nil {
 			return "", err
 		}
-		return "撤回待确认的修改 · 作品不变", s.proceed(ctx)
+		return "撤回待确认的修改 · 作品不变", s.proceed(ctx, false)
 	}
 	proposal, err := s.proposal(projectdoc.NewID("undo", now), "撤销一次修改", now)
 	if err != nil {

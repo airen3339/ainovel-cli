@@ -18,6 +18,8 @@ type Tasks interface {
 	// Failures 数该任务有几次尝试以失败收尾：D56 的重开预算只数失败，不数 attempt——
 	// attempt 是执行围栏，含进程退出时释放的执行。
 	Failures(context.Context, string) (int, error)
+	// Revalidate 重判等待审批的任务：候选在当前 Revision 不再成立时转 stale（§5.5 第 4 条）。
+	Revalidate(context.Context, model.Operation, time.Time) (model.Operation, error)
 }
 
 // Store persists runs and exposes the task identities needed for successor

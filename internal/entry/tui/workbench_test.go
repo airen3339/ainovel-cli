@@ -5,8 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -198,6 +200,13 @@ func TestRailShowsTheBriefOfWhatTheMainViewShows(t *testing.T) {
 		"审阅意见", "阻塞 1 · 2 条", "! 回信背面的笔迹提前揭示了门后人的身份", "· 雨声意象连续三章出现",
 		"本章设定", "待核验 1 · 2 条", "│ 事件 陈渡：在口袋里摸到一把陌生的钥", "│ 伏笔 回信：背面是陈渡本人的笔迹",
 	)
+	// 返工要求（D78）：这一章写在要求之前，标出要按它重写。
+	reworking := reviewed
+	reworking.bench.snap.Briefs = maps.Clone(reviewed.bench.snap.Briefs)
+	third := reworking.bench.snap.Briefs[3]
+	third.Requirements = append(slices.Clone(third.Requirements), workbench.BriefRequirement{ID: "directive:rework", Text: "紧凑点", Scope: "第 3 章", Rework: true})
+	reworking.bench.snap.Briefs[3] = third
+	requireContains(t, rail(reworking), "↻ 紧凑点 · 第 3 章 · 待按它重写")
 	// 卷头行：这一部分的进度（点击头行会折叠，这里直接移光标）。
 	section := wide
 	section.bench.cursor = 1
@@ -465,13 +474,16 @@ func TestDecisionCardGuardsApproval(t *testing.T) {
 	if typed, cmd := submit(t, m, "结尾再收一点"); cmd == nil || typed.bench.view != viewTalk || typed.bench.decision == nil {
 		t.Fatal("feedback must go to the chief")
 	}
-	// 过期稿件只能重写。
+	// 过时的稿件不能通过，回车按现在的内容重写（§5.5 第 4 条）。
 	stale := withCandidate(studioModel(t, 150, 40), true)
 	stale.bench.writing = false
-	requireContains(t, frame(stale), "书又有了新变化", "跟主编说修改意见，让它基于最新内容重写")
+	requireContains(t, frame(stale), "书又有了新变化", "回车按现在的内容重写")
 	stale, cmd := submit(t, stale, "y")
 	if cmd != nil || !strings.Contains(stale.bench.notice, "不能直接通过") {
 		t.Fatalf("stale proposal must not be approved: notice=%q", stale.bench.notice)
+	}
+	if _, cmd := submit(t, stale, ""); cmd == nil {
+		t.Fatal("enter on a stale draft must redo it")
 	}
 }
 
@@ -517,10 +529,6 @@ func TestChangeCardConfirmsOrChoosesAResolution(t *testing.T) {
 	}
 	if talked, cmd := submit(t, conflicted, "4"); cmd == nil || talked.bench.view != viewTalk {
 		t.Fatal("other words go to the chief")
-	}
-	conflicted.bench.snap.Run.State = domainmodel.RunCompleted
-	if refused, cmd := submit(t, conflicted, "1"); cmd != nil || !strings.Contains(refused.bench.notice, "没有进行中的创作") {
-		t.Fatalf("rewriting needs a run: notice=%q", refused.bench.notice)
 	}
 
 	stale := pending(workbench.PendingChange{View: workbench.ProposalView{Changes: []string{"第 2 章《回信》改名《信》"}}, Stale: true})

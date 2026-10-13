@@ -116,7 +116,8 @@ func TestPendingProposalReadsAsStoryAndPreviewsInOutline(t *testing.T) {
 }
 
 // 一章的依据：覆盖它的要求（意图、全书与本章要求）带着当前裁定的结论，没审过的章没有
-// 结论；这一章记下的设定用故事语言，正文改过的标待核验。
+// 结论；正文写在返工要求之前的章标出要按它重写；这一章记下的设定用故事语言，正文改过的
+// 标待核验。
 func TestChapterBriefsCarryCoveringRequirementsAndChecks(t *testing.T) {
 	plan := []model.PlanNode{{ID: "v", Kind: model.PlanVolume, Order: 1, Title: "雨城"}}
 	for i := 1; i <= 3; i++ {
@@ -129,6 +130,7 @@ func TestChapterBriefsCarryCoveringRequirementsAndChecks(t *testing.T) {
 		Directives: []model.Directive{
 			{ID: "d1", Scope: model.DirectiveScopeProject, Text: "每章结尾留钩子", Status: model.DirectiveActive},
 			{ID: "d2", Scope: model.DirectiveScopeChapters(2, 2), Text: "门后的人不露脸", Status: model.DirectiveActive},
+			{ID: "d3", Scope: model.DirectiveScopeChapters(1, 3), Text: "紧凑点", Status: model.DirectiveActive, Rework: true},
 		},
 		Manuscript: []model.ManuscriptChapter{{ID: "c1", PlanNodeID: "p1", Number: 1}, {ID: "c2", PlanNodeID: "p2", Number: 2}},
 		Canon: []model.CanonFact{
@@ -136,9 +138,13 @@ func TestChapterBriefsCarryCoveringRequirementsAndChecks(t *testing.T) {
 			{ID: "f2", Kind: model.CanonEvent, SubjectID: "hero", Predicate: "event.find_key", Value: json.RawMessage(`"捡到一把陌生的钥匙"`), SourceChapterID: "c2"},
 		},
 		// 第 2 章正文在 f2 入账之后改过：f2 待核验。
+		// 返工要求 d3 在 revision 4 入账：第 1 章写在它之前，第 2 章之后改过。
 		Index: projectdoc.DocumentIndex{
+			model.DocumentRef{Kind: model.DocumentManuscript, ID: "c1"}.Key(): {Revision: 2},
+			model.DocumentRef{Kind: model.DocumentCanon, ID: "f1"}.Key():      {Revision: 2},
 			model.DocumentRef{Kind: model.DocumentManuscript, ID: "c2"}.Key(): {Revision: 5},
 			model.DocumentRef{Kind: model.DocumentCanon, ID: "f2"}.Key():      {Revision: 3},
+			model.DocumentRef{Kind: model.DocumentDirective, ID: "d3"}.Key():  {Revision: 4},
 		},
 	}
 	window := &novel.StoredVerdict{Key: "review-1", Verdict: model.ReviewVerdict{ChapterIDs: []string{"c1", "c2"}, Checks: []model.RequirementCheck{
@@ -149,7 +155,7 @@ func TestChapterBriefsCarryCoveringRequirementsAndChecks(t *testing.T) {
 	briefs := chapterBriefs(project, 0, map[string]*novel.StoredVerdict{"c1": window, "c2": window})
 
 	line := func(r BriefRequirement) string {
-		return fmt.Sprintf("%s|%s|%t|%s", r.Text, r.Scope, r.Forbidden, r.Status)
+		return fmt.Sprintf("%s|%s|%t|%s|%t", r.Text, r.Scope, r.Forbidden, r.Status, r.Rework)
 	}
 	var second, third []string
 	for _, r := range briefs[2].Requirements {
@@ -158,11 +164,17 @@ func TestChapterBriefsCarryCoveringRequirementsAndChecks(t *testing.T) {
 	for _, r := range briefs[3].Requirements {
 		third = append(third, line(r))
 	}
-	if want := []string{"保持悬疑||false|satisfied", "主角死亡||true|", "每章结尾留钩子||false|pending", "门后的人不露脸|第 2 章|false|violated"}; !slices.Equal(second, want) {
+	if want := []string{
+		"保持悬疑||false|satisfied|false", "主角死亡||true||false", "每章结尾留钩子||false|pending|false",
+		"门后的人不露脸|第 2 章|false|violated|false", "紧凑点|第 1–3 章|false||false",
+	}; !slices.Equal(second, want) {
 		t.Fatalf("chapter 2 requirements = %q, want %q", second, want)
 	}
-	if want := []string{"保持悬疑||false|", "主角死亡||true|", "每章结尾留钩子||false|"}; !slices.Equal(third, want) {
+	if want := []string{"保持悬疑||false||false", "主角死亡||true||false", "每章结尾留钩子||false||false", "紧凑点|第 1–3 章|false||false"}; !slices.Equal(third, want) {
 		t.Fatalf("an unreviewed chapter has no checks and only its covering requirements: %q", third)
+	}
+	if first := briefs[1].Requirements; !first[len(first)-1].Rework {
+		t.Fatalf("chapter 1 was written before the rework requirement: %+v", first)
 	}
 	if facts := briefs[2].Facts; len(facts) != 1 || facts[0].Fact != (Fact{Kind: model.CanonEvent, Subject: "陈渡", Text: "捡到一把陌生的钥匙"}) || !facts[0].Pending ||
 		len(briefs[1].Facts) != 1 || briefs[1].Facts[0].Pending {

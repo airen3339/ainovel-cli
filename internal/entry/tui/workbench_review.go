@@ -191,7 +191,7 @@ func (m model) decisionActions() string {
 	manuscript := func(patch domainmodel.Patch) bool { return patch.Document.Kind == domainmodel.DocumentManuscript }
 	switch {
 	case d.stale:
-		return "跟主编说修改意见，让它基于最新内容重写"
+		return "回车按现在的内容重写"
 	case slices.ContainsFunc(d.proposal.Patches, manuscript):
 		return "y 通过 · 不满意跟主编说理由，按意见重写"
 	default:

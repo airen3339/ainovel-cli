@@ -67,49 +67,10 @@ type QuickWriteResult struct {
 // 建立 Project 与 Run 后，全部推进都由创作协调器驱动。等待与失败都会落在 Run 上，
 // 再次执行同一命令即从落点继续。
 func (s *Application) QuickWrite(ctx context.Context, command QuickWriteCommand) (QuickWriteResult, error) {
-	if !s.tasks.HasLLM() {
-		return QuickWriteResult{}, fmt.Errorf("quick write requires a configured model: %w", model.ErrInvalid)
-	}
-	if strings.TrimSpace(command.ProjectID) == "" || strings.TrimSpace(command.UserID) == "" ||
-		strings.TrimSpace(command.Premise) == "" || command.Chapters < KeepChapters ||
-		strings.TrimSpace(command.WorkerID) == "" || command.CreatedAt.IsZero() {
-		return QuickWriteResult{}, fmt.Errorf("quick write project, user, premise, chapters, worker and time are required: %w", model.ErrInvalid)
-	}
-	if command.LeaseDuration <= 0 {
-		command.LeaseDuration = task.DefaultLease
-	}
-	switch command.Approval {
-	case "", model.ApprovalAuto, model.ApprovalMilestone, model.ApprovalManual:
-	default:
-		return QuickWriteResult{}, fmt.Errorf("quick write approval must be auto, milestone or manual: %w", model.ErrInvalid)
-	}
-	if command.Extend {
-		if command.Chapters > 0 {
-			return QuickWriteResult{}, fmt.Errorf("extending leaves the length to the AI and cannot fix chapters: %w", model.ErrInvalid)
-		}
-		command.Chapters = 0
-	}
-	if command.Chapters == KeepChapters {
-		chapters, err := s.currentChapters(ctx, command.ProjectID)
-		if err != nil {
-			return QuickWriteResult{}, err
-		}
-		command.Chapters = chapters
-	}
-
+	command, run, err := s.quickRun(ctx, command)
 	result := QuickWriteResult{ProjectID: command.ProjectID}
-	project, err := s.ensureQuickProject(ctx, command)
 	if err != nil {
 		return result, err
-	}
-	run, err := s.ensureCreationRun(ctx, command, project.Approval)
-	if err != nil {
-		return result, err
-	}
-	if command.RenewRepairBudget {
-		if run, err = s.runs.UpdateCreationRunStrategy(ctx, run.ID, run.Strategy, command.CreatedAt); err != nil {
-			return result, err
-		}
 	}
 	outcome, err := s.runs.Drive(ctx, run, s.creationTasks(command), driveCommand(command))
 	result = attachRun(outcome.Run, result)
@@ -118,6 +79,62 @@ func (s *Application) QuickWrite(ctx context.Context, command QuickWriteCommand)
 		return result, err
 	}
 	return s.finishQuickResult(ctx, outcome, result)
+}
+
+// EnsureRun 是这本书接下来的工作归属的那一轮创作，不推进：进行中的那一轮，没有就按命令
+// 开新一轮（D29：完本之后的修改是新一轮创作）。用户发起、要归属运行的任务（S4 的重写
+// 受影响章）先用它定下运行。
+func (s *Application) EnsureRun(ctx context.Context, command QuickWriteCommand) (model.CreationRun, error) {
+	_, run, err := s.quickRun(ctx, command)
+	return run, err
+}
+
+// quickRun 校验并补全命令，建立作品与这一轮创作。
+func (s *Application) quickRun(ctx context.Context, command QuickWriteCommand) (QuickWriteCommand, model.CreationRun, error) {
+	if !s.tasks.HasLLM() {
+		return command, model.CreationRun{}, fmt.Errorf("quick write requires a configured model: %w", model.ErrInvalid)
+	}
+	if strings.TrimSpace(command.ProjectID) == "" || strings.TrimSpace(command.UserID) == "" ||
+		strings.TrimSpace(command.Premise) == "" || command.Chapters < KeepChapters ||
+		strings.TrimSpace(command.WorkerID) == "" || command.CreatedAt.IsZero() {
+		return command, model.CreationRun{}, fmt.Errorf("quick write project, user, premise, chapters, worker and time are required: %w", model.ErrInvalid)
+	}
+	if command.LeaseDuration <= 0 {
+		command.LeaseDuration = task.DefaultLease
+	}
+	switch command.Approval {
+	case "", model.ApprovalAuto, model.ApprovalMilestone, model.ApprovalManual:
+	default:
+		return command, model.CreationRun{}, fmt.Errorf("quick write approval must be auto, milestone or manual: %w", model.ErrInvalid)
+	}
+	if command.Extend {
+		if command.Chapters > 0 {
+			return command, model.CreationRun{}, fmt.Errorf("extending leaves the length to the AI and cannot fix chapters: %w", model.ErrInvalid)
+		}
+		command.Chapters = 0
+	}
+	if command.Chapters == KeepChapters {
+		chapters, err := s.currentChapters(ctx, command.ProjectID)
+		if err != nil {
+			return command, model.CreationRun{}, err
+		}
+		command.Chapters = chapters
+	}
+
+	project, err := s.ensureQuickProject(ctx, command)
+	if err != nil {
+		return command, model.CreationRun{}, err
+	}
+	run, err := s.ensureCreationRun(ctx, command, project.Approval)
+	if err != nil {
+		return command, model.CreationRun{}, err
+	}
+	if command.RenewRepairBudget {
+		if run, err = s.runs.UpdateCreationRunStrategy(ctx, run.ID, run.Strategy, command.CreatedAt); err != nil {
+			return command, model.CreationRun{}, err
+		}
+	}
+	return command, run, nil
 }
 
 // currentChapters 解析"沿用篇幅设定"：取最近一轮创作的设定，没有时交给 AI。

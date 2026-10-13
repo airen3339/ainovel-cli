@@ -72,3 +72,7 @@ func (t creationTasks) Run(ctx context.Context, work creation.WorkItem, operatio
 func (t creationTasks) Failures(ctx context.Context, id string) (int, error) {
 	return t.manager.store.CountOperationFailures(ctx, id)
 }
+
+func (t creationTasks) Revalidate(ctx context.Context, operation model.Operation, at time.Time) (model.Operation, error) {
+	return t.manager.operations.Revalidate(ctx, operation, at)
+}
