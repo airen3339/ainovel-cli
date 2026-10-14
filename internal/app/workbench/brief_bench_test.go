@@ -44,6 +44,6 @@ func BenchmarkChapterBriefsLongBook(b *testing.B) {
 	}
 	b.ReportAllocs()
 	for b.Loop() {
-		chapterBriefs(project, len(project.Manuscript), current)
+		chapterBriefs(project, len(project.Manuscript), current, nil)
 	}
 }

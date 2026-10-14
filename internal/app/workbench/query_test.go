@@ -152,7 +152,8 @@ func TestChapterBriefsCarryCoveringRequirementsAndChecks(t *testing.T) {
 		{ID: "directive:d1", Status: model.CheckPending},
 		{ID: "directive:d2", Status: model.CheckViolated},
 	}}}
-	briefs := chapterBriefs(project, 0, map[string]*novel.StoredVerdict{"c1": window, "c2": window})
+	current := map[string]*novel.StoredVerdict{"c1": window, "c2": window}
+	briefs := chapterBriefs(project, 0, current, nil)
 
 	line := func(r BriefRequirement) string {
 		return fmt.Sprintf("%s|%s|%t|%s|%t", r.Text, r.Scope, r.Forbidden, r.Status, r.Rework)
@@ -172,6 +173,11 @@ func TestChapterBriefsCarryCoveringRequirementsAndChecks(t *testing.T) {
 	}
 	if want := []string{"保持悬疑||false||false", "主角死亡||true||false", "每章结尾留钩子||false||false", "紧凑点|第 1–3 章|false||false"}; !slices.Equal(third, want) {
 		t.Fatalf("an unreviewed chapter has no checks and only its covering requirements: %q", third)
+	}
+	// 那一窗判 pending、要求已在别处兑现：依据显示已满足；没审过的章仍为空。
+	settled := chapterBriefs(project, 0, current, map[string]bool{"directive:d1": true})
+	if hook := settled[2].Requirements[2]; hook.Text != "每章结尾留钩子" || hook.Status != model.CheckSatisfied || settled[3].Requirements[2].Status != "" {
+		t.Fatalf("settled requirement = %+v / %+v", hook, settled[3].Requirements[2])
 	}
 	if first := briefs[1].Requirements; !first[len(first)-1].Rework {
 		t.Fatalf("chapter 1 was written before the rework requirement: %+v", first)

@@ -17,6 +17,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/app/workbench"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/domain/model"
+	"github.com/voocel/ainovel-cli/internal/infra/activity"
 	"github.com/voocel/ainovel-cli/internal/infra/capability/prompt"
 	appconfig "github.com/voocel/ainovel-cli/internal/infra/config"
 	"github.com/voocel/ainovel-cli/internal/infra/store"
@@ -45,8 +46,9 @@ type liveUser struct {
 	session *chief.Session
 	project string
 	start   time.Time
-	seen    int // 已记进日志的对话条目
-	ended   int // 已记进日志的推进
+	seen    int    // 已记进日志的对话条目
+	ended   int    // 已记进日志的推进
+	retried uint64 // 已看过的实时活动条目
 	cue     *liveCue
 	watch   func(workbench.WorkbenchSnapshot) // 推进途中每次看现场时调用
 }
@@ -175,6 +177,7 @@ func (u *liveUser) idle() {
 				deadline = time.Now().Add(90 * time.Minute)
 				u.log("现场：%s", phase)
 			}
+			u.retries()
 			if u.watch != nil {
 				u.watch(snap)
 			}
@@ -186,6 +189,26 @@ func (u *liveUser) idle() {
 				u.cue = nil
 				u.say(cue.words, 0)
 			}
+		}
+	}
+}
+
+// retries 把重试记进日志：模型调用断了重发、任务重开只出现在实时活动里，不落库。
+func (u *liveUser) retries() {
+	feed, ok := u.api.Workbench.RunActivity(u.project)
+	if !ok {
+		return
+	}
+	for _, entry := range feed.Entries {
+		if entry.ID <= u.retried {
+			continue
+		}
+		u.retried = entry.ID
+		switch {
+		case entry.Kind == activity.Retry:
+			u.log("重试第 %d 次：%s", entry.Attempt, entry.Err)
+		case entry.Kind == activity.Notice && entry.Tone == activity.ToneRetry:
+			u.log("%s", entry.Text)
 		}
 	}
 }
@@ -639,22 +662,15 @@ func TestLiveLongBook(t *testing.T) {
 	}
 }
 
-// 换模型、思考强度对照：同一设定写 4 章，全书每章 2500 字（硬区间）让各组篇幅对齐；模型与档位用
-// AINOVEL_MODEL、AINOVEL_THINKING 换，比每章用时、用量与正文。
+// 换模型、思考强度对照：同一设定写 6 章，篇幅用官方写作标准的默认（软要求）；模型与档位用
+// AINOVEL_MODEL、AINOVEL_THINKING 换，比每章用时、用量、字数与正文。
 func TestLiveModelTrial(t *testing.T) {
-	const chapters, words = 4, 2500
+	const chapters = 6
 	u := openLive(t)
-	u.log("对照：每章 %d 字，%d 章，自动推进", words, chapters)
-	now := time.Now().UTC()
+	u.log("对照：%d 章，默认篇幅，自动推进", chapters)
 	if _, err := u.api.Projects.CreateProject(u.ctx, projectdoc.CreateProjectCommand{
 		ProjectID: u.project, ChangeID: u.project + ":create", UserID: liveUserID, Reason: "建立作品",
-		Draft: projectdoc.ProjectDraft{Intent: model.Intent{Premise: livePremise}, Approval: model.ApprovalAuto}, CreatedAt: now,
-	}); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := u.api.Projects.AddDirective(u.ctx, projectdoc.AddDirectiveCommand{
-		ProjectID: u.project, ChangeID: u.project + ":words", UserID: liveUserID, Scope: model.DirectiveScopeProject,
-		Text: "每章两千五百字左右。", Constraints: &model.DirectiveConstraints{TargetWords: words}, Reason: "对照组统一篇幅", CreatedAt: now,
+		Draft: projectdoc.ProjectDraft{Intent: model.Intent{Premise: livePremise}, Approval: model.ApprovalAuto}, CreatedAt: time.Now().UTC(),
 	}); err != nil {
 		t.Fatal(err)
 	}

@@ -186,7 +186,7 @@ func (s *Query) snapshotFromProject(ctx context.Context, project projectdoc.Snap
 	}
 	snapshot.Outline = buildOutline(plan, proposed, project.Manuscript, snapshot.Candidates, writingPlanID)
 	snapshot.Length = novel.LengthOf(project, snapshot.Run)
-	snapshot.Briefs = chapterBriefs(project, snapshot.Length.Final, current)
+	snapshot.Briefs = chapterBriefs(project, snapshot.Length.Final, current, novel.SatisfiedRequirements(project, snapshot.Length.Final, verdicts))
 	snapshot.Cast = castOf(project)
 	return snapshot, nil
 }

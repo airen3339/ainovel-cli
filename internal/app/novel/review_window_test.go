@@ -76,6 +76,25 @@ func TestRequirementScopesAndEnds(t *testing.T) {
 	}
 }
 
+// 各章依据的“已兑现”与闸门同一口径：同窗后来审出 pending，更早的 satisfied 仍算数；
+// 只在别的章节范围判过满足，同样算兑现。
+func TestSatisfiedRequirementsFollowTheGate(t *testing.T) {
+	project := requirementFixture(t, 5, 5)
+	first := []string{"chapter-i", "chapter-ii", "chapter-iii"}
+	last := []string{"chapter-iiii", "chapter-iiiii"}
+	satisfied := SatisfiedRequirements(project, 5, []StoredVerdict{
+		storedTestVerdict("review-a", 1, model.ReviewPass, first, nil,
+			check("intent:required:0", model.CheckSatisfied), check("directive:d-range", model.CheckSatisfied)),
+		storedTestVerdict("review-c", 3, model.ReviewPass, first, nil,
+			check("intent:required:0", model.CheckPending), check("directive:d-range", model.CheckSatisfied)),
+		storedTestVerdict("review-b", 2, model.ReviewPass, last, nil,
+			check("intent:required:0", model.CheckPending), check("directive:d-arc", model.CheckPending)),
+	})
+	if !satisfied["intent:required:0"] || !satisfied["directive:d-range"] || satisfied["directive:d-arc"] || len(satisfied) != 2 {
+		t.Fatalf("satisfied = %v, want intent:required:0 and directive:d-range", satisfied)
+	}
+}
+
 func requirementWant(t *testing.T, work creation.WorkItem, settle map[string]bool) {
 	t.Helper()
 	input := work.Input.(model.ReviewRangeInput)

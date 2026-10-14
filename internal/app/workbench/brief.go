@@ -17,7 +17,8 @@ type ChapterBrief struct {
 }
 
 // BriefRequirement 是覆盖这一章的一项要求；Status 是包含这一章的当前裁定对它的结论
-// （model.CheckSatisfied / CheckViolated / CheckPending），还没有有效裁定时为空。Rework 表示
+// （model.CheckSatisfied / CheckViolated / CheckPending），还没有有效裁定时为空；那一窗判
+// pending、要求已在作用域内别处兑现的，记为 satisfied。Rework 表示
 // 这一章的正文写在这条返工要求之前，要按它重写（D78）。
 type BriefRequirement struct {
 	ID        string `json:"id"`
@@ -47,8 +48,8 @@ func factOf(story *narrative.Story, fact model.CanonFact) Fact {
 }
 
 // chapterBriefs 按章号组装各已规划章节的依据：要求与审阅闸门同一份清单、同一覆盖规则，
-// 结论取该章的当前裁定（含用户接受的发现，D43）。
-func chapterBriefs(project projectdoc.Snapshot, final int, current map[string]*novel.StoredVerdict) map[int]ChapterBrief {
+// 结论取该章的当前裁定（含用户接受的发现，D43），已兑现的要求（satisfied）不再停在 pending。
+func chapterBriefs(project projectdoc.Snapshot, final int, current map[string]*novel.StoredVerdict, satisfied map[string]bool) map[int]ChapterBrief {
 	plans := model.ChapterPlansInOrder(project.Plan)
 	written := make(map[string]model.ManuscriptChapter, len(project.Manuscript)) // plan node id → 正文章节
 	numbers := make(map[string]int, len(project.Manuscript))                     // 正文章节 id → 章号
@@ -76,9 +77,13 @@ func chapterBriefs(project projectdoc.Snapshot, final int, current map[string]*n
 		revision := project.Index[(model.DocumentRef{Kind: model.DocumentManuscript, ID: chapter.ID}).Key()].Revision
 		for _, requirement := range requirements {
 			noted, rework := reworks[requirement.ID]
+			status := verdict.CheckStatus(requirement.ID)
+			if status == model.CheckPending && satisfied[requirement.ID] {
+				status = model.CheckSatisfied
+			}
 			brief.Requirements = append(brief.Requirements, BriefRequirement{
 				ID: requirement.ID, Text: requirement.Text, Scope: requirement.Scope,
-				Forbidden: requirement.Forbidden, Status: verdict.CheckStatus(requirement.ID),
+				Forbidden: requirement.Forbidden, Status: status,
 				Rework: rework && isWritten && revision < noted,
 			})
 		}

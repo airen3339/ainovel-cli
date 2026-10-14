@@ -112,6 +112,19 @@ func RequirementsByChapter(project projectdoc.Snapshot, final int) map[int][]Cha
 	return byChapter
 }
 
+// SatisfiedRequirements 是已兑现的要求 ID，与审阅闸门同一口径：作用域内任一有效裁定判过
+// 满足。窗口对未到期的要求如实 pending（D62），兑现以后各章的依据以它为准。
+func SatisfiedRequirements(project projectdoc.Snapshot, final int, verdicts []StoredVerdict) map[string]bool {
+	ledger := newReviewLedger(project, final, verdicts)
+	satisfied := make(map[string]bool)
+	for _, r := range ledger.reqs {
+		if ledger.satisfied(r) {
+			satisfied[r.ID] = true
+		}
+	}
+	return satisfied
+}
+
 // finalePrefix 是收官要求 ID 的前缀，后缀是终局与伏笔集合的摘要。
 const finalePrefix = "book:finale:"
 
