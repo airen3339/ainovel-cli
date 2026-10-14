@@ -56,6 +56,14 @@ const (
 	FindingNote     = "note"
 )
 
+// ReviewStatusOf 是审阅结论：有 blocking 发现即未通过。结论由发现推出，不让审阅者另报（D81）。
+func ReviewStatusOf(findings []ReviewFinding) string {
+	if slices.ContainsFunc(findings, func(finding ReviewFinding) bool { return finding.Severity == FindingBlocking }) {
+		return ReviewBlocked
+	}
+	return ReviewPass
+}
+
 // ReviewFinding 是一条审阅发现。阻塞发现可通过 Requirement 链接到它证明被违反的要求
 // （§6.4）：违反项与阻塞发现一一可追溯，用户接受发现即接受该项（D43）。
 type ReviewFinding struct {

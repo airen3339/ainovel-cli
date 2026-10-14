@@ -131,7 +131,7 @@ func TestNewBookCompilesOfficialPackIntoWorkerPrompt(t *testing.T) {
 		t.Fatalf("writer prompt does not carry exactly the writer slots:\n%s", text)
 	}
 	if !slices.ContainsFunc(sources, func(source prompt.Source) bool {
-		return source.Layer == "pack_defaults" && source.ID == "official@5"
+		return source.Layer == "pack_defaults" && source.ID == "official@6"
 	}) {
 		t.Fatalf("sources = %#v", sources)
 	}
@@ -204,6 +204,16 @@ func TestPackDirectoryUpdateOnlyAffectsNewOperations(t *testing.T) {
 	promptPath := filepath.Join(packDir, "prompts", "chapter.md")
 	if err := os.WriteFile(promptPath, []byte("多用短句"), 0o644); err != nil {
 		t.Fatalf("write prompt: %v", err)
+	}
+	// 槽位写错的包不会装配进任何任务：安装时明确失败（S6），不留一个看似装上却不生效的包。
+	if err := os.WriteFile(filepath.Join(packDir, "pack.jsonc"), []byte(`{"id":"my-style","version":"1","name":"我的文风","prompts":{"writer.chapter_drafts":"prompts/chapter.md"}}`), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
+	}
+	if _, err := service.Resources.InstallPackDirectory(ctx, packDir, "pack-typo", "user-1", "安装我的文风", now.Add(time.Minute)); !errors.Is(err, model.ErrInvalid) || !strings.Contains(err.Error(), `"writer.chapter_drafts"`) {
+		t.Fatalf("install with a mistyped slot: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(packDir, "pack.jsonc"), []byte(manifest), 0o644); err != nil {
+		t.Fatalf("write manifest: %v", err)
 	}
 	installed, err := service.Resources.InstallPackDirectory(ctx, packDir, "pack-v1", "user-1", "安装我的文风", now.Add(time.Minute))
 	if err != nil {

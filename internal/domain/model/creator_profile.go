@@ -27,6 +27,7 @@ type PreferenceCandidate struct {
 
 type ManuscriptEditEvidence struct {
 	ChapterID string `json:"chapter_id"`
+	Chapter   int    `json:"chapter"`
 	BlockID   string `json:"block_id"`
 	Before    string `json:"before,omitempty"`
 	After     string `json:"after,omitempty"`

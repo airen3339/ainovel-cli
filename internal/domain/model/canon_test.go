@@ -2,6 +2,7 @@ package model
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -44,5 +45,17 @@ func TestCanonResolvedOnlyForForeshadow(t *testing.T) {
 	fact.Kind, fact.Predicate = CanonState, "state.jade_origin"
 	if err := fact.Validate(); err == nil {
 		t.Fatal("resolved state must be rejected")
+	}
+}
+
+// 谓词前缀对了、只是用了中文：报错要说出是字符的问题，不能让模型以为前缀错了。
+func TestCanonPredicateErrorNamesTheActualProblem(t *testing.T) {
+	fact := CanonFact{ID: "key", Kind: CanonEvent, SubjectID: "hero", Predicate: "event.发现铜钥匙", Value: json.RawMessage(`"发现铜钥匙"`)}
+	if err := fact.Validate(); err == nil || !strings.Contains(err.Error(), "no Chinese") {
+		t.Fatalf("chinese predicate error = %v", err)
+	}
+	fact.Predicate = "found_key"
+	if err := fact.Validate(); err == nil || !strings.Contains(err.Error(), `"event." controlled namespace`) {
+		t.Fatalf("missing prefix error = %v", err)
 	}
 }

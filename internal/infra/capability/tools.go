@@ -226,16 +226,15 @@ func (r *Runtime) executor(
 	case prompt.ToolWorkspaceReplaceBlock:
 		return func(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
 			var args struct {
-				Key             string `json:"key"`
-				BlockID         string `json:"block_id"`
-				Text            string `json:"text"`
-				ExpectedVersion int64  `json:"expected_version"`
+				Key     string `json:"key"`
+				BlockID string `json:"block_id"`
+				Text    string `json:"text"`
 			}
 			if err := decodeToolArgs(raw, &args); err != nil {
 				return nil, err
 			}
 			artifact, err := r.workspace.ReplaceChapterBlock(
-				ctx, operation.ID, args.Key, args.BlockID, args.Text, args.ExpectedVersion, operation.Attempt, r.now(),
+				ctx, operation.ID, args.Key, args.BlockID, args.Text, operation.Attempt, r.now(),
 			)
 			if err != nil {
 				return nil, err
@@ -359,7 +358,6 @@ func (r *Runtime) executor(
 	case prompt.ToolVerdictSubmit:
 		return func(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
 			var args struct {
-				Status    string                   `json:"status"`
 				ReviewKey string                   `json:"review_key"`
 				Checks    []model.RequirementCheck `json:"checks"`
 			}
@@ -367,7 +365,8 @@ func (r *Runtime) executor(
 				return nil, err
 			}
 			// 宿主已知的事实由宿主盖入，不让模型复述再校验（D60）：Revision 与证据基线取自
-			// 启动快照和任务输入，章节范围就是任务请求的范围，发现取自工作区审阅记录的当前版本。
+			// 启动快照和任务输入，章节范围就是任务请求的范围，发现取自工作区审阅记录的当前版本，
+			// 结论由发现推出（D81）。
 			input, err := model.TaskInputAs[model.ReviewRangeInput](operation)
 			if err != nil {
 				return nil, err
@@ -377,7 +376,7 @@ func (r *Runtime) executor(
 				return nil, err
 			}
 			verdict := model.ReviewVerdict{
-				Status: args.Status, Revision: operation.Snapshot.BaseRevision,
+				Status: model.ReviewStatusOf(findings), Revision: operation.Snapshot.BaseRevision,
 				ChapterIDs: input.ChapterIDs, ReviewKey: args.ReviewKey, Basis: input.Basis.Normalize(),
 				Checks: args.Checks, Findings: findings,
 			}

@@ -46,9 +46,9 @@ const reviewFindingSchema = `{
 		"chapter": {"type": "integer", "minimum": 1,
 			"description": "章号，必须是本次审阅范围（任务的 chapters）之一；跨章问题挂到最相关的那一章"},
 		"severity": {"type": "string", "enum": ["blocking", "note"],
-			"description": "blocking=必须修改的问题（被违反的要求用 requirement 指出是哪一项）；note=仅供参考的观察，禁止带 requirement。任务 reviewed 列出的章只作上下文，只有违反 requirements 才能记 blocking"},
+			"description": "blocking=必须修改的问题，违反的是任务 requirements 里的一项时用 requirement 填它的 id，其他问题不填；note=仅供参考的观察，禁止带 requirement。任务 reviewed 列出的章只作上下文，只有违反 requirements 才能记 blocking"},
 		"note": {"type": "string", "description": "结论与依据"},
-		"requirement": {"type": "string", "description": "仅 blocking 可用：逐字取自任务输入 requirements 的 id，且该项在裁定 checks 中声明为 violated"}
+		"requirement": {"type": "string", "description": "仅 blocking 可用：逐字取自任务输入 requirements 的 id（不是问题类别），且该项在裁定 checks 中声明为 violated；任务没有 requirements 时不填"}
 	},
 	"required": ["chapter", "severity", "note"],
 	"additionalProperties": false
@@ -57,8 +57,6 @@ const reviewFindingSchema = `{
 const verdictSubmitSchema = `{
 	"type": "object",
 	"properties": {
-		"status": {"type": "string", "enum": ["pass", "blocked"],
-			"description": "pass=审阅记录里没有 blocking 发现；blocked=至少一条"},
 		"review_key": {"type": "string", "minLength": 1, "description": "workspace_put_review 用过的 key"},
 		"checks": {"type": "array",
 			"description": "逐项声明任务输入 requirements 的核验结论，不多不少；任务没带 requirements 就省略本字段，不要自拟",
@@ -72,7 +70,7 @@ const verdictSubmitSchema = `{
 				"required": ["id", "status"],
 				"additionalProperties": false}}
 	},
-	"required": ["status", "review_key"],
+	"required": ["review_key"],
 	"additionalProperties": false
 }`
 
@@ -145,7 +143,7 @@ func BuiltinCapabilities() ([]CapabilityDefinition, error) {
 						`{"type":"object","properties":{"key":{"type":"string"},`+
 							`"findings":{"type":"array","items":`+reviewFindingSchema+`}},`+
 							`"required":["key","findings"],"additionalProperties":false}`),
-					tool(ToolVerdictSubmit, "提交审阅裁定：引用 workspace_put_review 写好的审阅记录。章节范围与发现由宿主按任务和记录填入。"+
+					tool(ToolVerdictSubmit, "提交审阅裁定：引用 workspace_put_review 写好的审阅记录。章节范围、发现与结论由宿主按任务和记录填入，记录里有 blocking 发现即未通过。"+
 						"每个 violated 的要求，都要在审阅记录里有一条 blocking 发现通过 requirement 链接到它", verdictSubmitSchema),
 				},
 				InputContract: json.RawMessage(`{"type":"object","required":["chapters"]}`), OutputContract: json.RawMessage(`{"type":"object","required":["status"]}`),
@@ -218,7 +216,7 @@ func writerTools(draft draftSubmission, redeclare bool) []ToolSchema {
 		tool(ToolWorkspaceList, "列出当前任务工作区的工作稿键与版本", `{"type":"object","properties":{},"additionalProperties":false}`),
 		tool(ToolWorkspaceRead, "读取当前任务工作区的工作稿", `{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false}`),
 		putChapterTool(draft),
-		tool(ToolWorkspaceReplaceBlock, "按段落编号和版本前提修改一个段落", `{"type":"object","properties":{"key":{"type":"string"},"block_id":{"type":"string"},"text":`+proseTextSchema+`,"expected_version":{"type":"integer","minimum":0,"description":"必须等于该 key 的当前版本（workspace_list 返回）"}},"required":["key","block_id","text","expected_version"],"additionalProperties":false}`),
+		tool(ToolWorkspaceReplaceBlock, "按段落编号修改一个段落；改几段就调用几次，返回改后的版本", `{"type":"object","properties":{"key":{"type":"string"},"block_id":{"type":"string"},"text":`+proseTextSchema+`},"required":["key","block_id","text"],"additionalProperties":false}`),
 		proposalTool(draft, redeclare, false),
 	}
 }

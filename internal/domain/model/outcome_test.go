@@ -147,3 +147,17 @@ func TestOperationOutcomeCombinations(t *testing.T) {
 		t.Fatalf("duplicate artifacts err = %v", err)
 	}
 }
+
+// D81：结论由发现推出，审阅者不另报——有 blocking 即未通过，只有 note 或没有发现即通过。
+func TestReviewStatusFollowsFindings(t *testing.T) {
+	note := ReviewFinding{ChapterID: "chapter-1", Severity: FindingNote, Note: "节奏偏慢"}
+	blocking := ReviewFinding{ChapterID: "chapter-2", Severity: FindingBlocking, Note: "同一封信既没寄出又被退回"}
+	for _, c := range []struct {
+		findings []ReviewFinding
+		want     string
+	}{{nil, ReviewPass}, {[]ReviewFinding{note}, ReviewPass}, {[]ReviewFinding{note, blocking}, ReviewBlocked}} {
+		if got := ReviewStatusOf(c.findings); got != c.want {
+			t.Fatalf("status of %+v = %q, want %q", c.findings, got, c.want)
+		}
+	}
+}

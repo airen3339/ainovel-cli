@@ -189,6 +189,11 @@ func validateCanonChanges(base, projected story, proposal Proposal) error {
 			return fmt.Errorf("canon %q must be sourced from a chapter in the same proposal, not %q: %w", id, next.SourceChapterID, ErrStructuralConflict)
 		}
 		covered[next.SourceChapterID] = struct{}{}
+		if existed && !next.IsEvent() && next.EffectiveChapter() == "" && previous.EffectiveChapter() != "" {
+			// 规划期的事实排在第 1 章之前：规划者要的是以后的变化，那属于发生那章的梗概。
+			return fmt.Errorf("canon %q (%s/%s) is established by %q; planning cannot change what written chapters established, put the planned change into the summary of the chapter where it happens: %w",
+				id, next.SubjectID, next.Predicate, previous.EffectiveChapter(), ErrStructuralConflict)
+		}
 		if existed && !next.IsEvent() &&
 			projected.chapters[next.EffectiveChapter()].Number < projected.chapters[previous.EffectiveChapter()].Number {
 			return fmt.Errorf("canon %q (%s/%s) is already current as of %q, later than %q; an earlier chapter cannot override it, record flashbacks as events: %w",

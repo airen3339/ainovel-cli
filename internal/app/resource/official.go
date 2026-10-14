@@ -39,6 +39,9 @@ func (o *Official) Ensure(ctx context.Context, userID string, at time.Time) (mod
 	if loaded.Manifest.ID != OfficialPackID {
 		return model.ProjectPackRef{}, fmt.Errorf("official pack declares id %q: %w", loaded.Manifest.ID, model.ErrInvalid)
 	}
+	if err := validateSlots(loaded.Manifest); err != nil {
+		return model.ProjectPackRef{}, err
+	}
 	content, err := json.Marshal(loaded.Manifest)
 	if err != nil {
 		return model.ProjectPackRef{}, fmt.Errorf("encode official pack: %w", err)

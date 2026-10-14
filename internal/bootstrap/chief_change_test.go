@@ -2,6 +2,7 @@ package bootstrap_test
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -277,5 +278,35 @@ func TestChiefCanonChangeConflictingWithWrittenChaptersOffersChoices(t *testing.
 	project, err := api.Projects.Project(ctx, "chief-book", model.InitialRevision)
 	if err != nil || string(project.Canon[0].Value) != `"可以为目的伤害无辜"` {
 		t.Fatalf("canon = %+v, %v", project.Canon, err)
+	}
+}
+
+// 还没写的章也能锁（S5 的关键剧情节点）：锁的是这一章的大纲，锁定要用户确认（D25）。
+func TestChiefLocksAPlannedChapter(t *testing.T) {
+	api, _ := newChiefApp(t,
+		chiefCall("lock", "propose_change", `{"reason":"用户要锁住第一章","locks":[{"chapter":1,"control":"locked"}]}`),
+		litellmtest.Text("等你确认。"),
+	)
+	ctx := context.Background()
+	session := api.Chief.Open(ctx, "chief-book", "user-1")
+	defer session.Close()
+	thread := talk(t, session, "第一章锁住，别让 AI 动")
+	if receipt := lastReceipt(t, thread); receipt.Failed || receipt.Text != "锁定第 1 章《第一章》的大纲 · 等你确认" {
+		t.Fatalf("receipt = %+v", receipt)
+	}
+	pending, ok, err := api.Decisions.PendingChange(ctx, "chief-book")
+	if err != nil || !ok {
+		t.Fatalf("pending = %v, %v", ok, err)
+	}
+	if err := session.Confirm(ctx, pending.ID); err != nil {
+		t.Fatal(err)
+	}
+	project, err := api.Projects.Project(ctx, "chief-book", model.InitialRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := model.DocumentRef{Kind: model.DocumentPlan, ID: "chapter-plan-1"}
+	if !slices.ContainsFunc(project.Ownership, func(rule model.OwnershipRule) bool { return rule.Target == plan && rule.Control == model.ControlLocked }) {
+		t.Fatalf("ownership = %+v", project.Ownership)
 	}
 }

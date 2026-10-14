@@ -94,7 +94,6 @@ func streamSpecs(task model.TaskInput) map[string]streamSpec {
 			{tapPath{"findings", ""}, sectionReview, decoded(findingLine)},
 		}},
 		prompt.ToolVerdictSubmit: {items: []itemTap{
-			{tapPath{"status"}, sectionVerdict, decoded(verdictStatus)},
 			{tapPath{"checks", ""}, sectionVerdict, decoded(func(v model.RequirementCheck) string {
 				return checkLine(v, requirements)
 			})},
@@ -196,17 +195,6 @@ func findingLine(v struct {
 	return fmt.Sprintf("第 %d 章 · %s —— %s", v.Chapter, severity, note)
 }
 
-func verdictStatus(status string) string {
-	switch status {
-	case model.ReviewPass:
-		return "通过"
-	case model.ReviewBlocked:
-		return "未通过"
-	default:
-		return ""
-	}
-}
-
 func checkLine(v model.RequirementCheck, requirements map[string]string) string {
 	var status string
 	switch v.Status {
@@ -299,13 +287,6 @@ func toolDetail(tool string, args json.RawMessage) string {
 		}
 		if json.Unmarshal(args, &input) == nil {
 			return clipRunes(flat(input.Reason), 40)
-		}
-	case prompt.ToolVerdictSubmit:
-		var input struct {
-			Status string `json:"status"`
-		}
-		if json.Unmarshal(args, &input) == nil {
-			return verdictStatus(input.Status)
 		}
 	}
 	return ""

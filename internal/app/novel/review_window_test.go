@@ -197,6 +197,22 @@ func TestExtendCarriesPendingRequirements(t *testing.T) {
 	})
 }
 
+// 首次规划也带上用户已经提的要求（开书时给的大纲、蓝图等确认时说的），规划据此安排落点；
+// 禁止项与作用域落在全书之外的不带。
+func TestDevelopCarriesPendingRequirements(t *testing.T) {
+	assertStep(t, requirementFixture(t, 0, 0), testRun(5, 1), Evidence{}, stepWant{
+		kind: model.OperationDevelopPlan, id: "run:book:1:plan:f5:s0:e0",
+		check: func(t *testing.T, work creation.WorkItem) {
+			got := work.Input.(model.DevelopPlanInput).PendingRequirements
+			if !slices.Equal(got, []string{
+				"主角登场", "弧一压住节奏（作用域：第 1 个故事弧《弧一》）", "弧九换视角（作用域：大纲中尚不存在的节点）", "第二三章下雨（作用域：第 2–3 章）",
+			}) {
+				t.Fatalf("pending requirements = %v", got)
+			}
+		},
+	})
+}
+
 // 审阅基线钉住窗口正文与衔接章，不钉 Canon（D62）：事实原地更新不会废掉旧窗口。
 func TestReviewBasisPinsSeamButNotCanon(t *testing.T) {
 	project := novelFixture(t, 5, 5)

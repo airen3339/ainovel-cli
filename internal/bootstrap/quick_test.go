@@ -171,6 +171,39 @@ func TestQuickWriteDraftOutdatedWhileWaitingIsRedoneBySuccessor(t *testing.T) {
 	}
 }
 
+// 退回蓝图的理由交给重拟的规划（D80）：后继规划的输入带着它，规划才能照着重做。
+func TestQuickWriteRejectedBlueprintIsReplannedWithTheReason(t *testing.T) {
+	ctx := context.Background()
+	executor := &scriptedQuickExecutor{now: testTime()}
+	api := newQuickTestApp(t, executor)
+	command := novelapp.QuickWriteCommand{
+		ProjectID: "replan-book", UserID: "user-1", Premise: "一个失忆的邮差替亡者送完最后一封信",
+		Chapters: 2, Approval: model.ApprovalManual,
+		WorkerID: "quick-worker", LeaseDuration: time.Minute, CreatedAt: testTime(),
+	}
+	result, err := api.Novels.QuickWrite(ctx, command)
+	if err != nil {
+		t.Fatal(err)
+	}
+	blueprint := planID(result.RunID, command.Chapters)
+	const reason = "第 1 章从局长的视角写"
+	if _, err := api.Decisions.Reject(ctx, decision.RejectCommand{ProposalID: blueprint + "-proposal", UserID: command.UserID, Reason: reason, At: testTime().Add(time.Hour)}); err != nil {
+		t.Fatal(err)
+	}
+	command.CreatedAt = testTime().Add(2 * time.Hour)
+	if result, err = api.Novels.QuickWrite(ctx, command); err != nil || result.WaitingOperationID != blueprint+":r2" {
+		t.Fatalf("replan = %#v, %v", result, err)
+	}
+	successor, err := api.Tasks.Operation(ctx, blueprint+":r2")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var input model.DevelopPlanInput
+	if err := json.Unmarshal(successor.Input, &input); err != nil || !slices.ContainsFunc(input.PendingRequirements, func(text string) bool { return strings.HasPrefix(text, reason) }) {
+		t.Fatalf("successor input = %s, %v", successor.Input, err)
+	}
+}
+
 func TestQuickWriteMilestonePresetPausesOnlyAtMilestones(t *testing.T) {
 	ctx := context.Background()
 	executor := &scriptedQuickExecutor{now: testTime()}

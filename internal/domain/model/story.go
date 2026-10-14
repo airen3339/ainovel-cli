@@ -267,8 +267,11 @@ func (v CanonFact) Validate() error {
 	if !ok {
 		return fmt.Errorf("unknown canon kind %q: %w", v.Kind, ErrInvalid)
 	}
-	if !strings.HasPrefix(v.Predicate, prefix) || !validCanonKey(v.Predicate) {
+	if !strings.HasPrefix(v.Predicate, prefix) {
 		return fmt.Errorf("canon predicate %q must use the %q controlled namespace: %w", v.Predicate, prefix, ErrInvalid)
+	}
+	if !validCanonKey(v.Predicate) {
+		return fmt.Errorf("canon predicate %q may only use lowercase ASCII letters, digits and _ after %q (no Chinese, no capitals); the value carries the wording: %w", v.Predicate, prefix, ErrInvalid)
 	}
 	if v.Resolved && v.Kind != CanonForeshadow {
 		return fmt.Errorf("only foreshadow canon can be resolved, got %s: %w", v.Kind, ErrInvalid)

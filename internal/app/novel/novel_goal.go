@@ -56,7 +56,7 @@ type novelItem struct {
 	prior     []model.ReviewFinding // review：焦点章上一轮的阻塞意见
 	notes     []string              // rewrite：阻塞意见；extend：上一窗口的审阅意见；rework：返工要求原话
 	revision  model.Revision        // review：绑定的 Revision；rewrite：所依据裁定的 Revision；rework：返工要求入账的 Revision（槽位 ID）
-	// requirements 是窗口要逐项核验的要求（D62）；pending 是扩窗时仍待兑现的要求原文。
+	// requirements 是窗口要逐项核验的要求（D62）；pending 是规划时仍待兑现的要求原文。
 	requirements []model.Requirement
 	pending      []string
 	// concluded：extend 时已覆盖的末章是作为全书结局写成的，这次扩窗是续写（D63）。
@@ -165,6 +165,9 @@ func (Policy) next(project projectdoc.Snapshot, run model.CreationRun, evidence 
 			}
 		case unmet == "":
 			return creation.Step{Done: fmt.Sprintf("全书 %d 章完成并通过审阅", length.Final)}, "", nil
+		case item.kind == workDevelopPlan:
+			// 首次规划就要为用户已经提的要求安排落点：开书时给的大纲、蓝图等确认时提的要求。
+			item.pending = ledger.pending(0)
 		case item.kind == workExtendPlan:
 			// 先审后扩（§6.3）：窗口意见与待兑现要求随扩窗输入进入下一段规划；扩窗以
 			// 覆盖末章的裁定为基线（D51），裁定失效则扩窗任务失效。
@@ -421,8 +424,8 @@ func (item novelItem) work(run model.CreationRun, premise string, length Length)
 	case workDevelopPlan:
 		work.ID, work.Kind = runQuickID(run.ID, "plan", length.inputID()), model.OperationDevelopPlan
 		work.Input = model.DevelopPlanInput{
-			Intent: premise, FixedChapters: length.Fixed,
-			Goal: "设计可直接用于连续创作的卷、故事弧与章节大纲：只搭近处——第一卷的故事弧骨架（看得清时可再搭下一卷），更远的卷写到时按已发生的故事再定，终局只作为方向写进罗盘；这次只为第一个故事弧展开章节，这一弧多少章由你按故事走向决定，每章挂在所属故事弧下；" + length.planningGoal(),
+			Intent: premise, FixedChapters: length.Fixed, PendingRequirements: item.pending,
+			Goal: "设计可直接用于连续创作的卷、故事弧与章节大纲：只搭近处——第一卷的故事弧骨架（看得清时可再搭下一卷），更远的卷写到时按已发生的故事再定，终局只作为方向写进罗盘；这次只为第一个故事弧展开章节，这一弧多少章由你按故事走向决定，每章挂在所属故事弧下；为 pending_requirements 中的要求安排落点，指明了章的就落在那几章；" + length.planningGoal(),
 		}
 	case workExtendPlan:
 		goal := "展开下一个故事弧的章节：已有章节保持不变，只在末尾追加并挂在所属故事弧下；下一弧已有骨架就按已发生的故事修订后展开，没有就新建；本卷的故事弧都已写完时先判断故事是否到了终点，未到终点才新开一卷，新卷只搭它自己的故事弧骨架；这一弧多少章由你按故事走向决定；结合审阅意见调整后续走向，为 pending_requirements 中尚未兑现的要求安排落点；已有人物与事物的状态随章节正文记录，规划不改写；" + length.planningGoal()

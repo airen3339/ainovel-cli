@@ -294,7 +294,7 @@ func TestFindingsLandOnChaptersInRange(t *testing.T) {
 		t.Fatalf("out of range finding: %v", err)
 	}
 	// 已审且正文未变的章只作上下文（D68）：阻塞必须链接被违反的要求，报错用故事语言。
-	recheck := model.ReviewRangeInput{ChapterIDs: []string{"c1", "c2"}, Reviewed: []string{"c1"}}
+	recheck := model.ReviewRangeInput{ChapterIDs: []string{"c1", "c2"}, Reviewed: []string{"c1"}, Requirements: []model.Requirement{{ID: "directive:d1", Text: "立誓要郑重"}}}
 	_, err = story.Findings(recheck, []Finding{{Chapter: 1, Severity: "blocking", Note: "旧问题"}})
 	if humanized := story.Humanize(err); !errors.Is(err, model.ErrInvalid) || internalID.MatchString(humanized.Error()) || !strings.Contains(humanized.Error(), "第 1 章") {
 		t.Fatalf("blocking on reviewed chapter: %v", humanized)
@@ -307,6 +307,10 @@ func TestFindingsLandOnChaptersInRange(t *testing.T) {
 		if _, err := story.Findings(recheck, []Finding{finding}); err != nil {
 			t.Fatalf("finding %+v: %v", finding, err)
 		}
+	}
+	// requirement 只能链接这次审阅的要求：把问题类别填进去当场被拒，报错说出能链接的。
+	if _, err := story.Findings(recheck, []Finding{{Chapter: 2, Severity: "blocking", Note: "前后矛盾", Requirement: "与已确立的事实矛盾"}}); err == nil || !strings.Contains(err.Error(), `"directive:d1"`) {
+		t.Fatalf("finding linking a made-up requirement: %v", err)
 	}
 }
 
@@ -340,5 +344,60 @@ func TestMissingFactReferenceNamesTheExistingOnes(t *testing.T) {
 	_, _, err := fixture().ResolveEdit(Edit{Remove: []FactRef{{Subject: "林凡", Predicate: "event.oath"}}}, Settings{})
 	if err == nil || !strings.Contains(err.Error(), "用这个谓词的事实有：「林凡」event.oath（chapter=2）") {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+// 锁定一章管它的大纲，写了正文也管正文：还没写的章也能锁（S5 的关键剧情节点）；放开只删
+// 已有的规则。
+func TestChapterLockCoversItsOutlineAndText(t *testing.T) {
+	story := fixture()
+	patches, _, err := story.ResolveEdit(Edit{Locks: []LockEdit{
+		{Chapter: 2, Control: model.ControlLocked},
+		{Chapter: 3, Control: model.ControlGuided, Guidance: []string{"下山时要带着师父的剑"}},
+	}}, Settings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids := patchIDs(patches); !slices.Equal(ids, []string{"ownership:plan:c2/put", "ownership:manuscript:c2/put", "ownership:plan:c3/put"}) {
+		t.Fatalf("patches = %v", ids)
+	}
+	rules := []model.OwnershipRule{{Target: model.DocumentRef{Kind: model.DocumentPlan, ID: "c2"}, Control: model.ControlLocked}}
+	patches, _, err = story.ResolveEdit(Edit{Locks: []LockEdit{{Chapter: 2, Control: model.ControlOpen}}}, Settings{Ownership: rules})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids := patchIDs(patches); !slices.Equal(ids, []string{"ownership:plan:c2/delete"}) {
+		t.Fatalf("open patches = %v", ids)
+	}
+}
+
+// 锁定一条设定（S5 的角色底线）：已有的按主体与谓词找；同一次修改里新写的也能锁，用户说
+// “人设锁死：……”时内容与锁定一次落下。
+func TestFactLockFindsExistingAndNewFacts(t *testing.T) {
+	patches, _, err := fixture().ResolveEdit(Edit{
+		Facts: []FactEdit{{Subject: "苏晴", Predicate: "rule.temper", Value: json.RawMessage(`"沉默寡言"`)}},
+		Locks: []LockEdit{
+			{Fact: &FactRef{Subject: "苏晴", Predicate: "rule.temper"}, Control: model.ControlLocked},
+			{Fact: &FactRef{Subject: "林凡", Predicate: "event.oath", Chapter: 2}, Control: model.ControlLocked},
+		},
+	}, Settings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids := patchIDs(patches); !slices.Equal(ids, []string{"canon:f4/put", "ownership:canon:f4/put", "ownership:canon:f2/put"}) {
+		t.Fatalf("patches = %v", ids)
+	}
+	if _, _, err := fixture().ResolveEdit(Edit{Locks: []LockEdit{{Fact: &FactRef{Subject: "林凡", Predicate: "event.oath"}, Control: model.ControlLocked}}}, Settings{}); err == nil || !strings.Contains(err.Error(), "chapter=2") {
+		t.Fatalf("lock without the event's chapter: %v", err)
+	}
+}
+
+// 规划者想把伏笔的回收落在还没写的章：报错说那章还没写、该写进梗概，不说“不存在”（D81）。
+func TestEffectiveChapterOnUnwrittenChapterPointsToTheSummary(t *testing.T) {
+	_, err := fixture().Resolve(&model.RevisePlanInput{}, Submission{Facts: []FactEdit{
+		{Subject: "林凡", Predicate: "foreshadow.jade_origin", Value: json.RawMessage(`"玉佩来历在第 9 章揭晓"`), EffectiveChapter: 9},
+	}}, nil)
+	if !errors.Is(err, model.ErrInvalid) || !strings.Contains(err.Error(), "第 9 章还没写") || !strings.Contains(err.Error(), "梗概") {
+		t.Fatalf("error = %v", err)
 	}
 }

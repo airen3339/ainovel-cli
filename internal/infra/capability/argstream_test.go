@@ -75,10 +75,10 @@ func TestProseExtractorPutChapter(t *testing.T) {
 
 func TestProseExtractorReplaceBlockFieldOrders(t *testing.T) {
 	assertSplitEquivalence(t, replaceBlockPath,
-		`{"key":"ch-1","block_id":"b2","text":"改写后的段落。","expected_version":3}`,
+		`{"key":"ch-1","block_id":"b2","text":"改写后的段落。"}`,
 		"改写后的段落。")
 	assertSplitEquivalence(t, replaceBlockPath,
-		`{"text":"正文在前。","key":"ch-1","block_id":"b1","expected_version":1}`,
+		`{"text":"正文在前。","key":"ch-1","block_id":"b1"}`,
 		"正文在前。")
 }
 
@@ -370,11 +370,10 @@ func TestReviewStreamsFindingsAndVerdict(t *testing.T) {
 	_, findings, _ := tracker.feed(prompt.ToolWorkspacePutReview, "call-r",
 		`{"key":"review","findings":[{"chapter":3,"severity":"blocking","note":"门后人的身份\n已被暗示","requirement":"d-1"},{"chapter":4,"severity":"note","note":"雨声意象重复"}]}`)
 	_, verdict, _ := tracker.feed(prompt.ToolVerdictSubmit, "call-v",
-		`{"status":"blocked","review_key":"review","checks":[{"id":"d-1","status":"violated","note":"第 3 章"},{"id":"d-9","status":"pending"}]}`)
+		`{"review_key":"review","checks":[{"id":"d-1","status":"violated","note":"第 3 章"},{"id":"d-9","status":"pending"}]}`)
 	want := []liveLine{
 		{sectionReview, "第 3 章 · 阻塞 —— 门后人的身份 已被暗示"},
 		{sectionReview, "第 4 章 · 参考 —— 雨声意象重复"},
-		{sectionVerdict, "未通过"},
 		{sectionVerdict, "被违反 · 保持悬疑氛围，不要过早揭示门后人的身份 —— 第 3 章"},
 		{sectionVerdict, "待定 · d-9"},
 	}
@@ -391,11 +390,10 @@ func TestToolDetailNamesTheTarget(t *testing.T) {
 		{prompt.ToolWorkspaceRead, `{"key":"draft"}`, "draft"},
 		{prompt.ToolWorkspacePutChapter, `{"key":"draft","chapter":{"blocks":[{"id":"b1","text":"雨停了。"},{"id":"b2","text":"他没有敲门。"}]}}`, "10 字"},
 		{prompt.ToolWorkspacePutChapter, `{"key":"ch5","chapter":{"number":5,"blocks":[{"id":"b1","text":"信"}]}}`, "第 5 章 · 1 字"},
-		{prompt.ToolWorkspaceReplaceBlock, `{"key":"draft","block_id":"b2","text":"他敲了门。","expected_version":2}`, "段落 b2 · 5 字"},
+		{prompt.ToolWorkspaceReplaceBlock, `{"key":"draft","block_id":"b2","text":"他敲了门。"}`, "段落 b2 · 5 字"},
 		{prompt.ToolWorkspacePutReview, `{"key":"r","findings":[{"severity":"blocking"},{"severity":"note"}]}`, "2 条意见（阻塞 1）"},
 		{prompt.ToolWorkspacePutReview, `{"key":"r","findings":[]}`, "0 条意见"},
 		{prompt.ToolProposalSubmit, `{"reason":"完成第四章\n初稿"}`, "完成第四章 初稿"},
-		{prompt.ToolVerdictSubmit, `{"status":"pass","review_key":"r"}`, "通过"},
 		{prompt.ToolWorkspaceList, `{}`, ""},
 		{prompt.ToolAuthorityRead, `not json`, ""},
 	}

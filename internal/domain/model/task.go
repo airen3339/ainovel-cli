@@ -102,11 +102,12 @@ func TaskInputAs[T any, PT interface {
 
 // DevelopPlanInput / RevisePlanInput 不指定章数：这次展开或追加多少章由规划者决定，
 // 提交边界只守篇幅上界与进展（§6.3 D67）。FixedChapters 为 0 表示篇幅交给 AI，正数
-// 表示用户固定的全书章数。
+// 表示用户固定的全书章数。PendingRequirements 是尚未兑现的要求原文（D62），供规划安排落点。
 type DevelopPlanInput struct {
-	Intent        string `json:"intent"`
-	FixedChapters int    `json:"fixed_chapters,omitempty"`
-	Goal          string `json:"goal,omitempty"`
+	Intent              string   `json:"intent"`
+	FixedChapters       int      `json:"fixed_chapters,omitempty"`
+	PendingRequirements []string `json:"pending_requirements,omitempty"`
+	Goal                string   `json:"goal,omitempty"`
 }
 
 func (v DevelopPlanInput) Validate() error {
@@ -120,8 +121,7 @@ func (v DevelopPlanInput) Validate() error {
 }
 
 // RevisePlanInput 的 Basis 是扩窗所依据的窗口审阅裁定基线（D51）：相干要求或正文
-// 再变化时扩窗任务失效，先重审再扩。PendingRequirements 是尚未兑现、作用域延伸到
-// 新窗口的要求原文（D62），供规划安排落点。
+// 再变化时扩窗任务失效，先重审再扩。
 type RevisePlanInput struct {
 	Intent              string        `json:"intent"`
 	FixedChapters       int           `json:"fixed_chapters,omitempty"`
@@ -281,6 +281,14 @@ func (v ReviewRangeInput) AdmitsFinding(finding ReviewFinding) error {
 	if !slices.Contains(v.ChapterIDs, finding.ChapterID) {
 		return fmt.Errorf("finding chapter %q is outside the requested range; attach cross-chapter issues to the most relevant chapter in range: %w",
 			finding.ChapterID, ErrInvalid)
+	}
+	if finding.Requirement != "" && !slices.ContainsFunc(v.Requirements, func(r Requirement) bool { return r.ID == finding.Requirement }) {
+		ids := make([]string, 0, len(v.Requirements))
+		for _, r := range v.Requirements {
+			ids = append(ids, r.ID)
+		}
+		return fmt.Errorf("requirement %q is not one of this review's requirements %q; link only those ids, and leave requirement empty for any other issue: %w",
+			finding.Requirement, ids, ErrInvalid)
 	}
 	if finding.Severity == FindingBlocking && finding.Requirement == "" && slices.Contains(v.Reviewed, finding.ChapterID) {
 		return fmt.Errorf("chapter %q was already reviewed and is unchanged, so this review reads it as context only: "+

@@ -23,6 +23,12 @@ const (
 	SlotChiefConverse Slot = "chief.converse"
 )
 
+// Slots 是 Pack 能覆盖的全部 Prompt 槽位。
+var Slots = []Slot{
+	SlotArchitectStoryDesign, SlotArchitectArcExpand, SlotWriterChapterPlan, SlotWriterChapterDraft,
+	SlotWriterRewrite, SlotEditorStoryReview, SlotEditorStyleReview, SlotChiefConverse,
+}
+
 type ToolSchema struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`

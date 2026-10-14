@@ -13,9 +13,11 @@ import (
 	"github.com/voocel/ainovel-cli/internal/app/chief"
 	novelapp "github.com/voocel/ainovel-cli/internal/app/novel"
 	projectdoc "github.com/voocel/ainovel-cli/internal/app/project"
+	resources "github.com/voocel/ainovel-cli/internal/app/resource"
 	"github.com/voocel/ainovel-cli/internal/app/workbench"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/domain/model"
+	"github.com/voocel/ainovel-cli/internal/infra/capability/prompt"
 	appconfig "github.com/voocel/ainovel-cli/internal/infra/config"
 	"github.com/voocel/ainovel-cli/internal/infra/store"
 )
@@ -25,6 +27,9 @@ import (
 //
 //	AINOVEL_LIVE=/tmp/live.db go test ./internal/bootstrap -run TestLive -v -timeout 8h
 //	go run ./cmd/ainovel-cli --headless --db /tmp/live.db diag --project <日志里的作品>
+//
+// AINOVEL_LIVE_PROJECT 给出库里已有的书时接着跑它（长篇超时后续跑）。
+// 换模型、思考强度用 AINOVEL_MODEL、AINOVEL_THINKING（见 TestLiveModelTrial）。
 const liveUserID = "live-user"
 
 // internalID 是文档编号的样子（c4、f43、e16、b1）：给用户看的文字里不该出现（D66）。
@@ -43,6 +48,7 @@ type liveUser struct {
 	seen    int // 已记进日志的对话条目
 	ended   int // 已记进日志的推进
 	cue     *liveCue
+	watch   func(workbench.WorkbenchSnapshot) // 推进途中每次看现场时调用
 }
 
 // liveCue 是写作途中插的一句话：现场走到 phase 时说。
@@ -71,7 +77,10 @@ func openLive(t *testing.T) *liveUser {
 	if err := api.Models.Apply(config); err != nil {
 		t.Fatal(err)
 	}
-	project := "live-" + time.Now().Format("20060102-150405")
+	project := os.Getenv("AINOVEL_LIVE_PROJECT") // 接着跑库里已有的书
+	if project == "" {
+		project = "live-" + time.Now().Format("20060102-150405")
+	}
 	session := api.Chief.Open(ctx, project, liveUserID)
 	t.Cleanup(func() {
 		session.Close()
@@ -137,7 +146,7 @@ func used(turn []chief.Entry, tool string) bool {
 	return slices.ContainsFunc(turn, func(entry chief.Entry) bool { return entry.Tool == tool && entry.Done && !entry.Failed })
 }
 
-// idle 等推进与主编都停下；途中按 cue 插话。
+// idle 等推进与主编都停下；途中按 cue 插话。现场 90 分钟没有变化算卡住。
 func (u *liveUser) idle() {
 	u.t.Helper()
 	deadline := time.Now().Add(90 * time.Minute)
@@ -155,14 +164,22 @@ func (u *liveUser) idle() {
 			return
 		}
 		if time.Now().After(deadline) {
-			u.t.Fatal("推进 90 分钟没有停下")
+			u.t.Fatal("现场 90 分钟没有变化")
 		}
 		select {
 		case <-u.session.Changes():
 		case <-tick.C:
-			if current := u.snapshot().CurrentPhase; current != phase {
-				phase = current
+			snap := u.snapshot()
+			if snap.CurrentPhase != phase {
+				phase = snap.CurrentPhase
+				deadline = time.Now().Add(90 * time.Minute)
 				u.log("现场：%s", phase)
+			}
+			if u.watch != nil {
+				u.watch(snap)
+			}
+			if snap.Change != nil && !snap.Change.Stale && len(snap.Change.Options) == 0 {
+				u.confirm(snap) // 守着工作台的用户看到确认卡就按 y，不等创作停下
 			}
 			if u.cue != nil && strings.Contains(phase, u.cue.phase) {
 				cue := u.cue
@@ -178,7 +195,7 @@ func (u *liveUser) idle() {
 func (u *liveUser) advance(stop func(workbench.WorkbenchSnapshot) bool) workbench.WorkbenchSnapshot {
 	u.t.Helper()
 	stuck := ""
-	for range 100 {
+	for range 200 {
 		u.idle()
 		snap := u.snapshot()
 		if stop(snap) {
@@ -198,10 +215,7 @@ func (u *liveUser) advance(stop func(workbench.WorkbenchSnapshot) bool) workbenc
 		case snap.Change != nil && (snap.Change.Stale || len(snap.Change.Options) > 0):
 			u.t.Fatalf("意外的确认卡：%+v", snap.Change)
 		case snap.Change != nil:
-			u.log("y 确认主编的修改：%s", snap.Change.Proposal.Reason)
-			if err := u.session.Confirm(u.ctx, snap.Change.Proposal.ID); err != nil {
-				u.t.Fatal(err)
-			}
+			u.confirm(snap)
 		case snap.Decision != nil && snap.Decision.Held != "":
 			u.accept(snap)
 		case snap.Decision != nil && snap.Decision.HasProposal && !snap.Decision.Stale:
@@ -215,8 +229,16 @@ func (u *liveUser) advance(stop func(workbench.WorkbenchSnapshot) bool) workbenc
 			u.session.Write(chief.WriteParams{Chapters: novelapp.KeepChapters})
 		}
 	}
-	u.t.Fatal("推进 100 步还没到")
+	u.t.Fatal("推进 200 步还没到")
 	return workbench.WorkbenchSnapshot{}
+}
+
+func (u *liveUser) confirm(snap workbench.WorkbenchSnapshot) {
+	u.t.Helper()
+	u.log("y 确认主编的修改：%s", snap.Change.Proposal.Reason)
+	if err := u.session.Confirm(u.ctx, snap.Change.Proposal.ID); err != nil {
+		u.t.Fatal(err)
+	}
 }
 
 func (u *liveUser) approve(snap workbench.WorkbenchSnapshot) {
@@ -459,4 +481,382 @@ func TestLiveSettingChange(t *testing.T) {
 		}
 	}
 
+}
+
+// planSummary 是第 number 章的规划梗概。
+func planSummary(snap workbench.WorkbenchSnapshot, number int) string {
+	for _, entry := range snap.Outline {
+		if entry.Node.Kind == model.PlanChapter && entry.Number == number {
+			return entry.Node.Summary
+		}
+	}
+	return ""
+}
+
+// S2、S5：完善设定开书（受众、必须、禁止、结局方向），蓝图等确认时给出自己的前两章大纲、
+// 后两章交给 AI；开写后锁住主角人设与第 4 章。写完看用户的大纲落进了那两章的规划、锁定
+// 生效且 AI 没动锁住的内容、要求都核验通过。
+func TestLiveDetailedSetup(t *testing.T) {
+	u := openLive(t)
+	intent := model.Intent{
+		Premise: livePremise, Audience: "喜欢悬疑的成年读者", Required: []string{"每章结尾留悬念"},
+		Forbidden: []string{"超自然力量"}, EndingDirection: "姐弟重逢，局长伏法",
+	}
+	u.log("S2：完善设定开书，4 章，里程碑确认")
+	u.session.Write(chief.WriteParams{Intent: &intent, Chapters: 4, Approval: model.ApprovalMilestone})
+	u.advance(func(snap workbench.WorkbenchSnapshot) bool { return snap.Decision != nil && snap.Decision.HasProposal })
+
+	u.log("S2：蓝图等确认时给前两章的大纲（与常见开局不同，蓝图得按它重拟）")
+	const outline = "大纲前两章按我的来：第 1 章从局长的视角写，他在雨夜烧掉一封信；第 2 章陈渡才出场，在退信里发现姐姐的信。后两章你来安排。"
+	turn := u.say(outline, 0)
+	u.log("退回蓝图：%v", used(turn, "reject_draft"))
+	u.cue = &liveCue{phase: "落笔第 1 章", words: "陈渡的人设锁死：沉默寡言，左手有旧伤，别改。第 4 章也锁住，别让 AI 动。"}
+	var locked string // 锁定时第 4 章的规划
+	u.watch = func(snap workbench.WorkbenchSnapshot) {
+		if locked == "" && u.cue == nil && liveOwned(u, model.DocumentPlan) {
+			locked = planSummary(snap, 4)
+		}
+	}
+	snap := u.advance(completed)
+	if u.cue != nil {
+		t.Fatal("S5：没赶上第 1 章的写作途中")
+	}
+	u.directives(snap)
+	for number := 1; number <= len(snap.Manuscript); number++ {
+		u.log("第 %d 章《%s》%d 字：%s", number, outlineTitle(snap, liveChapter(snap, number).PlanNodeID), liveChapter(snap, number).Runes(), planSummary(snap, number))
+	}
+	project, err := u.api.Projects.Project(u.ctx, u.project, model.InitialRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, rule := range project.Ownership {
+		u.log("  锁定 %s %s %q", rule.Target.Key(), rule.Control, rule.Guidance)
+	}
+	// 人设落进了书里并锁住：陈渡名下有写着左手旧伤的设定，它受锁定保护。
+	persona := slices.ContainsFunc(project.Canon, func(fact model.CanonFact) bool {
+		owner := slices.IndexFunc(project.Entities, func(entity model.Entity) bool { return entity.ID == fact.SubjectID })
+		return owner >= 0 && project.Entities[owner].Name == "陈渡" && strings.Contains(string(fact.Value), "左手") &&
+			slices.ContainsFunc(project.Ownership, func(rule model.OwnershipRule) bool {
+				return rule.Target == model.DocumentRef{Kind: model.DocumentCanon, ID: fact.ID} && rule.Control != model.ControlOpen
+			})
+	})
+	if !persona || !liveOwned(u, model.DocumentPlan) {
+		t.Errorf("S5：主角人设（%v）或第 4 章没有锁定", persona)
+	}
+	if locked != "" && planSummary(snap, 4) != locked {
+		t.Errorf("S5：锁定后第 4 章的规划被改了：%s → %s", locked, planSummary(snap, 4))
+	}
+	if summary := planSummary(snap, 1); !strings.Contains(summary, "烧") {
+		t.Errorf("S2：第 1 章的规划没有按用户的大纲：%s", summary)
+	}
+	for number, brief := range snap.Briefs {
+		for _, requirement := range brief.Requirements {
+			if requirement.Status == model.CheckViolated || strings.Contains(outline, requirement.Text) && requirement.Status != model.CheckSatisfied {
+				t.Errorf("S2：第 %d 章的要求「%s」：%s", number, requirement.Text, requirement.Status)
+			}
+		}
+	}
+}
+
+// liveOwned 报告作品里有没有 AI 不能自由改的某类文档。
+func liveOwned(u *liveUser, kind model.DocumentKind) bool {
+	project, err := u.api.Projects.Project(u.ctx, u.project, model.InitialRevision)
+	if err != nil {
+		u.t.Fatal(err)
+	}
+	return slices.ContainsFunc(project.Ownership, func(rule model.OwnershipRule) bool {
+		return rule.Target.Kind == kind && rule.Control != model.ControlOpen
+	})
+}
+
+// S9、S3：自动推进写第 2 章时把审批调严（之后每章等用户过目）；第一份等确认的稿件到来时，改第
+// 4 章的结局（未来计划），已经通过的章不动，第 4 章按新的写。
+func TestLiveMidCourseControl(t *testing.T) {
+	u := openLive(t)
+	u.log("S9：自动推进，写第 2 章时调严审批")
+	u.session.Write(chief.WriteParams{Premise: livePremise, Chapters: 4, Approval: model.ApprovalAuto})
+	u.cue = &liveCue{phase: "落笔第 2 章", words: "从现在起每章写完先给我看，我确认了再往下写。"}
+	snap := u.advance(func(snap workbench.WorkbenchSnapshot) bool { return draftOf(snap) > 0 })
+	if u.cue != nil {
+		t.Fatal("S9：没赶上第 2 章的写作途中")
+	}
+	if snap.Approval != model.ApprovalManual {
+		t.Errorf("S9：审批没有调成逐章确认：%s", snap.Approval)
+	}
+	held := draftOf(snap)
+	u.log("第一份等确认的稿件：第 %d 章", held)
+
+	u.log("S3：改第 4 章的结局")
+	accepted := make(map[int]string)
+	for _, chapter := range snap.Manuscript {
+		accepted[chapter.Number] = liveText(chapter)
+	}
+	before := planSummary(snap, 4)
+	u.say("第 4 章的结局改一下：姐姐没有回来，只托人带回一封信。", 0)
+	snap = u.advance(completed)
+	after := planSummary(snap, 4)
+	u.log("第 4 章梗概：%s → %s", before, after)
+	if after == before || !strings.Contains(after, "信") {
+		t.Errorf("S3：第 4 章的规划没有按新结局改")
+	}
+	for number, text := range accepted {
+		if liveText(liveChapter(snap, number)) != text {
+			t.Errorf("S3：已经通过的第 %d 章被改了", number)
+		}
+	}
+	if !strings.Contains(liveText(liveChapter(snap, 4)), "信") {
+		t.Errorf("S3：第 4 章正文没有按新结局写")
+	}
+}
+
+// 长篇验收（§0.4 #3）：自动推进写 40 章，记每章摊到的用量与用时；单章成本不该随章数线性增长。
+func TestLiveLongBook(t *testing.T) {
+	const chapters = 40
+	u := openLive(t)
+	u.log("长篇：一句话开书，%d 章，自动推进", chapters)
+	var start workbench.WorkbenchSnapshot
+	if os.Getenv("AINOVEL_LIVE_PROJECT") != "" {
+		start = u.snapshot() // 接着跑：已写的章不计入
+	} else {
+		u.session.Write(chief.WriteParams{Premise: livePremise, Chapters: chapters, Approval: model.ApprovalAuto})
+	}
+	perChapter := u.book(chapters, start)
+	if len(perChapter) < 20 {
+		return // 接着跑的书只看到后半程，首末段对照见库里的执行记录
+	}
+	// 每章摊到的输入按十章一段取平均：末段明显高于首段就是上下文随章数膨胀。
+	decile := func(from int) int {
+		sum := 0
+		for _, usage := range perChapter[from : from+10] {
+			sum += usage.Input
+		}
+		return sum / 10
+	}
+	first, final := decile(0), decile(len(perChapter)-10)
+	u.log("每章摊到的输入：前十章 %dK，后十章 %dK", first/1000, final/1000)
+	if final > 2*first {
+		t.Errorf("单章输入随章数膨胀：前十章 %dK，后十章 %dK", first/1000, final/1000)
+	}
+}
+
+// 换模型、思考强度对照：同一设定写 4 章，全书每章 2500 字（硬区间）让各组篇幅对齐；模型与档位用
+// AINOVEL_MODEL、AINOVEL_THINKING 换，比每章用时、用量与正文。
+func TestLiveModelTrial(t *testing.T) {
+	const chapters, words = 4, 2500
+	u := openLive(t)
+	u.log("对照：每章 %d 字，%d 章，自动推进", words, chapters)
+	now := time.Now().UTC()
+	if _, err := u.api.Projects.CreateProject(u.ctx, projectdoc.CreateProjectCommand{
+		ProjectID: u.project, ChangeID: u.project + ":create", UserID: liveUserID, Reason: "建立作品",
+		Draft: projectdoc.ProjectDraft{Intent: model.Intent{Premise: livePremise}, Approval: model.ApprovalAuto}, CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := u.api.Projects.AddDirective(u.ctx, projectdoc.AddDirectiveCommand{
+		ProjectID: u.project, ChangeID: u.project + ":words", UserID: liveUserID, Scope: model.DirectiveScopeProject,
+		Text: "每章两千五百字左右。", Constraints: &model.DirectiveConstraints{TargetWords: words}, Reason: "对照组统一篇幅", CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	u.session.Write(chief.WriteParams{Chapters: chapters})
+	u.book(chapters, workbench.WorkbenchSnapshot{})
+}
+
+// 对照 v0（§0.4 第 3、4 条）：同一设定与要求写 40 章、自动推进。v0 用日志里打出的同一段需求
+// 跑 headless，比每章输入、完本、返工与要求满足。篇幅两边都是软要求：v1 在官方写作标准里，
+// v0 写进需求原文。
+func TestLiveVersusV0(t *testing.T) {
+	const chapters = 40
+	intent := model.Intent{Premise: livePremise, Required: []string{"第 5 章陈渡第一次正面见到邮局局长"}, Forbidden: []string{"感情线"}}
+	u := openLive(t)
+	u.log("v0 的需求：%s全书 %d 章，每章三到四千字。要求：%s。不要写%s。", intent.Premise, chapters, intent.Required[0], intent.Forbidden[0])
+	u.session.Write(chief.WriteParams{Intent: &intent, Chapters: chapters, Approval: model.ApprovalAuto})
+	u.book(chapters, workbench.WorkbenchSnapshot{})
+	snap := u.snapshot()
+	for number := 1; number <= chapters; number++ {
+		for _, requirement := range snap.Briefs[number].Requirements {
+			if requirement.Status != model.CheckSatisfied {
+				u.log("第 %d 章的要求「%s」：%s", number, requirement.Text, requirement.Status)
+			}
+		}
+	}
+}
+
+// book 自动推进到完本：每入稿一章记它摊到的用量与用时，完本后记总量与各角色占比。start 是
+// 接着跑时开始的现场，此前写的章不计入。
+func (u *liveUser) book(chapters int, start workbench.WorkbenchSnapshot) []model.Usage {
+	written, last := len(start.Manuscript), start.Usage
+	perChapter := make([]model.Usage, 0, chapters)
+	u.watch = func(snap workbench.WorkbenchSnapshot) {
+		if len(snap.Manuscript) <= written {
+			return
+		}
+		delta := snap.Usage.Total
+		delta.Input -= last.Total.Input
+		delta.Output -= last.Total.Output
+		delta.CacheRead -= last.Total.CacheRead
+		delta.Cost -= last.Total.Cost
+		count := len(snap.Manuscript) - written
+		for range count {
+			perChapter = append(perChapter, model.Usage{
+				Input: delta.Input / count, Output: delta.Output / count,
+				CacheRead: delta.CacheRead / count, Cost: delta.Cost / float64(count),
+			})
+		}
+		u.log("入稿到第 %d 章 · 输入 %dK（缓存 %dK）输出 %dK · $%.3f · 用时 %s",
+			len(snap.Manuscript), delta.Input/1000, delta.CacheRead/1000, delta.Output/1000, delta.Cost,
+			(snap.Usage.Worked - last.Worked).Round(time.Second))
+		written, last = len(snap.Manuscript), snap.Usage
+	}
+	snap := u.advance(completed)
+	u.watch(snap) // 最后几章可能在两次查看之间入稿
+
+	runes := 0
+	for _, chapter := range snap.Manuscript {
+		runes += chapter.Runes()
+	}
+	total := snap.Usage.Total
+	u.log("完本 %d 章 %d 字 · 输入 %dK（缓存 %dK）输出 %dK · $%.2f · 用时 %s",
+		len(snap.Manuscript), runes, total.Input/1000, total.CacheRead/1000, total.Output/1000, total.Cost,
+		snap.Usage.Worked.Round(time.Second))
+	for role, usage := range snap.Usage.Roles {
+		u.log("  %s：输入 %dK（%.0f%%）输出 %dK · $%.2f · 用时 %s", role, usage.Usage.Input/1000,
+			100*float64(usage.Usage.Input)/float64(total.Input), usage.Usage.Output/1000, usage.Usage.Cost, usage.Worked.Round(time.Second))
+	}
+	if len(snap.Manuscript) != chapters {
+		u.t.Fatalf("写了 %d 章，要的是 %d 章", len(snap.Manuscript), chapters)
+	}
+	return perChapter
+}
+
+// S6、S7、S8：装一个创作包（写手用第一人称；审阅标准改为每章以问句收尾），配错的包装不上；
+// 书级规则要求每章出现钟楼。写完两章看生效的 Prompt 带着包与规则的来源和版本、正文照着写；
+// 用户把第 1 章删到每段只剩第一句，学出偏好候选，确认后进入用户的全局偏好。
+func TestLiveCreatorAssets(t *testing.T) {
+	u := openLive(t)
+	now := func() time.Time { return time.Now().UTC() }
+	pack := func(slot, text string) string {
+		dir := t.TempDir()
+		if err := os.MkdirAll(dir+"/prompts", 0o755); err != nil {
+			t.Fatal(err)
+		}
+		manifest := fmt.Sprintf(`{"id":"live-style","version":"1","name":"验收文风","prompts":{%q:"prompts/a.md","editor.story_review":"prompts/b.md"}}`, slot)
+		for name, content := range map[string]string{
+			"pack.jsonc": manifest, "prompts/a.md": text,
+			"prompts/b.md": "审阅标准：每章最后一句必须是问句（以问号结尾），不是就记一条 blocking。",
+		} {
+			if err := os.WriteFile(dir+"/"+name, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+		}
+		return dir
+	}
+	const voice = "用第一人称写：叙述者就是主角陈渡，以“我”自称。"
+	if _, err := u.api.Resources.InstallPackDirectory(u.ctx, pack("writer.chapter_drafts", voice), u.project+":bad-pack", liveUserID, "装错的包", now()); err == nil {
+		t.Fatal("S8：写错槽位的包装上了")
+	} else {
+		u.log("S8：写错槽位的包装不上：%v", err)
+	}
+	installed, err := u.api.Resources.InstallPackDirectory(u.ctx, pack("writer.chapter_draft", voice), u.project+":pack", liveUserID, "装验收文风", now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := u.api.Projects.CreateProject(u.ctx, projectdoc.CreateProjectCommand{
+		ProjectID: u.project, ChangeID: u.project + ":create", UserID: liveUserID, Reason: "建立作品",
+		Draft: projectdoc.ProjectDraft{Intent: model.Intent{Premise: livePremise}, Approval: model.ApprovalAuto}, CreatedAt: now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := u.api.Resources.SetProjectAssets(u.ctx, resources.SetProjectAssetsCommand{
+		ProjectID: u.project, ChangeID: u.project + ":assets", UserID: liveUserID, Reason: "启用验收文风",
+		Packs: []resources.PackRef{{ID: resources.OfficialPackID}, {ID: installed.Manifest.ID}}, CreatedAt: now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	const rule = "每章都要出现一次雨城的钟楼。"
+	if _, err := u.api.Resources.SetProjectOverlay(u.ctx, resources.SetProjectOverlayCommand{
+		ProjectID: u.project, ChangeID: u.project + ":overlay", UserID: liveUserID, Rules: []string{rule}, Reason: "书级规则", CreatedAt: now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	u.log("S6、S8：两章，自动推进")
+	u.session.Write(chief.WriteParams{Chapters: 2, Approval: model.ApprovalAuto})
+	snap := u.advance(completed)
+	operation, err := u.api.Tasks.Operation(u.ctx, snap.Run.ID+":chapter:"+liveChapter(snap, 1).PlanNodeID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text, sources, err := u.api.Prompts.Prompt(u.ctx, operation.Snapshot.ConfigDigest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range sources {
+		u.log("  来源 %s %s r%d %v", source.Layer, source.ID, source.Revision, source.Slots)
+	}
+	if !strings.Contains(text, voice) || !strings.Contains(text, rule) ||
+		!slices.ContainsFunc(sources, func(source prompt.Source) bool {
+			return source.ID == "live-style@1" && source.Revision == installed.Revision
+		}) {
+		t.Errorf("S6：写第 1 章生效的 Prompt 没有带上包与书级规则")
+	}
+	for _, chapter := range snap.Manuscript {
+		body := liveText(chapter)
+		last := strings.TrimRight(body, "”」』\"' \n")
+		u.log("第 %d 章 %d 字 · “我” %d 次 · 钟楼 %v · 结尾「%s」", chapter.Number, chapter.Runes(),
+			strings.Count(body, "我"), strings.Contains(body, "钟楼"), string([]rune(last)[max(0, len([]rune(last))-20):]))
+		if strings.Count(body, "我") < 10 {
+			t.Errorf("S8：第 %d 章不是第一人称", chapter.Number)
+		}
+		if !strings.Contains(body, "钟楼") {
+			t.Errorf("S6：第 %d 章没有钟楼", chapter.Number)
+		}
+		if !strings.HasSuffix(last, "？") && !strings.HasSuffix(last, "?") {
+			t.Errorf("S6：第 %d 章没有以问句收尾", chapter.Number)
+		}
+	}
+
+	u.log("S7：用户把第 1 章删到每段只剩第一句")
+	from := snap.Revision
+	projection, err := u.api.Projects.ExportProject(u.ctx, u.project, from)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range projection.Manuscript {
+		if projection.Manuscript[i].Number != 1 {
+			continue
+		}
+		for j, block := range projection.Manuscript[i].Blocks {
+			if end := strings.IndexAny(block.Text, "。！？"); end >= 0 {
+				projection.Manuscript[i].Blocks[j].Text = block.Text[:end+len("。")]
+			}
+		}
+	}
+	proposal, err := u.api.Projects.ImportProject(u.ctx, u.project+":edit", liveUserID, "删繁就简", projection, now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := u.api.Decisions.Approve(u.ctx, proposal.ID, liveUserID, now()); err != nil {
+		t.Fatal(err)
+	}
+	to := u.snapshot().Revision
+	record, err := u.api.Resources.LearnPreference(u.ctx, resources.LearnPreferenceCommand{
+		CandidateID: u.project + ":terse", ProfileID: liveUserID, Scope: "global", ProjectID: u.project,
+		FromRevision: from, ToRevision: to, CreatedAt: now(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u.log("偏好候选：%s · 依据 %q · 规则 %q", record.Candidate.Summary, record.Candidate.Evidence, record.Candidate.ProposedRules)
+	if record.State != "pending" || len(record.Candidate.ProposedRules) == 0 {
+		t.Fatalf("S7：候选 = %+v", record)
+	}
+	if _, err := u.api.Resources.ConfirmPreferenceCandidate(u.ctx, u.project+":confirm", liveUserID, "确认偏好",
+		liveUserID, "global", record.Candidate.ID, now()); err != nil {
+		t.Fatal(err)
+	}
+	profile, _, err := u.api.Resources.CreatorProfile(u.ctx, liveUserID, "global", 0)
+	if err != nil || !slices.Contains(profile.ExplicitRules, record.Candidate.ProposedRules[0]) {
+		t.Errorf("S7：确认后的全局偏好 = %+v, %v", profile, err)
+	}
 }

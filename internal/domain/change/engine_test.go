@@ -881,6 +881,8 @@ func TestAICanonRulesForFlashbacksEventsAndRedeclaration(t *testing.T) {
 			[]model.Patch{chapter("chapter-3", 3, model.AuthorAI), fact(newEvent), fact(updated(mood, "chapter-3", ""))}, ""},
 		{"flashback cannot rewind state", model.AuthorAI,
 			[]model.Patch{chapter("chapter-3", 3, model.AuthorAI), fact(newEvent), fact(updated(mood, "chapter-3", "chapter-1"))}, "record flashbacks as events"},
+		{"planning cannot change what a chapter established", model.AuthorAI,
+			[]model.Patch{fact(updated(mood, "", ""))}, "planning cannot change what written chapters established"},
 		{"user proposals are exempt", model.AuthorUser,
 			[]model.Patch{chapter("chapter-3", 3, model.AuthorUser), fact(updated(mood, "chapter-3", "chapter-1"))}, ""},
 		{"effective chapter must exist", model.AuthorAI,

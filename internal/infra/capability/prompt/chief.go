@@ -92,10 +92,11 @@ func ChangeSchema() json.RawMessage {
 			"required":           list("必须有的"),
 			"forbidden":          list("不要的"),
 		}, "additionalProperties": false},
-		"locks": map[string]any{"type": "array", "description": "控制某章正文或某个实体能不能被 AI 改", "items": map[string]any{
+		"locks": map[string]any{"type": "array", "description": "控制一章（大纲，写了正文也含正文）、一个实体或一条设定能不能被 AI 改；按这次修改之后的书定位，同一次修改里新写的设定也能锁", "items": map[string]any{
 			"type": "object", "properties": map[string]any{
-				"chapter":  map[string]any{"type": "integer", "minimum": 1, "description": "已写的章；与 entity 二选一"},
-				"entity":   map[string]any{"type": "string", "description": "实体名称；与 chapter 二选一"},
+				"chapter":  map[string]any{"type": "integer", "minimum": 1, "description": "已规划的章；chapter、entity、fact 给一个"},
+				"entity":   map[string]any{"type": "string", "description": "实体名称（只含名字与别名，人设、底线在设定里）"},
+				"fact":     ref,
 				"control":  map[string]any{"type": "string", "enum": []string{"locked", "guided", "open"}, "description": "locked 不许改，guided 只按 guidance 改，open 放开"},
 				"guidance": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "guided 时必填；逐字摘自用户的话"},
 			}, "required": []string{"control"}, "additionalProperties": false,

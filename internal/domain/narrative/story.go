@@ -128,6 +128,27 @@ func (s *Story) fact(subjectID, predicate, sourceChapterID string) (model.CanonF
 	return model.CanonFact{}, false
 }
 
+// factAt 按故事语言的引用找事实：主体按名称，事件与关系按来源章号。
+func (s *Story) factAt(ref FactRef) (model.CanonFact, error) {
+	subject, err := s.entity(ref.Subject)
+	if err != nil {
+		return model.CanonFact{}, err
+	}
+	var source string
+	if ref.Chapter != 0 {
+		chapter, err := s.manuscript(ref.Chapter)
+		if err != nil {
+			return model.CanonFact{}, err
+		}
+		source = chapter.ID
+	}
+	fact, ok := s.fact(subject.ID, ref.Predicate, source)
+	if !ok {
+		return model.CanonFact{}, fmt.Errorf("没有这条事实：「%s」%s；%s: %w", ref.Subject, ref.Predicate, s.namesake(ref.Predicate), model.ErrInvalid)
+	}
+	return fact, nil
+}
+
 // namesake 说出用这个谓词的现有事实（主体与来源章），让引用错了的一方照着改。事件按主体、
 // 谓词与来源章区分，引用时要给章号。
 func (s *Story) namesake(predicate string) string {

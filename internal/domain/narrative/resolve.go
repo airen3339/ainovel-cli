@@ -375,7 +375,8 @@ func (r *resolver) facts(edits []FactEdit) error {
 		fact.SourceChapterID = source
 		if edit.EffectiveChapter != 0 {
 			if fact.EffectiveChapterID, err = r.chapterID(edit.EffectiveChapter); err != nil {
-				return fmt.Errorf("事实「%s」%s 的 effective_chapter 只能指向已写的章（插叙、回忆）: %w", edit.Subject, edit.Predicate, err)
+				return fmt.Errorf("事实「%s」%s 的 effective_chapter 只能指向已写的章（插叙、回忆），第 %d 章还没写；以后才发生的变化写进那一章的梗概，写到时再记: %w",
+					edit.Subject, edit.Predicate, edit.EffectiveChapter, model.ErrInvalid)
 			}
 			if fact.EffectiveChapterID == source {
 				fact.EffectiveChapterID = ""

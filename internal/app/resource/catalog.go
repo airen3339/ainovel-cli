@@ -180,18 +180,19 @@ func (s *Catalog) userManuscriptEdits(
 func manuscriptEdits(before, after []model.ManuscriptChapter) []model.ManuscriptEditEvidence {
 	type block struct {
 		chapterID string
+		chapter   int
 		text      string
 	}
 	beforeBlocks := make(map[string]block)
 	afterBlocks := make(map[string]block)
 	for _, chapter := range before {
 		for _, current := range chapter.Blocks {
-			beforeBlocks[chapter.ID+"\x00"+current.ID] = block{chapterID: chapter.ID, text: current.Text}
+			beforeBlocks[chapter.ID+"\x00"+current.ID] = block{chapterID: chapter.ID, chapter: chapter.Number, text: current.Text}
 		}
 	}
 	for _, chapter := range after {
 		for _, current := range chapter.Blocks {
-			afterBlocks[chapter.ID+"\x00"+current.ID] = block{chapterID: chapter.ID, text: current.Text}
+			afterBlocks[chapter.ID+"\x00"+current.ID] = block{chapterID: chapter.ID, chapter: chapter.Number, text: current.Text}
 		}
 	}
 	keys := make([]string, 0, len(beforeBlocks)+len(afterBlocks))
@@ -213,13 +214,13 @@ func manuscriptEdits(before, after []model.ManuscriptChapter) []model.Manuscript
 		if hadOld && hasCurrent && old.text == current.text {
 			continue
 		}
-		chapterID := old.chapterID
-		if chapterID == "" {
-			chapterID = current.chapterID
+		chapter := old
+		if !hadOld {
+			chapter = current
 		}
 		separator := strings.IndexByte(key, 0)
 		edits = append(edits, model.ManuscriptEditEvidence{
-			ChapterID: chapterID, BlockID: key[separator+1:], Before: old.text, After: current.text,
+			ChapterID: chapter.chapterID, Chapter: chapter.chapter, BlockID: key[separator+1:], Before: old.text, After: current.text,
 		})
 	}
 	return edits
@@ -278,6 +279,9 @@ func (s *Catalog) installPack(
 	if loaded.Manifest.ID == OfficialPackID {
 		return InstalledPack{}, fmt.Errorf("pack id %q is reserved for the built-in official pack; change the id to install a copy: %w", OfficialPackID, model.ErrInvalid)
 	}
+	if err := validateSlots(loaded.Manifest); err != nil {
+		return InstalledPack{}, err
+	}
 	target := model.AuthorityTarget{Kind: model.AuthorityPack, ID: loaded.Manifest.ID}
 	base, err := currentRevision(ctx, s.store, target)
 	if err != nil {
@@ -295,6 +299,20 @@ func (s *Catalog) installPack(
 		Manifest: loaded.Manifest, Revision: committed.NewRevision,
 		Digest: loaded.Digest, Source: loaded.Root,
 	}, nil
+}
+
+// validateSlots 拒绝未知的 Prompt 槽位：写错的槽位不会装配进任何任务，装上了也不生效（S6）。
+func validateSlots(manifest model.PackManifest) error {
+	for slot := range manifest.PromptOverlays {
+		if !slices.Contains(prompt.Slots, prompt.Slot(slot)) {
+			known := make([]string, 0, len(prompt.Slots))
+			for _, slot := range prompt.Slots {
+				known = append(known, string(slot))
+			}
+			return fmt.Errorf("unknown prompt slot %q, known slots: %s: %w", slot, strings.Join(known, ", "), model.ErrInvalid)
+		}
+	}
+	return nil
 }
 
 // commitPack 以用户身份把 Pack 清单提交为该 Pack 权威流的新版本。

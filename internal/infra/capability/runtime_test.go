@@ -391,11 +391,11 @@ func TestRuntimeReviewSubmitsVerdictWithoutProposal(t *testing.T) {
 	review, _ := json.Marshal(map[string]any{
 		"key": "review/findings", "findings": findings,
 	})
-	noChecks, _ := json.Marshal(map[string]any{"status": "pass", "review_key": "review/findings"})
-	unsettled, _ := json.Marshal(map[string]any{"status": "pass", "review_key": "review/findings", "checks": []map[string]any{
+	noChecks, _ := json.Marshal(map[string]any{"review_key": "review/findings"})
+	unsettled, _ := json.Marshal(map[string]any{"review_key": "review/findings", "checks": []map[string]any{
 		{"id": "directive:hook", "status": "pending"}, {"id": "intent:forbidden:0", "status": "pending"},
 	}})
-	complete, _ := json.Marshal(map[string]any{"status": "pass", "review_key": "review/findings", "checks": []map[string]any{
+	complete, _ := json.Marshal(map[string]any{"review_key": "review/findings", "checks": []map[string]any{
 		{"id": "directive:hook", "status": "pending"}, {"id": "intent:forbidden:0", "status": "satisfied"},
 	}})
 	// 每次回应计 10 入 3 出，按单价折合 0.01。
@@ -534,7 +534,7 @@ func TestRuntimeRidesOutTemporaryModelFailures(t *testing.T) {
 	ctx := context.Background()
 	authorityStore, operation := claimedReview(t, "book-offline")
 	review, _ := json.Marshal(map[string]any{"key": "review/findings", "findings": []map[string]any{}})
-	verdict, _ := json.Marshal(map[string]any{"status": "pass", "review_key": "review/findings"})
+	verdict, _ := json.Marshal(map[string]any{"review_key": "review/findings"})
 	offline := &litellm.Error{Type: litellm.ErrorTypeNetwork, Message: "dial tcp: lookup relay: no such host", Temporary: true, RetryAfter: time.Millisecond}
 	runtime := boundRuntime(authorityStore, testChat(litellmtest.New(
 		litellmtest.Fail(offline), callReply("put-review", "workspace_put_review", review), callReply("verdict", "verdict_submit", verdict),
@@ -1268,5 +1268,40 @@ func TestPublishActivityStreamsItemsAndToolDetail(t *testing.T) {
 	}
 	if len(snapshot.Entries) != 1 || snapshot.Entries[0].Detail != "首次规划" || snapshot.Entries[0].Bytes == 0 {
 		t.Fatalf("entries = %#v", snapshot.Entries)
+	}
+}
+
+// 偏好分析只看故事语言（D66）：改前改后的文字与章号，没有作品、候选、正文与段落的编号。
+func TestRuntimeLearnsPreferenceInStoryLanguage(t *testing.T) {
+	ctx := context.Background()
+	authorityStore, err := store.Open(ctx, filepath.Join(t.TempDir(), "ainovel.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer authorityStore.Close()
+	model := litellmtest.New(litellmtest.Text(`{
+		"summary":"偏好克制","evidence":["第 1 章把直白的悲伤改成了动作"],
+		"proposed_rules":["用动作表现情绪"],"proposed_style_preferences":{}}`))
+	runtime := boundRuntime(authorityStore, testChat(model))
+	candidate, err := runtime.AnalyzePreference(ctx, domainmodel.PreferenceLearningInput{
+		CandidateID: "restraint", ProfileID: "user-1", Scope: "global", ProjectID: "book-learning",
+		FromRevision: 2, ToRevision: 3, ManuscriptEdits: []domainmodel.ManuscriptEditEvidence{{
+			ChapterID: "chapter-1", Chapter: 1, BlockID: "block-1", Before: "他感到非常悲伤。", After: "他捏皱袖口。",
+		}},
+	})
+	if err != nil || candidate.ID != "restraint" || candidate.ProposedRules[0] != "用动作表现情绪" {
+		t.Fatalf("candidate = %#v, %v", candidate, err)
+	}
+	request, err := json.Marshal(model.Requests()[0].Messages)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(request), `\"chapter\":1`) || !strings.Contains(string(request), "他捏皱袖口") {
+		t.Fatalf("analyzer input misses the edit: %s", request)
+	}
+	for _, id := range []string{"chapter-1", "block-1", "book-learning", "restraint"} {
+		if strings.Contains(string(request), id) {
+			t.Fatalf("analyzer input leaks %q: %s", id, request)
+		}
 	}
 }

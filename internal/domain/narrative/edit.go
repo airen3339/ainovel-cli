@@ -33,11 +33,12 @@ type IntentEdit struct {
 	Forbidden         []string `json:"forbidden,omitempty"`
 }
 
-// LockEdit 设定某章正文或某个实体的控制级别：locked 不许 AI 改，guided 按 guidance 改，
-// open 放开。chapter 与 entity 给一个。
+// LockEdit 设定一章、一个实体或一条设定的控制级别：locked 不许 AI 改，guided 按 guidance
+// 改，open 放开。一章管它的大纲，写了正文也管正文。chapter、entity、fact 给一个。
 type LockEdit struct {
 	Chapter  int                `json:"chapter,omitempty"`
 	Entity   string             `json:"entity,omitempty"`
+	Fact     *FactRef           `json:"fact,omitempty"`
 	Control  model.ControlLevel `json:"control"`
 	Guidance []string           `json:"guidance,omitempty"`
 }
@@ -71,9 +72,16 @@ func (s *Story) ResolveEdit(edit Edit, current Settings) ([]model.Patch, *model.
 			return nil, nil, err
 		}
 	}
-	for _, lock := range edit.Locks {
-		if err := r.lock(lock, current.Ownership); err != nil {
+	if len(edit.Locks) > 0 {
+		// 锁定按这次修改之后的书定位：同一次修改里新写的设定、新建的人物也能锁。
+		book, err := s.Apply(r.patches)
+		if err != nil {
 			return nil, nil, err
+		}
+		for _, lock := range edit.Locks {
+			if err := r.lock(book, lock, current.Ownership); err != nil {
+				return nil, nil, err
+			}
 		}
 	}
 	if len(r.patches) == 0 {
@@ -103,40 +111,51 @@ func (e IntentEdit) apply(intent model.Intent) model.Intent {
 	return intent
 }
 
-// lock 写入或移除一条控制规则：open 是默认约定，没有规则时什么也不做。
-func (r *resolver) lock(lock LockEdit, rules []model.OwnershipRule) error {
-	var target model.DocumentRef
+// lock 写入或移除 book 上某处的控制规则：open 是默认约定，没有规则时什么也不做。
+func (r *resolver) lock(book *Story, lock LockEdit, rules []model.OwnershipRule) error {
+	var targets []model.DocumentRef
 	switch {
-	case lock.Chapter > 0 && lock.Entity == "":
-		chapter, err := r.story.manuscript(lock.Chapter)
+	case lock.Chapter > 0 && lock.Entity == "" && lock.Fact == nil:
+		plan, err := book.chapterPlan(lock.Chapter)
 		if err != nil {
 			return err
 		}
-		target = model.DocumentRef{Kind: model.DocumentManuscript, ID: chapter.ID}
-	case lock.Entity != "" && lock.Chapter == 0:
-		entity, err := r.story.entity(lock.Entity)
+		targets = append(targets, model.DocumentRef{Kind: model.DocumentPlan, ID: plan.ID})
+		if chapter, ok := book.written[plan.ID]; ok {
+			targets = append(targets, model.DocumentRef{Kind: model.DocumentManuscript, ID: chapter.ID})
+		}
+	case lock.Entity != "" && lock.Chapter == 0 && lock.Fact == nil:
+		entity, err := book.entity(lock.Entity)
 		if err != nil {
 			return err
 		}
-		target = model.DocumentRef{Kind: model.DocumentEntity, ID: entity.ID}
+		targets = append(targets, model.DocumentRef{Kind: model.DocumentEntity, ID: entity.ID})
+	case lock.Fact != nil && lock.Chapter == 0 && lock.Entity == "":
+		fact, err := book.factAt(*lock.Fact)
+		if err != nil {
+			return err
+		}
+		targets = append(targets, model.DocumentRef{Kind: model.DocumentCanon, ID: fact.ID})
 	default:
-		return errors.New("锁定要指明一章（chapter）或一个人物、地点、物品、组织（entity），二选一")
+		return errors.New("锁定要指明一章（chapter）、一个人物地点物品组织（entity）或一条设定（fact），三选一")
 	}
-	ref := model.DocumentRef{Kind: model.DocumentOwnership, ID: target.Key()}
-	if lock.Control == model.ControlOpen {
-		if slices.ContainsFunc(rules, func(rule model.OwnershipRule) bool { return rule.Target == target }) {
-			r.patches = append(r.patches, model.Patch{Document: ref, Operation: model.PatchDelete})
+	for _, target := range targets {
+		ref := model.DocumentRef{Kind: model.DocumentOwnership, ID: target.Key()}
+		if lock.Control == model.ControlOpen {
+			if slices.ContainsFunc(rules, func(rule model.OwnershipRule) bool { return rule.Target == target }) {
+				r.patches = append(r.patches, model.Patch{Document: ref, Operation: model.PatchDelete})
+			}
+			continue
 		}
-		return nil
+		rule := model.OwnershipRule{Target: target, Control: lock.Control, Guidance: lock.Guidance}
+		if err := rule.Validate(); err != nil {
+			return err
+		}
+		content, err := json.Marshal(rule)
+		if err != nil {
+			return fmt.Errorf("encode ownership rule: %w", err)
+		}
+		r.patches = append(r.patches, model.Patch{Document: ref, Operation: model.PatchPut, Content: content})
 	}
-	rule := model.OwnershipRule{Target: target, Control: lock.Control, Guidance: lock.Guidance}
-	if err := rule.Validate(); err != nil {
-		return err
-	}
-	content, err := json.Marshal(rule)
-	if err != nil {
-		return fmt.Errorf("encode ownership rule: %w", err)
-	}
-	r.patches = append(r.patches, model.Patch{Document: ref, Operation: model.PatchPut, Content: content})
 	return nil
 }

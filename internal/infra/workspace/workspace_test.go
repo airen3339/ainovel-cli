@@ -12,7 +12,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/infra/store"
 )
 
-func TestReplaceChapterBlockUsesStableIDAndWorkspaceVersion(t *testing.T) {
+func TestReplaceChapterBlockUsesStableID(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
 	authorityStore, err := store.Open(ctx, filepath.Join(t.TempDir(), "ainovel.db"))
@@ -60,29 +60,31 @@ func TestReplaceChapterBlockUsesStableIDAndWorkspaceVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("put chapter: %v", err)
 	}
-	artifact, err = workspace.ReplaceChapterBlock(
-		ctx, operation.ID, artifact.Key, "p-1", "新段落", artifact.Version, claimed.Attempt, now.Add(3*time.Second),
-	)
-	if err != nil {
-		t.Fatalf("replace block: %v", err)
+	// 同一轮并行改两段：两次都基于同一次读取，都落下，互不覆盖。
+	for i, edit := range []struct{ block, text string }{{"p-1", "新段落"}, {"p-2", "也改了"}} {
+		if artifact, err = workspace.ReplaceChapterBlock(
+			ctx, operation.ID, artifact.Key, edit.block, edit.text, claimed.Attempt, now.Add(time.Duration(3+i)*time.Second),
+		); err != nil {
+			t.Fatalf("replace block %s: %v", edit.block, err)
+		}
 	}
-	if artifact.Version != 2 {
-		t.Fatalf("workspace version = %d, want 2", artifact.Version)
+	if artifact.Version != 3 {
+		t.Fatalf("workspace version = %d, want 3", artifact.Version)
 	}
 	var updated model.ManuscriptChapter
 	if err := json.Unmarshal(artifact.Content, &updated); err != nil {
 		t.Fatalf("decode updated chapter: %v", err)
 	}
-	if updated.Blocks[0].ID != "p-1" || updated.Blocks[0].Text != "新段落" || updated.Blocks[1].Text != "保持不变" {
+	if updated.Blocks[0].ID != "p-1" || updated.Blocks[0].Text != "新段落" || updated.Blocks[1].Text != "也改了" {
 		t.Fatalf("updated blocks = %#v", updated.Blocks)
 	}
 	if _, err := workspace.ReplaceChapterBlock(
-		ctx, operation.ID, artifact.Key, "p-1", "过期覆盖", 1, claimed.Attempt, now.Add(4*time.Second),
-	); !errors.Is(err, model.ErrWorkspaceConflict) {
-		t.Fatalf("stale edit error = %v, want ErrWorkspaceConflict", err)
+		ctx, operation.ID, artifact.Key, "p-1", "过期实例", claimed.Attempt+1, now.Add(5*time.Second),
+	); !errors.Is(err, model.ErrStateConflict) {
+		t.Fatalf("stale attempt error = %v, want ErrStateConflict", err)
 	}
 	if _, err := workspace.ReplaceChapterBlock(
-		ctx, operation.ID, artifact.Key, "missing", "内容", 2, claimed.Attempt, now.Add(5*time.Second),
+		ctx, operation.ID, artifact.Key, "missing", "内容", claimed.Attempt, now.Add(6*time.Second),
 	); !errors.Is(err, ErrBlockNotFound) {
 		t.Fatalf("missing block error = %v, want ErrBlockNotFound", err)
 	}

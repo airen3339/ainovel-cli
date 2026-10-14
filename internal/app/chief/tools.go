@@ -103,7 +103,7 @@ func (s *Session) tools() []tool {
 		define(toolRetire, "退掉一条要求（用户说不要了或记错了）；编号见 book_requirements", `{
 			"type":"object","properties":{"id":{"type":"string","minLength":1}},
 			"required":["id"],"additionalProperties":false}`, s.retire),
-		define(toolReject, "退回等用户决定的稿件，理由交给写作者按它重写，之后接着创作。reason 逐字摘自用户的话", `{
+		define(toolReject, "退回等用户决定的稿件或规划方案，理由交给写作者、规划者按它重做，之后接着创作。reason 逐字摘自用户的话", `{
 			"type":"object","properties":{"reason":{"type":"string","minLength":1}},
 			"required":["reason"],"additionalProperties":false}`, s.reject),
 		define(toolLength, "调整全书篇幅并继续创作：chapters 为全书章数；0 表示交给 AI（完本的书即为续写）", `{
@@ -113,7 +113,7 @@ func (s *Session) tools() []tool {
 		define(toolResume, "继续创作；卡在某章修订次数上时，就是让它再改一次", empty, s.resume),
 		define(toolChange, "按用户的意思改这本书：大纲（卷、故事弧、章的标题与梗概）、人物地点、设定、作品方向、锁定与审批方式。"+
 			"已有的按序号、名称、主体+谓词定位，给出的字段改成新的，没给的不变。能否直接生效由审批决定；"+
-			"与已写章节有出入时等用户选怎么处理。还有一份等确认的修改时，新的替换它。正文不在这里改", string(prompt.ChangeSchema()), s.proposeChange),
+			"与已写章节有出入时等用户选怎么处理。还有一份等确认的修改时，新的替换它。正文不在这里改；等用户决定的稿件、规划方案还不在书里，要改它们用 reject_draft", string(prompt.ChangeSchema()), s.proposeChange),
 		define(toolHistory, "看这本书最近的修改：谁、何时、改了什么、能否撤销（编号给 revert_change），以及等用户确认的那份", empty, s.history),
 		define(toolRevert, "撤销一次修改（编号见 book_history）：已生效的恢复原样，同样按审批放行；还在等确认的直接撤回", `{
 			"type":"object","properties":{"id":{"type":"string","minLength":1}},

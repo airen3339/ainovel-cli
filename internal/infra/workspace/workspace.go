@@ -54,10 +54,11 @@ func (s *Service) PutChapter(
 	}, expectedVersion, attempt)
 }
 
+// ReplaceChapterBlock 按稳定段落编号改一段。同一轮里并行改几段都基于同一次读取，段落编号不变，
+// 各自落在当前版本上；跨执行实例由 attempt 围栏挡住（D42），读改写之间的前提用这里刚读到的版本。
 func (s *Service) ReplaceChapterBlock(
 	ctx context.Context,
 	operationID, key, blockID, text string,
-	expectedVersion int64,
 	attempt int,
 	updatedAt time.Time,
 ) (model.WorkspaceArtifact, error) {
@@ -67,12 +68,6 @@ func (s *Service) ReplaceChapterBlock(
 	artifact, err := s.store.GetWorkspaceArtifact(ctx, operationID, key)
 	if err != nil {
 		return model.WorkspaceArtifact{}, err
-	}
-	if artifact.Version != expectedVersion {
-		return model.WorkspaceArtifact{}, fmt.Errorf(
-			"expected workspace version %d, current %d: %w",
-			expectedVersion, artifact.Version, model.ErrWorkspaceConflict,
-		)
 	}
 	if artifact.MediaType != ChapterMediaType {
 		return model.WorkspaceArtifact{}, fmt.Errorf("artifact %q is %q, not a chapter: %w", key, artifact.MediaType, model.ErrInvalid)
@@ -96,5 +91,5 @@ func (s *Service) ReplaceChapterBlock(
 	if !found {
 		return model.WorkspaceArtifact{}, fmt.Errorf("chapter block %q: %w", blockID, ErrBlockNotFound)
 	}
-	return s.PutChapter(ctx, operationID, key, chapter, &expectedVersion, attempt, updatedAt)
+	return s.PutChapter(ctx, operationID, key, chapter, &artifact.Version, attempt, updatedAt)
 }

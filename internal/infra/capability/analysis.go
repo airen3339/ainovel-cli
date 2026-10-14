@@ -18,15 +18,28 @@ import (
 // 三个语义判断都是三分法第二类（§11 第 7 条）：边界清晰的单次 LLM 函数。
 // 提示词、输入组装与输出契约就近留在这里，通用调用与严格解码收口在 llm。
 
+// preferenceEdit 是偏好分析看到的一处用户修改：故事语言（D66），按章号说，不带内部编号。
+type preferenceEdit struct {
+	Chapter int    `json:"chapter"`
+	Before  string `json:"before,omitempty"`
+	After   string `json:"after,omitempty"`
+}
+
 func (r *Runtime) AnalyzePreference(ctx context.Context, input model.PreferenceLearningInput) (model.PreferenceCandidate, error) {
 	if err := input.Validate(); err != nil {
 		return model.PreferenceCandidate{}, err
 	}
-	payload, err := json.Marshal(input)
+	edits := make([]preferenceEdit, 0, len(input.ManuscriptEdits))
+	for _, edit := range input.ManuscriptEdits {
+		edits = append(edits, preferenceEdit{Chapter: edit.Chapter, Before: edit.Before, After: edit.After})
+	}
+	payload, err := json.Marshal(struct {
+		Edits []preferenceEdit `json:"edits"`
+	}{edits})
 	if err != nil {
 		return model.PreferenceCandidate{}, fmt.Errorf("encode preference learning input: %w", err)
 	}
-	cacheKey, err := prompt.CacheKey(input.ProjectID, "preference.learn@1", model.Digest(payload), input.CandidateID)
+	cacheKey, err := prompt.CacheKey(input.ProjectID, "preference.learn@2", model.Digest(payload), input.CandidateID)
 	if err != nil {
 		return model.PreferenceCandidate{}, err
 	}
@@ -36,8 +49,11 @@ func (r *Runtime) AnalyzePreference(ctx context.Context, input model.PreferenceL
 	}
 	var candidate model.PreferenceCandidate
 	if _, err := llm.Structured(ctx, binding, llm.Call{
-		System: "你是写作偏好分析器。只从用户实际 before/after 修改中归纳可复用偏好；证据不足就明确报错，不得猜测人格或题材偏好。规则要短、可执行，并引用具体修改证据。",
-		Input:  string(payload),
+		System: "你是写作偏好分析器。edits 是用户亲手改过的正文段落（before 改前、after 改后，chapter 是章号）。" +
+			"只从这些修改中归纳可复用的写作偏好；证据不足就明确报错，不得猜测人格或题材偏好。" +
+			"规则写给之后写新章节的写作者：说怎么写，不说怎么删改；短、可执行，修改支撑到什么程度就说到什么程度，不夸大成绝对的禁令。" +
+			"证据按章号引用具体的改前改后文字。",
+		Input: string(payload),
 		Schema: llm.Schema{
 			Name: "creator_preference_candidate", Description: "从用户正文修改中提出可确认的写作偏好",
 			JSON: map[string]any{
