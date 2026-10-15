@@ -268,7 +268,7 @@ func TestRewriteContextsCarrySourcedFacts(t *testing.T) {
 // 规划锚点是第一个未写的章节：近期窗口给方向，锚点起的全部章节计划是工作对象，不带正文。
 func TestPlanningContextAnchorsAtFirstUnwrittenChapter(t *testing.T) {
 	context, err := selectContext(longBook(13, 10), model.OperationRevisePlan,
-		json.RawMessage(`{"intent":"长路","fixed_chapters":20,"existing_chapters":13}`))
+		json.RawMessage(`{"fixed_chapters":20,"existing_chapters":13}`))
 	if err != nil {
 		t.Fatal(err)
 	}

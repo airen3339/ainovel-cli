@@ -638,17 +638,26 @@ func outlineTitle(snap workbench.WorkbenchSnapshot, planID string) string {
 	return ""
 }
 
-// S4：两章、自动推进的书写完后，改一个已经写进正文的设定；有出入时选重写受影响的章。主编
-// 吃不准改动的用意时会先问，验收里的用户答一句。
+// S4：四章、自动推进的书写到第 2 章时停下，改一个已经写进正文的设定；有出入时选重写受影响
+// 的章。主编吃不准改动的用意时会先问，验收里的用户答一句。后面没写的章纲点到它的，修改里
+// 一并改（D87）；重写的章，章题与章纲随正文一起改。写完全书的大纲里不再有旧设定，重写的章
+// 与之后写的章都用新设定。
 func TestLiveSettingChange(t *testing.T) {
 	u := openLive(t)
-	u.session.Write(chief.WriteParams{Premise: livePremise, Chapters: 2, Approval: model.ApprovalAuto})
-	snap := u.advance(completed)
-	first := snap.Run.ID
+	u.session.Write(chief.WriteParams{Premise: livePremise, Chapters: 4, Approval: model.ApprovalAuto})
+	u.steps = []liveStep{{2, "停下改设定", func() {
+		if err := u.session.Pause(u.ctx); err != nil {
+			t.Fatal(err)
+		}
+	}}}
+	snap := u.advance(func(snap workbench.WorkbenchSnapshot) bool {
+		return snap.Run != nil && snap.Run.State == model.RunPaused
+	})
 	written := make(map[int]string)
 	for _, chapter := range snap.Manuscript {
 		written[chapter.Number] = liveText(chapter)
 	}
+	u.outline(snap, "改设定前")
 	u.say("改个设定：信里那把铜钥匙其实是一枚旧邮票。", 0)
 	if snap = u.snapshot(); snap.Change == nil {
 		u.say("它只是姐姐留下的信物和线索，开锁的事你看着改。", 0) // 主编吃不准用法时会先问
@@ -657,17 +666,18 @@ func TestLiveSettingChange(t *testing.T) {
 	var rewrite []int
 	switch change := snap.Change; {
 	case change == nil:
-		t.Errorf("S4：主编没有提出修改")
+		t.Fatalf("S4：主编没有提出修改")
 	case len(change.Options) == 0:
 		t.Errorf("S4：语义分析没有发现与已写章节的出入：%+v", change.View)
-		u.log("y 确认主编的修改")
-		if err := u.session.Confirm(u.ctx, change.Proposal.ID); err != nil {
-			t.Fatal(err)
-		}
+		u.confirm(snap)
 	default:
-		card := strings.Join(change.Findings, "\n")
+		card := strings.Join(change.View.Changes, "\n")
+		for _, line := range change.View.Changes {
+			u.log("  改动：%s", line)
+		}
 		for _, finding := range change.Findings {
 			u.log("  出入：%s", finding)
+			card += "\n" + finding
 		}
 		for i, option := range change.Options {
 			u.log("  %d %s %v：%s", i+1, option.Strategy, option.Chapters, option.Explanation)
@@ -685,18 +695,35 @@ func TestLiveSettingChange(t *testing.T) {
 		}
 	}
 	snap = u.advance(completed)
-	if snap.Run.ID == first {
-		t.Errorf("S4：完本后的修改没有开新一轮")
+	u.outline(snap, "写完后")
+	for _, entry := range snap.Outline {
+		if strings.Contains(entry.Node.Title+entry.Node.Summary, "铜钥匙") {
+			t.Errorf("S4：大纲里还写着铜钥匙：%s（%s）", entry.Node.Title, entry.Node.Summary)
+		}
 	}
 	for _, chapter := range snap.Manuscript {
 		text := liveText(chapter)
-		changed := text != written[chapter.Number]
-		u.log("第 %d 章：改过 %t · 钥匙 %d 处 · 邮票 %d 处", chapter.Number, changed, strings.Count(text, "钥匙"), strings.Count(text, "邮票"))
-		if slices.Contains(rewrite, chapter.Number) && (!changed || !strings.Contains(text, "邮票")) {
+		before, existed := written[chapter.Number]
+		u.log("第 %d 章：改过 %t · 铜钥匙 %d 处 · 邮票 %d 处", chapter.Number, text != before, strings.Count(text, "铜钥匙"), strings.Count(text, "邮票"))
+		switch {
+		case slices.Contains(rewrite, chapter.Number) && (text == before || !strings.Contains(text, "邮票")):
 			t.Errorf("S4：第 %d 章没有按改过的设定重写", chapter.Number)
+		case !existed && strings.Contains(text, "铜钥匙"):
+			t.Errorf("S4：改设定之后写的第 %d 章还在写铜钥匙", chapter.Number)
 		}
 	}
+}
 
+// outline 把大纲逐节记进日志：卷、故事弧与章的标题和梗概。
+func (u *liveUser) outline(snap workbench.WorkbenchSnapshot, when string) {
+	u.log("%s的大纲：", when)
+	for _, entry := range snap.Outline {
+		label := string(entry.Node.Kind)
+		if entry.Number > 0 {
+			label = fmt.Sprintf("第 %d 章", entry.Number)
+		}
+		u.log("  %s《%s》%s", label, entry.Node.Title, entry.Node.Summary)
+	}
 }
 
 // planSummary 是第 number 章的规划梗概。

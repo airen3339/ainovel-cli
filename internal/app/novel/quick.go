@@ -241,7 +241,7 @@ func (s *Application) ensureQuickProject(ctx context.Context, command QuickWrite
 	}
 	if project.Intent.Premise != command.Premise {
 		return projectdoc.Snapshot{}, fmt.Errorf(
-			"project %q was started from a different premise: %w", command.ProjectID, model.ErrIdempotencyConflict)
+			"project %q already has a different premise: %w", command.ProjectID, model.ErrIdempotencyConflict)
 	}
 	if command.Approval != "" && command.Approval != project.Approval {
 		if _, err := s.projects.SetApprovalPolicy(ctx, projectdoc.SetApprovalPolicyCommand{
@@ -308,7 +308,7 @@ func (s *Application) ensureCreationRun(
 	command QuickWriteCommand,
 	approval model.ApprovalPolicy,
 ) (model.CreationRun, error) {
-	goal := model.NovelGoal{Premise: command.Premise, TargetChapters: command.Chapters}
+	goal := model.NovelGoal{TargetChapters: command.Chapters}
 	active, ok, err := s.runs.ActiveCreationRun(ctx, command.ProjectID)
 	if err != nil {
 		return model.CreationRun{}, err
@@ -317,11 +317,6 @@ func (s *Application) ensureCreationRun(
 		current, err := model.DecodeNovelGoal(active.Goal)
 		if err != nil {
 			return model.CreationRun{}, err
-		}
-		if current.Premise != goal.Premise {
-			return model.CreationRun{}, fmt.Errorf(
-				"project %q already has an active creation run with a different premise: %w",
-				command.ProjectID, model.ErrIdempotencyConflict)
 		}
 		if current != goal {
 			if active, err = s.store.UpdateCreationRunGoal(ctx, active.ID, goal.Goal(), command.CreatedAt); err != nil {

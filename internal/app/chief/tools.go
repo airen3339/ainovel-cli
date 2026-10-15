@@ -64,7 +64,7 @@ const empty = `{"type":"object","properties":{},"additionalProperties":false}`
 // 用例落成一等对象，没有旁路。
 func (s *Session) tools() []tool {
 	return []tool{
-		define(toolOutline, "看全书的梗概、篇幅与卷→故事弧→章的大纲（每章是否已入稿）", empty, s.outline),
+		define(toolOutline, "看全书的梗概、篇幅、卷→故事弧→章的大纲（每章是否已入稿），与书里所有的人物、地点、物品、组织", empty, s.outline),
 		define(toolRead, "读这本书：chapter 给该章大纲、正文与来源于它的事实；arc、volume 给故事弧或卷；entity 给人物、地点、物品、组织的设定与事实。四选一", prompt.StoryReadSchema, s.read),
 		define(toolRequirements, "看生效中的要求：编号、作用域、原话与量化约束", empty, s.requirements),
 		define(toolReviews, "看某章当前的审阅意见（阻塞的要改，参考的仅供参考）", `{
@@ -105,6 +105,7 @@ func (s *Session) tools() []tool {
 		define(toolResume, "继续创作；卡在某章修订次数上时，就是让它再改一次", empty, s.resume),
 		define(toolChange, "按用户的意思改这本书：大纲（卷、故事弧、章的标题与梗概）、人物地点、设定、作品方向、锁定与审批方式。"+
 			"已有的按序号、名称、主体+谓词定位，给出的字段改成新的，没给的不变。能否直接生效由审批决定；"+
+			"改设定、人物地点时，还没写成正文的规划里点到它的——没写的章纲与卷、故事弧梗概，规划时定下的设定（不带章号的事实），作品前提——在同一次修改里一并改成新的样子，对不上会被退回；已写章的章题、章纲与事实随正文走，不在这里改。"+
 			"与已写章节有出入时等用户选怎么处理。还有一份等确认的修改时，新的替换它。正文不在这里改；等用户决定的稿件、规划方案还不在书里，要改它们用 reject_draft", string(prompt.ChangeSchema()), s.proposeChange),
 		define(toolHistory, "看这本书最近的修改：谁、何时、改了什么、能否撤销（编号给 revert_change），以及等用户确认的那份", empty, s.history),
 		define(toolRevert, "撤销一次修改（编号见 book_history）：已生效的恢复原样，同样按审批放行；还在等确认的直接撤回", `{
@@ -134,18 +135,22 @@ func (s *Session) outline(ctx context.Context, _ none) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	var chapters []string
+	var chapters, entities []string
 	for _, node := range project.Plan {
 		if node.Kind == model.PlanChapter {
 			chapters = append(chapters, node.ID)
 		}
 	}
+	for _, entity := range project.Entities {
+		entities = append(entities, entity.ID)
+	}
 	return encode(struct {
-		Intent  model.Intent           `json:"intent"`
-		Compass *model.Compass         `json:"compass,omitempty"`
-		Totals  narrative.Totals       `json:"totals"`
-		Outline []narrative.VolumeView `json:"outline"`
-	}{project.Intent, project.Compass, story.Totals(), story.Outline(chapters)})
+		Intent   model.Intent           `json:"intent"`
+		Compass  *model.Compass         `json:"compass,omitempty"`
+		Totals   narrative.Totals       `json:"totals"`
+		Outline  []narrative.VolumeView `json:"outline"`
+		Entities []narrative.EntityView `json:"entities"`
+	}{project.Intent, project.Compass, story.Totals(), story.Outline(chapters), story.Entities(entities)})
 }
 
 func (s *Session) read(ctx context.Context, query narrative.Query) (string, error) {

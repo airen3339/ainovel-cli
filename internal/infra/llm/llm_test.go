@@ -3,11 +3,14 @@ package llm_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/voocel/agentcore"
+	"github.com/voocel/ainovel-cli/internal/domain/model"
 	"github.com/voocel/ainovel-cli/internal/infra/llm"
 	"github.com/voocel/ainovel-cli/internal/infra/llm/models"
 	"github.com/voocel/litellm"
@@ -63,8 +66,45 @@ func TestStructuredRequestsSchemaAndDecodesStrictly(t *testing.T) {
 	if b.Chat.Request.ProviderOptions != nil {
 		t.Fatal("routing must not leak into the binding")
 	}
-	if _, err := llm.Structured(context.Background(), b, call, &out); err == nil {
-		t.Fatal("unknown field accepted")
+}
+
+// 服务商多不强制 Schema：输出解码不过或不合调用方的契约时，带着原因让模型重给一次，重给的
+// 输出不带前一份残留的键；还不合就报错。
+func TestStructuredRepairsAnOutputThatBreaksItsContract(t *testing.T) {
+	reply := litellmtest.Text(`{"第 1 卷":true,"第 2 卷":true}`)
+	reply.Usage = litellm.Usage{OutputTokens: 4}
+	p := litellmtest.New(reply, litellmtest.Text(`{"第 1 卷":false,"第 3 卷":false}`))
+	var out map[string]bool
+	checked := call
+	checked.Check = func() error {
+		if _, ok := out["第 3 卷"]; !ok {
+			return errors.New("漏了第 3 卷")
+		}
+		return nil
+	}
+	usage, err := llm.Structured(context.Background(), binding(t, p), checked, &out)
+	if err != nil || len(out) != 2 || out["第 1 卷"] || usage.OutputTokens != 4 {
+		t.Fatalf("structured call: err=%v out=%v usage=%+v", err, out, usage)
+	}
+	repair := p.Requests()[1].Messages
+	if len(repair) != 4 || repair[2].Role != litellm.RoleAssistant || !strings.Contains(fmt.Sprint(repair[3].Blocks), "漏了第 3 卷") {
+		t.Fatalf("repair messages = %+v", repair)
+	}
+	broken := litellmtest.New(litellmtest.Text(`{"status":"pass","extra":1}`), litellmtest.Text(`{"status":"pass","extra":2}`))
+	var status struct {
+		Status string `json:"status"`
+	}
+	_, err = llm.Structured(context.Background(), binding(t, broken), call, &status)
+	if model.FailureCodeFor(err) != model.FailureModelMalformed || len(broken.Requests()) != 2 {
+		t.Fatalf("unknown field = %v after %d requests", err, len(broken.Requests()))
+	}
+	// 重给仍不合是模型一侧的失败：不带校验错误的类别，免得被读成调用方给错了。
+	stubborn := litellmtest.New(litellmtest.Text(`{"status":"pass"}`), litellmtest.Text(`{"status":"pass"}`))
+	invalid := call
+	invalid.Check = func() error { return fmt.Errorf("漏了第 3 卷: %w", model.ErrInvalid) }
+	if _, err := llm.Structured(context.Background(), binding(t, stubborn), invalid, &status); errors.Is(err, model.ErrInvalid) ||
+		model.FailureCodeFor(err) != model.FailureModelMalformed {
+		t.Fatalf("persistent violation = %v", err)
 	}
 }
 

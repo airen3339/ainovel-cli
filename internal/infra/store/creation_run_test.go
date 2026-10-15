@@ -15,7 +15,7 @@ func TestCreationRunSingleActivePerProject(t *testing.T) {
 	now := time.Date(2026, 8, 29, 10, 0, 0, 0, time.UTC)
 	first := model.CreationRun{
 		ID: "run:book:1", ProjectID: "book",
-		Goal:     model.NovelGoal{Premise: "一句话", TargetChapters: 3}.Goal(),
+		Goal:     model.NovelGoal{TargetChapters: 3}.Goal(),
 		Strategy: testRunStrategy(), Preset: testRunPreset(), State: model.RunRunning,
 		CreatedAt: now, UpdatedAt: now,
 	}
@@ -33,7 +33,7 @@ func TestCreationRunSingleActivePerProject(t *testing.T) {
 		t.Fatalf("idempotent replay = %#v, %v", replayed, err)
 	}
 	changed := first
-	changed.Goal = model.NovelGoal{Premise: "一句话", TargetChapters: 9}.Goal()
+	changed.Goal = model.NovelGoal{TargetChapters: 9}.Goal()
 	if _, err := s.CreateCreationRun(ctx, changed); !errors.Is(err, model.ErrIdempotencyConflict) {
 		t.Fatalf("same id with different goal must conflict, got %v", err)
 	}
@@ -100,7 +100,7 @@ func TestCreateOperationBindsRunLineageTransactionally(t *testing.T) {
 	now := time.Date(2026, 8, 29, 11, 0, 0, 0, time.UTC)
 	run := model.CreationRun{
 		ID: "run:lineage:1", ProjectID: "lineage",
-		Goal:     model.NovelGoal{Premise: "一句话", TargetChapters: 3}.Goal(),
+		Goal:     model.NovelGoal{TargetChapters: 3}.Goal(),
 		Strategy: testRunStrategy(), Preset: testRunPreset(), State: model.RunRunning,
 		CreatedAt: now, UpdatedAt: now,
 	}
@@ -109,7 +109,7 @@ func TestCreateOperationBindsRunLineageTransactionally(t *testing.T) {
 	}
 	// 目标更新推进策略版本：created(1) + goal_updated(2)。
 	if _, err := s.UpdateCreationRunGoal(ctx, run.ID,
-		model.NovelGoal{Premise: "一句话", TargetChapters: 5}.Goal(), now.Add(time.Minute)); err != nil {
+		model.NovelGoal{TargetChapters: 5}.Goal(), now.Add(time.Minute)); err != nil {
 		t.Fatalf("update goal: %v", err)
 	}
 	strategy := run.Strategy
@@ -123,9 +123,9 @@ func TestCreateOperationBindsRunLineageTransactionally(t *testing.T) {
 		State:  model.OperationQueued, RunID: run.ID,
 		Snapshot: model.ExecutionSnapshot{
 			Executor: testExecutor, BaseRevision: 1, ConfigDigest: "profile", ApprovalPolicy: model.ApprovalAuto,
-			InputDigest: model.Digest([]byte(`{"intent":"一句话","fixed_chapters":5}`)),
+			InputDigest: model.Digest([]byte(`{"fixed_chapters":5}`)),
 		},
-		Input: []byte(`{"intent":"一句话","fixed_chapters":5}`), CreatedAt: now.Add(2 * time.Minute), UpdatedAt: now.Add(2 * time.Minute),
+		Input: []byte(`{"fixed_chapters":5}`), CreatedAt: now.Add(2 * time.Minute), UpdatedAt: now.Add(2 * time.Minute),
 	}
 	created, err := s.CreateOperation(ctx, operation)
 	if err != nil {

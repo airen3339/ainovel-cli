@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -174,11 +175,15 @@ func TestChiefRemembersTheConversation(t *testing.T) {
 		for _, block := range message.Blocks {
 			if result, ok := block.(litellm.ToolResultBlock); ok && result.ToolUseID == "outline" {
 				tools++
+				// 名册让主编知道书里已有哪些人物与物品：改名才不会另建一个（D87）。
 				var outline struct {
-					Intent model.Intent `json:"intent"`
+					Intent   model.Intent `json:"intent"`
+					Entities []struct {
+						Name string `json:"name"`
+					} `json:"entities"`
 				}
 				text := agentcore.Message{Blocks: result.Content}.Text()
-				if err := json.Unmarshal([]byte(text), &outline); err != nil || outline.Intent.Premise == "" {
+				if err := json.Unmarshal([]byte(text), &outline); err != nil || outline.Intent.Premise == "" || len(outline.Entities) == 0 {
 					t.Fatalf("outline result = %s, %v", text, err)
 				}
 			}
@@ -207,7 +212,7 @@ func (e *stallingExecutor) Execute(ctx context.Context, operation model.Operatio
 }
 
 // pausedMidChapter 开写两章的书，在第一次模型调用里按键暂停：推进停下、作品落盘为暂停。
-func pausedMidChapter(t *testing.T, provider litellm.Provider) *chief.Session {
+func pausedMidChapter(t *testing.T, provider litellm.Provider) (*testApp, *chief.Session) {
 	t.Helper()
 	authorityStore := openTestStore(t)
 	executor := &stallingExecutor{
@@ -230,7 +235,7 @@ func pausedMidChapter(t *testing.T, provider litellm.Provider) *chief.Session {
 	if production := session.Production(); production.Writing || production.Ended != 1 {
 		t.Fatalf("pause must stop the drive: %+v", production)
 	}
-	return session
+	return api, session
 }
 
 // driven 等第 n 次推进结束，返回它的落点。
@@ -270,22 +275,53 @@ func requireCompleted(t *testing.T, end chief.DriveEnd, chapters int) {
 
 // 按键暂停后跟主编说完一句话，回合结束就从停下的地方接着写。
 func TestTalkingAfterAPauseResumesWriting(t *testing.T) {
-	session := pausedMidChapter(t, litellmtest.New(litellmtest.Text("在写第一章。")))
+	provider := litellmtest.New(litellmtest.Text("在写第一章。"))
+	_, session := pausedMidChapter(t, provider)
 	talk(t, session, "现在写到哪了")
+	// 书况照实说回合结束后接着写：主编以为书停着，就会先问用户、不先暂停（D87）。
+	if brief := fmt.Sprint(provider.Requests()[0].Messages); !strings.Contains(brief, "创作：用户按键暂停，你这一回合结束后接着写") {
+		t.Fatalf("brief = %s", brief)
+	}
 	requireCompleted(t, driven(t, session, 2), 2)
+}
+
+// 写到一半改了作品前提：确认后照新前提接着写。前提只在创作意图里，运行目标不留旧抄本（D87）。
+func TestWritingContinuesAfterThePremiseChanges(t *testing.T) {
+	provider := litellmtest.New(
+		chiefCall("premise", "propose_change", `{"reason":"送信的人换成邮差的姐姐","intent":{"premise":"邮差的姐姐替亡者送完最后一封信"}}`),
+		litellmtest.Text("等你确认。"),
+	)
+	api, session := pausedMidChapter(t, provider)
+	talk(t, session, "送信的其实是邮差的姐姐")
+	ctx := context.Background()
+	pending, ok, err := api.Decisions.PendingChange(ctx, "paused-book")
+	if err != nil || !ok {
+		t.Fatalf("pending = %v, %v", ok, err)
+	}
+	if held := driven(t, session, 2); held.Err != nil || held.Result.RunState != model.RunWaitingUser {
+		t.Fatalf("a pending change must hold the drive: %+v", held)
+	}
+	if err := session.Confirm(ctx, pending.ID); err != nil {
+		t.Fatal(err)
+	}
+	requireCompleted(t, driven(t, session, 3), 2)
 }
 
 // 用户让主编停下：之后的话不再带着续写，直到用户让它继续。
 func TestChiefPauseHoldsUntilAskedToResume(t *testing.T) {
-	session := pausedMidChapter(t, litellmtest.New(
+	provider := litellmtest.New(
 		chiefCall("pause", "pause_creation", `{}`), litellmtest.Text("好，先停着。"),
 		litellmtest.Text("好的。"),
 		chiefCall("resume", "resume_creation", `{}`), litellmtest.Text("继续写了。"),
-	))
+	)
+	_, session := pausedMidChapter(t, provider)
 	talk(t, session, "先停一下，我想想")
 	talk(t, session, "第二章多点雨声")
 	if production := session.Production(); production.Writing || production.Ended != 1 {
 		t.Fatalf("a chief pause must hold across turns: %+v", production)
+	}
+	if brief := fmt.Sprint(provider.Requests()[2].Messages); !strings.Contains(brief, "创作：已暂停") {
+		t.Fatalf("brief after a chief pause = %s", brief)
 	}
 	thread := talk(t, session, "继续吧")
 	if receipt := thread.Entries[len(thread.Entries)-2]; !receipt.Change || receipt.Text != "继续创作" {
@@ -300,7 +336,7 @@ func TestChiefSetsTheLengthAndKeepsWriting(t *testing.T) {
 		chiefCall("length", "set_length", `{"chapters":3}`), litellmtest.Text("改成三章了。"),
 		litellmtest.Text("写完了。"),
 	)
-	session := pausedMidChapter(t, provider)
+	_, session := pausedMidChapter(t, provider)
 	thread := talk(t, session, "写三章吧")
 	if receipt := thread.Entries[1]; receipt.Failed || receipt.Text != "篇幅定为 3 章 · 继续创作" {
 		t.Fatalf("receipt = %+v", receipt)

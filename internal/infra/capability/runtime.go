@@ -54,6 +54,7 @@ type proposalValidator interface {
 type runtimeStore interface {
 	GetDocument(context.Context, model.AuthorityTarget, model.DocumentRef, model.Revision) (model.DocumentVersion, error)
 	ListDocuments(context.Context, model.AuthorityTarget, model.DocumentKind, model.Revision) ([]model.DocumentVersion, error)
+	GetChangeSetByRevision(context.Context, model.AuthorityTarget, model.Revision) (model.ChangeSet, error)
 	GetWorkspaceArtifact(context.Context, string, string) (model.WorkspaceArtifact, error)
 	ListWorkspaceArtifacts(context.Context, string) ([]model.WorkspaceArtifact, error)
 	PutWorkspaceArtifact(context.Context, model.WorkspaceArtifact, *int64, int) (model.WorkspaceArtifact, error)

@@ -16,6 +16,7 @@ const (
 	OperationRevisePlan     OperationKind = "revise_plan"
 	OperationReviseCanon    OperationKind = "revise_canon"
 	OperationRewriteChapter OperationKind = "rewrite_chapter"
+	OperationReworkChapter  OperationKind = "rework_chapter"
 	OperationReviewRange    OperationKind = "review_range"
 	OperationGenerateAsset  OperationKind = "generate_asset"
 	OperationInspectAsset   OperationKind = "inspect_asset"
@@ -37,7 +38,8 @@ const (
 // FailureCode 给失败一个机器可判读的原因（D46）。result_unknown 表示外部结果不可知：
 // 任务已提交但拿不到结论，不自动重试；用户对账（Resume）或重提（Restart）都是显式决定。
 // submission_blocked 表示提交自纠已受阻，保留草稿，等待显式续跑。model_* 是模型服务一侧
-// 的失败（D76）：连不上、繁忙在重试用尽后才落到这里；拒绝（密钥、额度、模型名）不自动重开。
+// 的失败（D76）：连不上、繁忙在重试用尽后才落到这里；拒绝（密钥、额度、模型名）不自动重开；
+// 输出不合契约是单次判断重给一次仍不合（D87）。
 type FailureCode string
 
 const (
@@ -46,6 +48,7 @@ const (
 	FailureModelUnreachable  FailureCode = "model_unreachable"
 	FailureModelBusy         FailureCode = "model_busy"
 	FailureModelRefused      FailureCode = "model_refused"
+	FailureModelMalformed    FailureCode = "model_malformed"
 )
 
 var ErrResultUnknown = errors.New("external result is unknown")
@@ -63,7 +66,7 @@ func (f *Failure) Unwrap() error { return f.Err }
 
 // ModelService 报告失败出在模型服务一侧：与写作内容无关，模型无从修正。
 func (c FailureCode) ModelService() bool {
-	return c == FailureModelUnreachable || c == FailureModelBusy || c == FailureModelRefused
+	return c == FailureModelUnreachable || c == FailureModelBusy || c == FailureModelRefused || c == FailureModelMalformed
 }
 
 // Explain 是失败给用户看的原因：模型服务的失败按类别说清楚，其余就是原始错误（多是本
@@ -76,6 +79,8 @@ func (c FailureCode) Explain(raw string) string {
 		return "模型服务繁忙或临时故障"
 	case FailureModelRefused:
 		return "模型服务拒绝了请求（密钥、额度或模型名有问题）"
+	case FailureModelMalformed:
+		return "模型给出的结果不合要求，重给一次仍不合"
 	}
 	return raw
 }
@@ -296,7 +301,7 @@ func (o Operation) Validate() error {
 	}
 	switch o.FailureCode {
 	case "":
-	case FailureResultUnknown, FailureSubmissionBlocked, FailureModelUnreachable, FailureModelBusy, FailureModelRefused:
+	case FailureResultUnknown, FailureSubmissionBlocked, FailureModelUnreachable, FailureModelBusy, FailureModelRefused, FailureModelMalformed:
 		if o.State != OperationFailed {
 			return fmt.Errorf("failure code %q requires the failed state: %w", o.FailureCode, ErrInvalid)
 		}

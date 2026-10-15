@@ -114,11 +114,22 @@ func validateSemanticImpact(report SemanticImpactReport, base DocumentSet) error
 }
 
 // DecodeSemanticImpact 解码分析器给出的语义影响报告并对照作品基线校验：这是报告进入提案的
-// 唯一入口，之后按类型读取。
+// 唯一入口，之后按类型读取。出入落在没写的规划上（大纲、规划期事实、作品前提）的修改不
+// 完整，退回提出者（D87）：规划是同一次修改能一并改的，不是留给用户选处置的冲突；留着它，
+// 之后的写作就照旧设定写。只有已写的正文留给用户选处置。
 func DecodeSemanticImpact(payload json.RawMessage, base DocumentSet) (*SemanticImpactReport, error) {
 	var report SemanticImpactReport
 	if err := DecodeStrict(payload, &report); err != nil {
 		return nil, fmt.Errorf("decode semantic impact: %w", err)
+	}
+	var planning []string
+	for _, finding := range report.Findings {
+		if finding.Document != nil && finding.Document.Kind != DocumentManuscript {
+			planning = append(planning, fmt.Sprintf("%q: %s", finding.Document.Key(), finding.Explanation))
+		}
+	}
+	if len(planning) > 0 {
+		return nil, fmt.Errorf("the change contradicts this planning; edit it in the same change: %s: %w", strings.Join(planning, "; "), ErrInvalid)
 	}
 	if err := validateSemanticImpact(report, base); err != nil {
 		return nil, err

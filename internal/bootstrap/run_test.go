@@ -38,7 +38,7 @@ func TestDriveCreationRunSettlesByStepKind(t *testing.T) {
 	planWork := func(runID string) *runs.WorkItem {
 		return &runs.WorkItem{
 			ID: runQuickID(runID, "plan"), Kind: model.OperationDevelopPlan,
-			Input:   model.DevelopPlanInput{Intent: "故事", FixedChapters: 1},
+			Input:   model.DevelopPlanInput{FixedChapters: 1},
 			Reasons: runs.WorkReasons{Waiting: "等你确认", Failure: "没写完", Stuck: "规划已结束但没有推进"},
 		}
 	}

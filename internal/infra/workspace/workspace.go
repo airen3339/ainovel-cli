@@ -18,12 +18,19 @@ import (
 	"github.com/voocel/ainovel-cli/internal/infra/store"
 )
 
-const ChapterMediaType = "application/vnd.ainovel.manuscript+json"
+const ChapterMediaType = "application/vnd.ainovel.chapter-draft+json"
 
 // ChapterKey 是章节工作稿的键：一次任务只写一章、只有一份工作稿（D86），键由宿主定。
 const ChapterKey = "chapter"
 
 var ErrBlockNotFound = errors.New("workspace block not found")
+
+// Draft 是章节工作稿：正文与写它时照的作品版本（D87）。后继任务接手前任的工作稿时，自己照的
+// 版本更新，说明这之间书里改过，写手要照现在的书核对着改。按段落改是在原稿上改，版本不变。
+type Draft struct {
+	Revision model.Revision          `json:"revision"`
+	Chapter  model.ManuscriptChapter `json:"chapter"`
+}
 
 type Service struct {
 	store *store.Store
@@ -34,14 +41,14 @@ func New(authorityStore *store.Store) *Service {
 }
 
 // PutChapter 整篇覆盖本任务的章节工作稿。
-func (s *Service) PutChapter(ctx context.Context, operationID string, chapter model.ManuscriptChapter, attempt int, updatedAt time.Time) (model.WorkspaceArtifact, error) {
-	return s.put(ctx, operationID, chapter, nil, attempt, updatedAt)
+func (s *Service) PutChapter(ctx context.Context, operationID string, draft Draft, attempt int, updatedAt time.Time) (model.WorkspaceArtifact, error) {
+	return s.put(ctx, operationID, draft, nil, attempt, updatedAt)
 }
 
 // Chapter 取本任务章节工作稿的当前版本：正文只经工作稿提交。
-func (s *Service) Chapter(ctx context.Context, operationID string) (model.ManuscriptChapter, error) {
-	_, chapter, err := s.chapter(ctx, operationID)
-	return chapter, err
+func (s *Service) Chapter(ctx context.Context, operationID string) (Draft, error) {
+	_, draft, err := s.draft(ctx, operationID)
+	return draft, err
 }
 
 // ReplaceChapterBlock 按稳定段落编号改一段。同一轮里并行改几段都基于同一次读取，段落编号不变，
@@ -55,49 +62,53 @@ func (s *Service) ReplaceChapterBlock(
 	if strings.TrimSpace(blockID) == "" || strings.TrimSpace(text) == "" {
 		return model.WorkspaceArtifact{}, fmt.Errorf("block id and text are required: %w", model.ErrInvalid)
 	}
-	artifact, chapter, err := s.chapter(ctx, operationID)
+	artifact, draft, err := s.draft(ctx, operationID)
 	if err != nil {
 		return model.WorkspaceArtifact{}, err
 	}
-	index := slices.IndexFunc(chapter.Blocks, func(block model.ManuscriptBlock) bool { return block.ID == blockID })
+	index := slices.IndexFunc(draft.Chapter.Blocks, func(block model.ManuscriptBlock) bool { return block.ID == blockID })
 	if index < 0 {
 		return model.WorkspaceArtifact{}, fmt.Errorf("chapter block %q: %w", blockID, ErrBlockNotFound)
 	}
-	chapter.Blocks[index].Text = text
-	return s.put(ctx, operationID, chapter, &artifact.Version, attempt, updatedAt)
+	draft.Chapter.Blocks[index].Text = text
+	return s.put(ctx, operationID, draft, &artifact.Version, attempt, updatedAt)
 }
 
 func (s *Service) put(
 	ctx context.Context,
 	operationID string,
-	chapter model.ManuscriptChapter,
+	draft Draft,
 	expectedVersion *int64, // nil = 整篇覆盖；按块编辑才带版本前提
 	attempt int,
 	updatedAt time.Time,
 ) (model.WorkspaceArtifact, error) {
-	payload, err := json.Marshal(chapter)
+	chapter, err := json.Marshal(draft.Chapter)
 	if err != nil {
 		return model.WorkspaceArtifact{}, fmt.Errorf("encode workspace chapter: %w", err)
 	}
-	if err := model.ValidateDocumentContent(model.DocumentRef{Kind: model.DocumentManuscript, ID: chapter.ID}, payload); err != nil {
+	if err := model.ValidateDocumentContent(model.DocumentRef{Kind: model.DocumentManuscript, ID: draft.Chapter.ID}, chapter); err != nil {
 		return model.WorkspaceArtifact{}, err
+	}
+	payload, err := json.Marshal(draft)
+	if err != nil {
+		return model.WorkspaceArtifact{}, fmt.Errorf("encode workspace draft: %w", err)
 	}
 	return s.store.PutWorkspaceArtifact(ctx, model.WorkspaceArtifact{
 		OperationID: operationID, Key: ChapterKey, MediaType: ChapterMediaType, Content: payload, UpdatedAt: updatedAt,
 	}, expectedVersion, attempt)
 }
 
-func (s *Service) chapter(ctx context.Context, operationID string) (model.WorkspaceArtifact, model.ManuscriptChapter, error) {
+func (s *Service) draft(ctx context.Context, operationID string) (model.WorkspaceArtifact, Draft, error) {
 	artifact, err := s.store.GetWorkspaceArtifact(ctx, operationID, ChapterKey)
 	if errors.Is(err, model.ErrNotFound) {
-		return model.WorkspaceArtifact{}, model.ManuscriptChapter{}, fmt.Errorf("本章还没有工作稿，先用 workspace_put_chapter 写入: %w", err)
+		return model.WorkspaceArtifact{}, Draft{}, fmt.Errorf("本章还没有工作稿，先用 workspace_put_chapter 写入: %w", err)
 	}
 	if err != nil {
-		return model.WorkspaceArtifact{}, model.ManuscriptChapter{}, err
+		return model.WorkspaceArtifact{}, Draft{}, err
 	}
-	var chapter model.ManuscriptChapter
-	if err := json.Unmarshal(artifact.Content, &chapter); err != nil {
-		return model.WorkspaceArtifact{}, model.ManuscriptChapter{}, fmt.Errorf("decode workspace chapter: %w", err)
+	var draft Draft
+	if err := model.DecodeStrict(artifact.Content, &draft); err != nil {
+		return model.WorkspaceArtifact{}, Draft{}, fmt.Errorf("decode workspace draft: %w", err)
 	}
-	return artifact, chapter, nil
+	return artifact, draft, nil
 }

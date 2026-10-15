@@ -44,7 +44,7 @@ func TestRunNextRecoversCommittedProposalWithoutExecutingAgain(t *testing.T) {
 	}
 
 	// 通用执行机制用例：固定一章的规划任务，提交一章的最小蓝图即可。
-	input := json.RawMessage(`{"intent":"凡人修仙","fixed_chapters":1}`)
+	input := json.RawMessage(`{"fixed_chapters":1}`)
 	operation := model.Operation{
 		ID: "write-1", Kind: model.OperationDevelopPlan, Target: target,
 		State: model.OperationQueued, RunID: createEngineTestRun(t, ctx, authorityStore, target.ID, now),
@@ -318,7 +318,7 @@ func createEngineTestRun(
 	t.Helper()
 	run := model.CreationRun{
 		ID: "run:" + projectID, ProjectID: projectID,
-		Goal: model.NovelGoal{Premise: "测试创作", TargetChapters: 3}.Goal(),
+		Goal: model.NovelGoal{TargetChapters: 3}.Goal(),
 		Strategy: model.CreationRunStrategy{
 			AutoRepairBudget: 3,
 		},
@@ -525,7 +525,7 @@ func TestFinalizeRelocatesControlOnlyDrift(t *testing.T) {
 		Document: model.DocumentRef{Kind: model.DocumentIntent, ID: "root"}, Operation: model.PatchPut, Content: intent,
 	})
 	// 通用执行机制用例：固定一章的规划任务，提交一章的最小蓝图即可。
-	input := json.RawMessage(`{"intent":"凡人修仙","fixed_chapters":1}`)
+	input := json.RawMessage(`{"fixed_chapters":1}`)
 	operation := model.Operation{
 		ID: "write-1", Kind: model.OperationDevelopPlan, Target: target,
 		State: model.OperationQueued, RunID: createEngineTestRun(t, ctx, authorityStore, target.ID, now),

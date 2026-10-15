@@ -220,6 +220,26 @@ func TestChiefIntentChangeQuotesTheUserAndWaits(t *testing.T) {
 	}
 }
 
+// 作品前提例外（D87）：改设定时主编照改后的样子改写前提，不必是用户的原话；作品意图的修改
+// 总要用户确认，确认即署名。
+func TestChiefRewritesThePremiseAndWaits(t *testing.T) {
+	api, _ := newChiefApp(t,
+		chiefCall("premise", "propose_change", `{"reason":"信物改成旧邮票","intent":{"premise":"邮差陈渡循着一枚旧邮票找姐姐"}}`),
+		litellmtest.Text("等你确认。"),
+	)
+	ctx := context.Background()
+	session := api.Chief.Open(ctx, "chief-book", "user-1")
+	defer session.Close()
+	thread := talk(t, session, "信里那把铜钥匙其实是一枚旧邮票")
+	if receipt := lastReceipt(t, thread); receipt.Failed || !strings.HasSuffix(receipt.Text, "等你确认") {
+		t.Fatalf("receipt = %+v", receipt)
+	}
+	snap, err := api.Workbench.WorkbenchSnapshot(ctx, "chief-book")
+	if err != nil || snap.Change == nil {
+		t.Fatalf("change = %+v, %v", snap.Change, err)
+	}
+}
+
 // 改设定牵连已写的章：语义影响分析给出冲突，修改等用户三选一（S4）；用户选只改设定、
 // 后文按新设定写，修改生效。
 func TestChiefCanonChangeConflictingWithWrittenChaptersOffersChoices(t *testing.T) {

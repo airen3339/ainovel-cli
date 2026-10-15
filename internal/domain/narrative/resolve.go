@@ -22,6 +22,14 @@ type Submission struct {
 	Facts    []FactEdit     `json:"facts,omitempty"`
 	Confirm  []FactRef      `json:"confirm_facts,omitempty"`
 	Remove   []FactRef      `json:"remove_facts,omitempty"`
+	// Outline 是返工重申报的本章章题与章纲（D87）。
+	Outline *OutlineEdit `json:"outline,omitempty"`
+}
+
+// OutlineEdit 是一章的章题与章纲。
+type OutlineEdit struct {
+	Title   string `json:"title"`
+	Summary string `json:"summary"`
 }
 
 // 计划编辑按序号定位：已有序号是修改（空字段保持原值），紧接末尾的序号是新增。
@@ -99,6 +107,9 @@ func (r *resolver) submission(input model.TaskInput, submission Submission, draf
 	if canon, ok := input.(*model.ReviseCanonInput); ok {
 		r.scope = append(r.scope, canon.ChapterID)
 	}
+	if err := r.outline(input, submission.Outline); err != nil {
+		return err
+	}
 	if submission.Compass != nil {
 		if err := r.put(model.DocumentCompass, model.SingletonDocumentID, submission.Compass); err != nil {
 			return err
@@ -119,6 +130,26 @@ func (r *resolver) submission(input model.TaskInput, submission Submission, draf
 		}
 	}
 	return nil
+}
+
+// outline 处理返工重申报的章题与章纲（D87）：返工的章写了什么由重写后的正文说了算，章题
+// 与章纲随它走，必须重申报；变了才写进提交。其余任务照大纲写，不提交它。
+func (r *resolver) outline(input model.TaskInput, outline *OutlineEdit) error {
+	rework, ok := input.(*model.ReworkChapterInput)
+	switch {
+	case !ok && outline == nil:
+		return nil
+	case !ok:
+		return fmt.Errorf("只有返工能随正文改本章的章题与章纲: %w", model.ErrInvalid)
+	case outline == nil || strings.TrimSpace(outline.Title) == "" || strings.TrimSpace(outline.Summary) == "":
+		return fmt.Errorf("返工要重申报本章的章题与章纲（outline 的 title 与 summary）：照重写后的正文给出，没变就原样给出: %w", model.ErrInvalid)
+	}
+	node := r.story.plans[rework.ChapterPlanID]
+	if node.Title == outline.Title && node.Summary == outline.Summary {
+		return nil
+	}
+	node.Title, node.Summary = outline.Title, outline.Summary
+	return r.put(model.DocumentPlan, node.ID, node)
 }
 
 type resolver struct {
@@ -243,17 +274,19 @@ func (r *resolver) entities(edits []EntityEdit) error {
 		case err == nil && entity.Name != name:
 			return fmt.Errorf("「%s」是「%s」的别名；修改已有实体时用它的本名: %w", name, entity.Name, model.ErrInvalid)
 		case err == nil:
-			aliases := slices.Clone(entity.Aliases)
+			// 改名是它其实叫别的、其实是别的东西：旧的本名与别名都不再指它，还要用的列进 aliases。
+			next := entity
+			next.Kind, next.Aliases = edit.Kind, slices.Clone(entity.Aliases)
+			if rename != "" {
+				next.Name, next.Aliases = rename, nil
+			}
 			for _, alias := range edit.Aliases {
-				if alias != entity.Name && !slices.Contains(aliases, alias) {
-					aliases = append(aliases, alias)
+				if alias != next.Name && !slices.Contains(next.Aliases, alias) {
+					next.Aliases = append(next.Aliases, alias)
 				}
 			}
-			changed = edit.Kind != entity.Kind || len(aliases) != len(entity.Aliases) || rename != "" && rename != entity.Name
-			entity.Kind, entity.Aliases = edit.Kind, slices.DeleteFunc(aliases, func(alias string) bool { return alias == rename })
-			if rename != "" {
-				entity.Name = rename
-			}
+			changed = next.Kind != entity.Kind || next.Name != entity.Name || !slices.Equal(next.Aliases, entity.Aliases)
+			entity = next
 		case errors.Is(err, model.ErrNotFound) && rename != "":
 			return fmt.Errorf("实体「%s」不存在，无从改名: %w", name, model.ErrInvalid)
 		case errors.Is(err, model.ErrNotFound):
@@ -429,8 +462,8 @@ func (r *resolver) references(refs []FactRef, confirm bool) error {
 
 func (r *resolver) touch(fact model.CanonFact, subject string) error {
 	if r.touched[fact.ID] {
-		return fmt.Errorf("事实「%s」%s 在一次提交里只能出现一次（facts、confirm_facts、remove_facts 合计）；同一章里同一主体的同一谓词只记一条: %w",
-			subject, fact.Predicate, model.ErrInvalid)
+		return fmt.Errorf("事实「%s」%s 在一次提交里只能出现一次（facts、confirm_facts、remove_facts 合计，改名后新旧名字指同一个）；"+
+			"同一章里同一主体的同一谓词只记一条，要改它的值就只在 facts 里给新值: %w", subject, fact.Predicate, model.ErrInvalid)
 	}
 	r.touched[fact.ID] = true
 	return nil

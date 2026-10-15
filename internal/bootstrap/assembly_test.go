@@ -14,12 +14,17 @@ import (
 func TestEveryOperationKindIsAssembled(t *testing.T) {
 	basis := model.EvidenceBasis{Documents: []model.DocumentBasis{{Ref: model.DocumentRef{Kind: model.DocumentManuscript, ID: "chapter-1"}, Revision: 1}}}
 	samples := map[model.OperationKind]model.TaskInput{
-		model.OperationDevelopPlan:  model.DevelopPlanInput{Intent: "凡人修仙", FixedChapters: 3},
-		model.OperationRevisePlan:   model.RevisePlanInput{Intent: "凡人修仙", FixedChapters: 6, ExistingChapters: 3},
+		model.OperationDevelopPlan:  model.DevelopPlanInput{FixedChapters: 3},
+		model.OperationRevisePlan:   model.RevisePlanInput{FixedChapters: 6, ExistingChapters: 3},
 		model.OperationReviseCanon:  model.ReviseCanonInput{ChapterID: "chapter-1", Reason: "修订设定"},
 		model.OperationWriteChapter: model.WriteChapterInput{ChapterPlanID: "chapter-plan-1"},
 		model.OperationRewriteChapter: model.RewriteChapterInput{
 			ChapterID: "chapter-1", ChapterPlanID: "chapter-plan-1", Findings: []string{"结尾仓促"},
+		},
+		model.OperationReworkChapter: model.ReworkChapterInput{
+			ChapterID: "chapter-1", ChapterPlanID: "chapter-plan-1", Directives: []model.Directive{{
+				ID: "rework", Scope: model.DirectiveScopePlanNode("chapter-plan-1"), Text: "节奏太拖，重写", Status: model.DirectiveActive, Rework: true,
+			}},
 		},
 		model.OperationReviewRange:   model.ReviewRangeInput{ChapterIDs: []string{"chapter-1"}, Basis: basis},
 		model.OperationGenerateAsset: model.GenerateAssetInput{Target: model.DocumentRef{Kind: model.DocumentManuscript, ID: "chapter-1"}, Role: "cover", Basis: basis},

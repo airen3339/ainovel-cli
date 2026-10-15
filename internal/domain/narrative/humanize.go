@@ -13,6 +13,12 @@ func (s *Story) Humanize(err error) error {
 		return nil
 	}
 	var pairs []string
+	// 单例文档的 ID 都是 root，只换 "kind:id" 的写法。
+	for _, kind := range []model.DocumentKind{model.DocumentIntent, model.DocumentCompass} {
+		ref := model.DocumentRef{Kind: kind, ID: model.SingletonDocumentID}
+		label, _ := s.Label(ref)
+		pairs = append(pairs, `"`+ref.Key()+`"`, label)
+	}
 	for story := s; story != nil; story = story.parent {
 		pairs = append(pairs, story.labelPairs()...)
 	}

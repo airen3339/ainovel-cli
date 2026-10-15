@@ -339,16 +339,15 @@ func (s *Story) Label(ref model.DocumentRef) (string, bool) {
 }
 
 func (s *Story) planLabel(node model.PlanNode) string {
-	switch node.Kind {
-	case model.PlanVolume:
-		return fmt.Sprintf("第 %d 卷《%s》", s.number[node.ID], node.Title)
-	case model.PlanArc:
-		return fmt.Sprintf("第 %d 个故事弧《%s》", s.number[node.ID], node.Title)
-	case model.PlanChapter:
-		return fmt.Sprintf("第 %d 章《%s》", s.number[node.ID], node.Title)
-	default:
-		return "《" + node.Title + "》"
+	return s.ordinal(node) + "《" + node.Title + "》"
+}
+
+// ordinal 按序号称呼计划节点：第 N 卷、第 N 个故事弧、第 N 章。
+func (s *Story) ordinal(node model.PlanNode) string {
+	if node.Kind == model.PlanArc {
+		return fmt.Sprintf("第 %d 个故事弧", s.number[node.ID])
 	}
+	return fmt.Sprintf("第 %d %s", s.number[node.ID], kindName(node.Kind))
 }
 
 // PlanLabel 用故事语言指称计划节点，供要求作用域、修改说明等文案使用。

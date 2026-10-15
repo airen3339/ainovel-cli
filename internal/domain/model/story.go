@@ -188,6 +188,16 @@ type Entity struct {
 	Aliases []string   `json:"aliases,omitempty"`
 }
 
+// MentionedIn 判断 text 是否点到这个实体：本名或别名出现在其中。单字名太容易误中，不算。
+func (v Entity) MentionedIn(text string) bool {
+	for _, name := range append([]string{v.Name}, v.Aliases...) {
+		if utf8.RuneCountInString(name) >= 2 && strings.Contains(text, name) {
+			return true
+		}
+	}
+	return false
+}
+
 func (v Entity) Validate() error {
 	if strings.TrimSpace(v.ID) == "" || strings.TrimSpace(v.Name) == "" {
 		return fmt.Errorf("entity id and name are required: %w", ErrInvalid)

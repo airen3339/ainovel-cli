@@ -509,7 +509,7 @@ func openOperationStore(t *testing.T) *Store {
 	now := operationTime()
 	if _, err := s.CreateCreationRun(context.Background(), model.CreationRun{
 		ID: "run:book-1", ProjectID: "book-1",
-		Goal:     model.NovelGoal{Premise: "测试创作", TargetChapters: 3}.Goal(),
+		Goal:     model.NovelGoal{TargetChapters: 3}.Goal(),
 		Strategy: model.CreationRunStrategy{AutoRepairBudget: 3},
 		Preset:   model.CreationRunPreset{Source: "test", Digest: "test-preset", Approval: model.ApprovalAuto},
 		State:    model.RunRunning, CreatedAt: now, UpdatedAt: now,

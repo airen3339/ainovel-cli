@@ -15,6 +15,7 @@ import (
 
 // Content 是构建故事索引所需的权威文档。
 type Content struct {
+	Intent     model.Intent
 	Plan       []model.PlanNode
 	Entities   []model.Entity
 	Canon      []model.CanonFact
@@ -153,6 +154,7 @@ func (s *Story) factAt(ref FactRef) (model.CanonFact, error) {
 // 谓词与来源章区分，引用时要给章号。
 func (s *Story) namesake(predicate string) string {
 	var found []string
+	chaptered := false
 	for _, fact := range s.content.Canon {
 		if fact.Predicate != predicate {
 			continue
@@ -161,13 +163,18 @@ func (s *Story) namesake(predicate string) string {
 		label := "「" + view.Subject + "」" + view.Predicate
 		if view.Chapter > 0 {
 			label += fmt.Sprintf("（chapter=%d）", view.Chapter)
+			chaptered = true
 		}
 		found = append(found, label)
 	}
 	if len(found) == 0 {
 		return "没有用这个谓词的事实"
 	}
-	return "用这个谓词的事实有：" + strings.Join(found, "、")
+	names := "用这个谓词的事实有：" + strings.Join(found, "、")
+	if chaptered {
+		names += "；事件与关系按来源章区分，引用时照着带上 chapter"
+	}
+	return names
 }
 
 // Apply 返回应用补丁后的故事；标签查不到的文档（被删除的）回退到当前故事。
@@ -176,9 +183,14 @@ func (s *Story) Apply(patches []model.Patch) (*Story, error) {
 	entities := byID(s.content.Entities, func(v model.Entity) string { return v.ID })
 	canon := byID(s.content.Canon, func(v model.CanonFact) string { return v.ID })
 	manuscript := byID(s.content.Manuscript, func(v model.ManuscriptChapter) string { return v.ID })
+	intent := s.content.Intent
 	for _, patch := range patches {
 		var err error
 		switch patch.Document.Kind {
+		case model.DocumentIntent:
+			var next model.Intent
+			err = json.Unmarshal(patch.Content, &next)
+			intent = next
 		case model.DocumentPlan:
 			err = applyPatch(plan, patch)
 		case model.DocumentEntity:
@@ -192,7 +204,7 @@ func (s *Story) Apply(patches []model.Patch) (*Story, error) {
 			return nil, fmt.Errorf("apply %s: %w", patch.Document.Key(), err)
 		}
 	}
-	next := New(Content{Plan: values(plan), Entities: values(entities), Canon: values(canon), Manuscript: values(manuscript)})
+	next := New(Content{Intent: intent, Plan: values(plan), Entities: values(entities), Canon: values(canon), Manuscript: values(manuscript)})
 	next.parent = s
 	return next, nil
 }

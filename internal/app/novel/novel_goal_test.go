@@ -126,7 +126,7 @@ func acceptedVerdict(verdict StoredVerdict, findings ...string) StoredVerdict {
 func testRun(target, budget int) model.CreationRun {
 	return model.CreationRun{
 		ID: "run:book:1", ProjectID: "book",
-		Goal:     model.NovelGoal{Premise: "故事", TargetChapters: target}.Goal(),
+		Goal:     model.NovelGoal{TargetChapters: target}.Goal(),
 		Strategy: model.CreationRunStrategy{AutoRepairBudget: budget},
 	}
 }
@@ -320,8 +320,8 @@ func TestReworkRewritesChaptersWrittenBeforeTheRequirement(t *testing.T) {
 		if err != nil || next.Work == nil {
 			t.Fatalf("next = %#v, %v", next, err)
 		}
-		input, ok := next.Work.Input.(model.RewriteChapterInput)
-		if !ok || next.Work.ID != "run:book:1:rework:"+want+":r3" || input.ChapterID != want || !input.Rework || len(input.Findings) != 0 {
+		input, ok := next.Work.Input.(model.ReworkChapterInput)
+		if !ok || next.Work.Kind != model.OperationReworkChapter || next.Work.ID != "run:book:1:rework:"+want+":r3" || input.ChapterID != want {
 			t.Fatalf("rework of %s = %#v", want, next.Work)
 		}
 		if err := input.Validate(); err != nil || len(input.Directives) != 2 || !strings.Contains(next.Work.Reasons.Start, "「太拖了，紧凑点重写」") {

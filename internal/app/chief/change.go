@@ -56,13 +56,14 @@ func (s *Session) proposeChange(ctx context.Context, args changeArgs) (string, e
 }
 
 // authored 核对以用户名义写入的文字都出自用户（D74 引用即署名）：作品方向里新写的、
-// 锁定时新给的指导。沿用原有的不必再引。
+// 锁定时新给的指导。沿用原有的不必再引。作品前提例外（D87）：改设定时由主编照改后的
+// 样子改写，作品意图的修改总要用户按键确认（model.RequiresUser），确认即署名。
 func (s *Session) authored(project projectdoc.Snapshot, intent *model.Intent, locks []narrative.LockEdit) error {
 	var texts []string
 	if intent != nil {
 		before := project.Intent
 		for _, field := range [][2]string{
-			{before.Premise, intent.Premise}, {before.Audience, intent.Audience}, {before.EndingDirection, intent.EndingDirection},
+			{before.Audience, intent.Audience}, {before.EndingDirection, intent.EndingDirection},
 		} {
 			if field[1] != field[0] {
 				texts = append(texts, field[1])
@@ -143,8 +144,17 @@ func (s *Session) submit(ctx context.Context, proposal model.Proposal) (string, 
 		return "", err
 	}
 	submitted, err := s.service.decisions.Submit(ctx, proposal)
+	if code := model.FailureCodeFor(err); code.ModelService() {
+		// 判断影响的模型出了错，与修改本身无关：照实说，免得主编把它读成修改哪里不对去改。
+		return "", fmt.Errorf("修改没有提交：判断它的影响时%s，与修改本身无关", code.Explain(err.Error()))
+	}
 	if err != nil {
-		return "", err
+		// 校验报错用内部编号指认文档（如对不上的大纲，D87）：换成故事里的叫法，主编才照得着改。
+		_, story, loadErr := s.project(ctx)
+		if loadErr != nil {
+			return "", errors.Join(err, loadErr)
+		}
+		return "", story.Humanize(err)
 	}
 	receipt := summarize(view.Changes, 3)
 	if superseded {

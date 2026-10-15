@@ -330,20 +330,16 @@ func operationPhase(operation model.Operation, project projectdoc.Snapshot) (str
 	if err != nil {
 		return spec.Label, ""
 	}
+	number := func(planID string) int {
+		return slices.IndexFunc(model.ChapterPlansInOrder(project.Plan), func(node model.PlanNode) bool { return node.ID == planID }) + 1
+	}
 	switch input := input.(type) {
 	case *model.WriteChapterInput:
-		number := slices.IndexFunc(model.ChapterPlansInOrder(project.Plan), func(node model.PlanNode) bool { return node.ID == input.ChapterPlanID }) + 1
-		return fmt.Sprintf("正在落笔第 %d 章", number), input.ChapterPlanID
+		return fmt.Sprintf("正在落笔第 %d 章", number(input.ChapterPlanID)), input.ChapterPlanID
 	case *model.RewriteChapterInput:
-		for _, chapter := range project.Manuscript {
-			if chapter.ID != input.ChapterID {
-				continue
-			}
-			if input.Rework {
-				return fmt.Sprintf("正在按你的要求重写第 %d 章", chapter.Number), chapter.PlanNodeID
-			}
-			return fmt.Sprintf("正在按意见重写第 %d 章", chapter.Number), chapter.PlanNodeID
-		}
+		return fmt.Sprintf("正在按意见重写第 %d 章", number(input.ChapterPlanID)), input.ChapterPlanID
+	case *model.ReworkChapterInput:
+		return fmt.Sprintf("正在按你的要求重写第 %d 章", number(input.ChapterPlanID)), input.ChapterPlanID
 	case *model.ReviewRangeInput:
 		var numbers []int
 		for _, chapter := range project.Manuscript {

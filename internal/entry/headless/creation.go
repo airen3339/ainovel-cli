@@ -21,14 +21,13 @@ func runCreation(ctx context.Context, api *bootstrap.App, args []string, stdout,
 		flags := newFlags("creation start", stderr)
 		runID := flags.String("id", "", "Creation Run ID")
 		projectID := flags.String("project", "", "Project ID")
-		premise := flags.String("premise", "", "创作目标")
 		chapters := flags.Int("chapters", 0, "全书章数；0 表示交给 AI")
 		repairBudget := flags.Int("repair-budget", novel.DefaultRepairBudget, "每章允许的自动修订次数")
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}
-		if *runID == "" || *projectID == "" || *premise == "" || *chapters < 0 || *repairBudget < 0 {
-			return fmt.Errorf("creation start 需要 --id --project --premise、非负 --chapters 和非负 --repair-budget")
+		if *runID == "" || *projectID == "" || *chapters < 0 || *repairBudget < 0 {
+			return fmt.Errorf("creation start 需要 --id --project、非负 --chapters 和非负 --repair-budget")
 		}
 		project, err := api.Projects.Project(ctx, *projectID, model.InitialRevision)
 		if err != nil {
@@ -41,7 +40,7 @@ func runCreation(ctx context.Context, api *bootstrap.App, args []string, stdout,
 		}
 		run, err := api.Runs.StartCreationRun(ctx, creation.StartCreationRunCommand{
 			RunID: *runID, ProjectID: *projectID,
-			Goal:     model.NovelGoal{Premise: *premise, TargetChapters: *chapters}.Goal(),
+			Goal:     model.NovelGoal{TargetChapters: *chapters}.Goal(),
 			Strategy: strategy, Preset: preset,
 			CreatedAt: time.Now().UTC(),
 		})

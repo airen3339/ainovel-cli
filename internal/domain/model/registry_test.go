@@ -104,8 +104,10 @@ func TestDecodeTaskInputRejectsUnknownFieldsPerKind(t *testing.T) {
 		if _, err := DecodeTaskInput(spec.Kind, []byte(`{"unexpected":1}`)); err == nil || !strings.Contains(err.Error(), "unknown field") {
 			t.Fatalf("kind %s accepted an unknown field: %v", spec.Kind, err)
 		}
-		if _, err := DecodeTaskInput(spec.Kind, []byte(`{}`)); !errors.Is(err, ErrInvalid) {
-			t.Fatalf("kind %s accepted an empty input: %v", spec.Kind, err)
+		// 首次规划没有必填的输入：篇幅交给 AI、还没有要求时就是空的。
+		_, err := DecodeTaskInput(spec.Kind, []byte(`{}`))
+		if empty := spec.Kind == OperationDevelopPlan; empty != (err == nil) || (!empty && !errors.Is(err, ErrInvalid)) {
+			t.Fatalf("kind %s empty input err = %v", spec.Kind, err)
 		}
 	}
 	if _, err := DecodeTaskInput("unknown", []byte(`{}`)); !errors.Is(err, ErrInvalid) {

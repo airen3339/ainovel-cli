@@ -131,9 +131,9 @@ func (Policy) next(project projectdoc.Snapshot, run model.CreationRun, evidence 
 			work = writeWork(project, run, *next.write)
 		case next.covered == 0:
 			// 首次规划就要为用户已经提的要求安排落点：开书时给的大纲、蓝图等确认时提的要求。
-			work = planWork(run, goal.Premise, length, ledger.pending(0))
+			work = planWork(run, length, ledger.pending(0))
 		default:
-			work = extendWork(run, goal.Premise, length, ledger, next.covered)
+			work = extendWork(run, length, ledger, next.covered)
 		}
 	}
 	return creation.Step{Work: &work}, "", nil
@@ -326,11 +326,11 @@ func manuscriptsByPlanNode(manuscript []model.ManuscriptChapter) map[string]mode
 // 以下把推导出的缺口装配成要驱动的 Operation：槽位 ID、种类、类型化输入与各落点文案。
 // 规划任务的 ID 带上篇幅输入：篇幅或罗盘变化后是新任务，不复用旧输入（D63）。
 
-func planWork(run model.CreationRun, premise string, length Length, pending []string) creation.WorkItem {
+func planWork(run model.CreationRun, length Length, pending []string) creation.WorkItem {
 	return creation.WorkItem{
 		ID: runQuickID(run.ID, "plan", length.inputID()), Kind: model.OperationDevelopPlan,
 		Input: model.DevelopPlanInput{
-			Intent: premise, FixedChapters: length.Fixed, PendingRequirements: pending,
+			FixedChapters: length.Fixed, PendingRequirements: pending,
 			Goal: "设计可直接用于连续创作的卷、故事弧与章节大纲：只搭近处——第一卷的故事弧骨架（看得清时可再搭下一卷），更远的卷写到时按已发生的故事再定，终局只作为方向写进罗盘；这次只为第一个故事弧展开章节，这一弧多少章由你按故事走向决定，每章挂在所属故事弧下；为 pending_requirements 中的要求安排落点，指明了章的就落在那几章；" + length.planningGoal(),
 		},
 		Reasons: creation.WorkReasons{
@@ -345,7 +345,7 @@ func planWork(run model.CreationRun, premise string, length Length, pending []st
 
 // extendWork 是先审后扩（§6.3）：窗口意见与待兑现要求随扩窗输入进入下一段规划；扩窗以覆盖
 // 末章的裁定为基线（D51），裁定失效则扩窗任务失效。已覆盖的末章作为全书结局写成时是续写（D63）。
-func extendWork(run model.CreationRun, premise string, length Length, ledger reviewLedger, covered int) creation.WorkItem {
+func extendWork(run model.CreationRun, length Length, ledger reviewLedger, covered int) creation.WorkItem {
 	concluded := ledger.concluded(covered)
 	goal := "展开下一个故事弧的章节：已有章节保持不变，只在末尾追加并挂在所属故事弧下；下一弧已有骨架就按已发生的故事修订后展开，没有就新建；本卷的故事弧都已写完时先判断故事是否到了终点，未到终点才新开一卷，新卷只搭它自己的故事弧骨架；这一弧多少章由你按故事走向决定；结合审阅意见调整后续走向，为 pending_requirements 中尚未兑现的要求安排落点；已有人物与事物的状态随章节正文记录，规划不改写；" + length.planningGoal()
 	parts := []string{"plan", "extend", strconv.Itoa(covered), length.inputID()}
@@ -358,7 +358,7 @@ func extendWork(run model.CreationRun, premise string, length Length, ledger rev
 	return creation.WorkItem{
 		ID: runQuickID(run.ID, parts...), Kind: model.OperationRevisePlan,
 		Input: model.RevisePlanInput{
-			Intent: premise, FixedChapters: length.Fixed, ExistingChapters: covered,
+			FixedChapters: length.Fixed, ExistingChapters: covered,
 			ReviewNotes: ledger.notes(covered), PendingRequirements: ledger.pending(covered),
 			Basis: ledger.current[ledger.chapters[covered-1].ID].Verdict.Basis, Goal: goal,
 		},
@@ -415,11 +415,11 @@ func reworkWork(project projectdoc.Snapshot, run model.CreationRun, chapter chap
 		texts[i] = directive.Text
 	}
 	return creation.WorkItem{
-		ID: runQuickID(run.ID, "rework", chapter.chapterID, "r"+strconv.FormatInt(int64(rework.Revision), 10)), Kind: model.OperationRewriteChapter,
-		Input: model.RewriteChapterInput{
+		ID: runQuickID(run.ID, "rework", chapter.chapterID, "r"+strconv.FormatInt(int64(rework.Revision), 10)), Kind: model.OperationReworkChapter,
+		Input: model.ReworkChapterInput{
 			ChapterID: chapter.chapterID, ChapterPlanID: chapter.plan.ID,
-			Rework: true, Directives: chapter.directives(project), Basis: chapter.basis(project),
-			Goal: "按用户的返工要求重写本章：directives 里 rework 为 true 的要求是用户对现有正文的意见，针对它修改，不引入新的越界改动，与前后章节的衔接保持一致；重申报本章全部既有事实（确认、更新或删除）；严格满足 directives 列出的每条创作要求（用户原话），字数约束按 constraints 执行",
+			Directives: chapter.directives(project), Basis: chapter.basis(project),
+			Goal: "按用户的返工要求重写本章：directives 里 rework 为 true 的要求是用户对现有正文的意见，针对它修改，不引入新的越界改动，与前后章节的衔接保持一致；重申报本章全部既有事实（确认、更新或删除），以及本章的章题与章纲（照重写后的正文，没变就原样给出）；严格满足 directives 列出的每条创作要求（用户原话），字数约束按 constraints 执行",
 		},
 		Reasons: creation.WorkReasons{
 			Start:   "按你的要求重写" + chapter.label() + "：「" + strings.Join(texts, "」「") + "」",

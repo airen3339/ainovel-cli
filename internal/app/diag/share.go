@@ -109,7 +109,7 @@ func safeState(value string) string {
 	return allowed(value, "queued", "running", "paused", "awaiting_approval", "succeeded", "failed", "cancelled", "stale", "waiting_user", "completed", "no_run", "environment")
 }
 func safeKind(value string) string {
-	return allowed(value, "develop_plan", "write_chapter", "revise_plan", "revise_canon", "rewrite_chapter", "review_range", "generate_asset", "inspect_asset")
+	return allowed(value, "develop_plan", "write_chapter", "revise_plan", "revise_canon", "rewrite_chapter", "rework_chapter", "review_range", "generate_asset", "inspect_asset")
 }
 
 // Share reconstructs every string from a fixed vocabulary or a report-local alias.
@@ -150,7 +150,7 @@ func Share(report Report) ShareReport {
 	for _, op := range report.Operations {
 		s.Operations = append(s.Operations, ShareOperation{
 			ID: alias("task", op.ID), Kind: safeKind(string(op.Kind)), State: safeState(string(op.State)), Attempt: op.Attempt,
-			FailureCode: allowed(string(op.FailureCode), "", "result_unknown", "submission_blocked", "model_unreachable", "model_busy", "model_refused"), Executor: alias("executor", op.Executor), Configuration: alias("config", op.ConfigDigest),
+			FailureCode: allowed(string(op.FailureCode), "", "result_unknown", "submission_blocked", "model_unreachable", "model_busy", "model_refused", "model_malformed"), Executor: alias("executor", op.Executor), Configuration: alias("config", op.ConfigDigest),
 			CreatedOffsetMS: offset(op.CreatedAt, report.Header.CapturedAt), UpdatedOffsetMS: offset(op.UpdatedAt, report.Header.CapturedAt)})
 	}
 	for _, f := range report.Findings {
@@ -187,7 +187,7 @@ func Share(report Report) ShareReport {
 		}
 		s.Attempts = append(s.Attempts, ShareAttempt{
 			Operation: alias("task", a.OperationID), Attempt: a.Attempt, Outcome: outcome,
-			FailureCode: allowed(string(a.FailureCode), "", "result_unknown", "submission_blocked", "model_unreachable", "model_busy", "model_refused"), LeaseExpired: a.LeaseExpired,
+			FailureCode: allowed(string(a.FailureCode), "", "result_unknown", "submission_blocked", "model_unreachable", "model_busy", "model_refused", "model_malformed"), LeaseExpired: a.LeaseExpired,
 			ToolErrors: a.ToolErrors, Usage: a.Usage,
 			StartedOffsetMS: offset(a.StartedAt, report.Header.CapturedAt), ActiveOffsetMS: offset(a.ActiveAt, report.Header.CapturedAt)})
 	}

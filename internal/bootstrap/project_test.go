@@ -848,7 +848,7 @@ func ensureTestRun(
 	}
 	run := model.CreationRun{
 		ID: "run:" + projectID, ProjectID: projectID,
-		Goal: model.NovelGoal{Premise: "测试创作", TargetChapters: 3}.Goal(),
+		Goal: model.NovelGoal{TargetChapters: 3}.Goal(),
 		Strategy: model.CreationRunStrategy{
 			AutoRepairBudget: 3,
 		},

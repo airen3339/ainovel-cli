@@ -18,7 +18,7 @@ func (s *Session) brief(ctx context.Context, view View) (string, error) {
 		return "", err
 	}
 	s.mu.Lock()
-	writing := s.writing
+	writing, paused := s.writing, s.paused
 	var since time.Time // 用户上一句话的时刻：之后的里程碑是主编还不知道的
 	for _, entry := range s.entries {
 		if entry.Kind == EntryUser {
@@ -30,7 +30,7 @@ func (s *Session) brief(ctx context.Context, view View) (string, error) {
 		"【书况】宿主此刻的记录，不是用户说的话。",
 		"作品：" + oneLine(snap.Intent.Premise, 80),
 		"进度：" + progress(snap),
-		"创作：" + situation(snap, writing),
+		"创作：" + situation(snap, writing, paused),
 	}
 	if recent := milestonesSince(snap.Milestones, since); recent != "" {
 		label := "上一回合以来："
@@ -78,7 +78,9 @@ func progress(snap workbench.WorkbenchSnapshot) string {
 	}
 }
 
-func situation(snap workbench.WorkbenchSnapshot, writing bool) string {
+// situation 是创作此刻的状态。按键暂停的书在主编这一回合结束后接着写，要照实说：主编以为
+// 书停着，就会先问用户、不先暂停，回合一结束就照旧的样子写下去（D87）。
+func situation(snap workbench.WorkbenchSnapshot, writing, paused bool) string {
 	if writing {
 		if snap.CurrentPhase != "" {
 			return "正在推进（" + snap.CurrentPhase + "）"
@@ -90,6 +92,9 @@ func situation(snap workbench.WorkbenchSnapshot, writing bool) string {
 	}
 	switch snap.Run.State {
 	case model.RunPaused:
+		if paused {
+			return "用户按键暂停，你这一回合结束后接着写"
+		}
 		return "已暂停"
 	case model.RunWaitingUser:
 		return "停下等用户决定"

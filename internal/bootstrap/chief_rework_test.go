@@ -3,6 +3,8 @@ package bootstrap_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,12 +17,24 @@ import (
 	"github.com/voocel/litellm/litellmtest"
 )
 
-// conflictingExecutor 照脚本写书，语义影响分析一律报第一章与改动有出入（S4）。
-type conflictingExecutor struct{ *scriptedQuickExecutor }
+// analyzingExecutor 照脚本写书，语义影响分析按 analyze 给结论。
+type analyzingExecutor struct {
+	*scriptedQuickExecutor
+	analyze func(model.Proposal) (model.SemanticImpactReport, error)
+}
 
-func (conflictingExecutor) Analyze(context.Context, model.Proposal, model.StructuralImpact) (json.RawMessage, error) {
+func (e analyzingExecutor) Analyze(_ context.Context, proposal model.Proposal, _ model.StructuralImpact) (json.RawMessage, error) {
+	report, err := e.analyze(proposal)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(report)
+}
+
+// conflicting 一律报第一章与改动有出入（S4）。
+func conflicting(model.Proposal) (model.SemanticImpactReport, error) {
 	chapter := "chapter-chapter-plan-1"
-	return json.Marshal(model.SemanticImpactReport{
+	return model.SemanticImpactReport{
 		Status:   model.SemanticImpactConflict,
 		Findings: []model.SemanticImpactFinding{{Document: &model.DocumentRef{Kind: model.DocumentManuscript, ID: chapter}, Explanation: "第一章写的是失忆的邮差"}},
 		Options: []model.ResolutionOption{
@@ -28,17 +42,17 @@ func (conflictingExecutor) Analyze(context.Context, model.Proposal, model.Struct
 			{Strategy: model.ResolutionReinterpretFuture, Explanation: "后文解释"},
 			{Strategy: model.ResolutionAbandon, Explanation: "不改了"},
 		},
-	})
+	}, nil
 }
 
-// finishedBook 写完两章的书：主编用 provider 回话。
-func finishedBook(t *testing.T, provider litellm.Provider, analyze bool) (*testApp, *chief.Session) {
+// finishedBook 写完两章的书：主编用 provider 回话，analyze 为空时不做语义影响分析。
+func finishedBook(t *testing.T, provider litellm.Provider, analyze func(model.Proposal) (model.SemanticImpactReport, error)) (*testApp, *chief.Session) {
 	t.Helper()
 	authorityStore := openTestStore(t)
 	scripted := &scriptedQuickExecutor{now: time.Now().UTC(), authorityStore: authorityStore}
 	executors := task.ExecutorSet{LLM: scripted}
-	if analyze {
-		executors.LLM = conflictingExecutor{scripted}
+	if analyze != nil {
+		executors.LLM = analyzingExecutor{scripted, analyze}
 	}
 	api := newTestApp(authorityStore, bootstrap.Options{Executors: executors, ChiefModels: scriptedModels{provider}})
 	session := api.Chief.Open(context.Background(), "finished-book", "user-1")
@@ -70,7 +84,7 @@ func TestChiefReworksAChapterOfAFinishedBook(t *testing.T) {
 		chiefCall("early", "note_requirement", `{"text":"太拖了，紧凑点重写","scope":{"chapter":9},"rework":true}`),
 		chiefCall("rework", "note_requirement", `{"text":"太拖了，紧凑点重写","scope":{"chapter":1},"rework":true}`),
 		litellmtest.Text("记下了，第 1 章会重写。"),
-	), false)
+	), nil)
 	thread := talk(t, session, "第一章太拖了，紧凑点重写")
 	if early := thread.Entries[1]; !early.Failed || !strings.Contains(early.Text, "还没有入稿的章") {
 		t.Fatalf("rework without written chapters = %+v", early)
@@ -101,7 +115,7 @@ func TestRewritingAffectedChaptersOfAFinishedBookStartsANewRound(t *testing.T) {
 	api, session := finishedBook(t, litellmtest.New(
 		chiefCall("canon", "propose_change", `{"reason":"邮差其实记得一切","facts":[{"subject":"邮差","predicate":"state.memory","value":"记得一切"}]}`),
 		litellmtest.Text("和第一章有出入，你选怎么处理。"),
-	), true)
+	), conflicting)
 	talk(t, session, "邮差其实记得一切")
 	ctx := context.Background()
 	snap, err := api.Workbench.WorkbenchSnapshot(ctx, "finished-book")
@@ -121,5 +135,48 @@ func TestRewritingAffectedChaptersOfAFinishedBookStartsANewRound(t *testing.T) {
 	}
 	if text := chapterText(t, api, "finished-book", 2); strings.Contains(text, "重写") {
 		t.Fatalf("chapter 2 is outside the affected chapters: %q", text)
+	}
+}
+
+// 改设定时大纲里点到它的也要一并改（D87）：分析指出故事弧梗概还按旧设定写，修改被退回，
+// 报错用故事里的叫法；主编在同一次修改里改了梗概，修改才生效。分析器自己出错时照实说与
+// 修改本身无关，不让主编当成修改哪里不对。
+func TestChangeContradictingTheOutlineIsSentBack(t *testing.T) {
+	arc := model.DocumentRef{Kind: model.DocumentPlan, ID: "arc-1"}
+	analyzed := 0
+	api, session := finishedBook(t, litellmtest.New(
+		chiefCall("malformed", "propose_change", `{"reason":"邮差其实记得一切","facts":[{"subject":"邮差","predicate":"state.memory","value":"记得一切"}]}`),
+		chiefCall("fact", "propose_change", `{"reason":"邮差其实记得一切","facts":[{"subject":"邮差","predicate":"state.memory","value":"记得一切"}]}`),
+		chiefCall("with-arc", "propose_change", `{"reason":"邮差其实记得一切","facts":[{"subject":"邮差","predicate":"state.memory","value":"记得一切"}],"arcs":[{"arc":1,"summary":"邮差带着全部记忆寻找收信人"}]}`),
+		litellmtest.Text("改好了，故事弧梗概一起改了。"),
+	), func(proposal model.Proposal) (model.SemanticImpactReport, error) {
+		if analyzed++; analyzed == 1 {
+			// 分析器重给一次仍不合契约：模型一侧的失败，不是修改不对。
+			return model.SemanticImpactReport{}, &model.Failure{Code: model.FailureModelMalformed, Err: errors.New("大纲核对漏了第 1 个故事弧")}
+		}
+		if slices.ContainsFunc(proposal.Patches, func(patch model.Patch) bool { return patch.Document == arc }) {
+			return model.SemanticImpactReport{Status: model.SemanticImpactConsistent}, nil
+		}
+		return model.SemanticImpactReport{
+			Status:   model.SemanticImpactConflict,
+			Findings: []model.SemanticImpactFinding{{Document: &arc, Explanation: "梗概还写着邮差追索身份"}},
+		}, nil
+	})
+	thread := talk(t, session, "邮差其实记得一切")
+	if failed := thread.Entries[1]; !failed.Failed || !strings.Contains(failed.Text, "模型给出的结果不合要求，重给一次仍不合，与修改本身无关") {
+		t.Fatalf("analyzer failure = %+v", failed)
+	}
+	if sent := thread.Entries[2]; !sent.Failed || !strings.Contains(sent.Text, "第 1 个故事弧《启程》: 梗概还写着邮差追索身份") {
+		t.Fatalf("change contradicting the outline = %+v", sent)
+	}
+	if receipt := lastReceipt(t, thread); !strings.Contains(receipt.Text, "已生效") {
+		t.Fatalf("receipt = %+v", receipt)
+	}
+	project, err := api.Projects.Project(context.Background(), "finished-book", model.InitialRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if summary := model.IndexPlan(project.Plan)["arc-1"].Summary; summary != "邮差带着全部记忆寻找收信人" {
+		t.Fatalf("arc summary = %q", summary)
 	}
 }

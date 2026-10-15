@@ -120,6 +120,7 @@ func TestBuiltinCapabilitiesAreValidAndComplete(t *testing.T) {
 		model.OperationReviseCanon:    "architect.design",
 		model.OperationWriteChapter:   "writer.compose",
 		model.OperationRewriteChapter: "writer.revise",
+		model.OperationReworkChapter:  "writer.rework",
 		model.OperationReviewRange:    "editor.review",
 	}
 	for kind, workerID := range wantKinds {
@@ -131,8 +132,8 @@ func TestBuiltinCapabilitiesAreValidAndComplete(t *testing.T) {
 			t.Fatalf("capability %s uses %q, want %q", kind, definition.Worker.ID, workerID)
 		}
 	}
-	if len(definitions) != 4 {
-		t.Fatalf("built-in capability definitions = %d, want 4", len(definitions))
+	if len(definitions) != 5 {
+		t.Fatalf("built-in capability definitions = %d, want 5", len(definitions))
 	}
 	// 静态定义的结构：每种任务只归一个 Worker，槽位都已登记，工具不重名且 Schema 合法。
 	owners, workers := map[model.OperationKind]string{}, map[string]bool{}

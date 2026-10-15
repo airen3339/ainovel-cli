@@ -60,6 +60,12 @@ func (s *Story) Task(kind model.OperationKind, raw json.RawMessage) (json.RawMes
 			Directives []DirectiveView `json:"directives,omitempty"`
 			Goal       string          `json:"goal,omitempty"`
 		}{s.chapterNumberOf(input.ChapterPlanID), input.Findings, s.directives(input.Directives), input.Goal}
+	case *model.ReworkChapterInput:
+		view = struct {
+			Chapter    int             `json:"chapter"`
+			Directives []DirectiveView `json:"directives"`
+			Goal       string          `json:"goal,omitempty"`
+		}{s.chapterNumberOf(input.ChapterPlanID), s.directives(input.Directives), input.Goal}
 	case *model.ReviewRangeInput:
 		prior := make([]Finding, 0, len(input.PriorFindings))
 		for _, finding := range input.PriorFindings {
@@ -136,6 +142,8 @@ func (s *Story) Draft(input model.TaskInput, draft ChapterDraft) (model.Manuscri
 		}
 		chapter.ID, chapter.PlanNodeID, chapter.Number = input.ChapterPlanID, input.ChapterPlanID, s.chapterNumberOf(input.ChapterPlanID)
 	case *model.RewriteChapterInput:
+		chapter.ID, chapter.PlanNodeID, chapter.Number = input.ChapterID, input.ChapterPlanID, s.chapterNumberOf(input.ChapterPlanID)
+	case *model.ReworkChapterInput:
 		chapter.ID, chapter.PlanNodeID, chapter.Number = input.ChapterID, input.ChapterPlanID, s.chapterNumberOf(input.ChapterPlanID)
 	default:
 		return model.ManuscriptChapter{}, fmt.Errorf("this task does not write chapters: %w", model.ErrInvalid)

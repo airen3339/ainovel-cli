@@ -188,7 +188,7 @@ func TestBuildStoryContextSelectsDocumentsByOperation(t *testing.T) {
 		},
 		{
 			name: "develop_plan includes structural documents only",
-			kind: model.OperationDevelopPlan, task: `{"intent":"凡人远行","fixed_chapters":3}`,
+			kind: model.OperationDevelopPlan, task: `{"fixed_chapters":3}`,
 			want: withManuscript(),
 		},
 	}
@@ -216,7 +216,7 @@ func TestStoryContextCarriesTheCompass(t *testing.T) {
 	content.Compass = &model.Compass{ScaleMax: 60, Ending: "问鼎大道"}
 	compass := model.DocumentRef{Kind: model.DocumentCompass, ID: model.SingletonDocumentID}.Key()
 	for kind, task := range map[model.OperationKind]string{
-		model.OperationDevelopPlan:    `{"intent":"凡人远行"}`,
+		model.OperationDevelopPlan:    `{}`,
 		model.OperationWriteChapter:   `{"chapter_plan_id":"chapter-plan-2"}`,
 		model.OperationReviseCanon:    `{"chapter_id":"chapter-1","reason":"核验事实"}`,
 		model.OperationRewriteChapter: `{"chapter_id":"chapter-2","chapter_plan_id":"chapter-plan-2","findings":["节奏慢"]}`,
@@ -322,14 +322,14 @@ func TestBuildStoryContextRejectsInvalidInput(t *testing.T) {
 		task string
 		want string
 	}{
-		{name: "missing project id", edit: func(c *ProjectContent) { c.ID = " " }, kind: model.OperationDevelopPlan, task: `{"intent":"x","fixed_chapters":1}`, want: "positive revision and task are required"},
-		{name: "initial revision", edit: func(c *ProjectContent) { c.Revision = 0 }, kind: model.OperationDevelopPlan, task: `{"intent":"x","fixed_chapters":1}`, want: "positive revision and task are required"},
+		{name: "missing project id", edit: func(c *ProjectContent) { c.ID = " " }, kind: model.OperationDevelopPlan, task: `{"fixed_chapters":1}`, want: "positive revision and task are required"},
+		{name: "initial revision", edit: func(c *ProjectContent) { c.Revision = 0 }, kind: model.OperationDevelopPlan, task: `{"fixed_chapters":1}`, want: "positive revision and task are required"},
 		{name: "empty task", kind: model.OperationDevelopPlan, task: ``, want: "positive revision and task are required"},
 		{name: "malformed task", kind: model.OperationDevelopPlan, task: `{"intent":`, want: "positive revision and task are required"},
 		{name: "invalid task input", kind: model.OperationWriteChapter, task: `{"chapter_plan_id":" "}`, want: "write_chapter task input"},
 		{name: "invalid ownership rule", edit: func(c *ProjectContent) {
 			c.Ownership = []model.OwnershipRule{{Target: model.DocumentRef{Kind: model.DocumentEntity, ID: "hero"}, Control: model.ControlGuided}}
-		}, kind: model.OperationDevelopPlan, task: `{"intent":"x","fixed_chapters":1}`, want: "guided ownership requires guidance"},
+		}, kind: model.OperationDevelopPlan, task: `{"fixed_chapters":1}`, want: "guided ownership requires guidance"},
 		{name: "operation without context contract", kind: model.OperationGenerateAsset, task: `{"role":"cover","target":{"kind":"intent","id":"root"},"basis":{"documents":[{"ref":{"kind":"intent","id":"root"},"revision":1}]}}`, want: "no story context contract"},
 		{name: "unknown operation kind", kind: "paint", task: `{}`, want: `unknown operation kind "paint"`},
 	}
@@ -360,8 +360,8 @@ func TestContextKeyIsCanonicalAndBoundToKindAndVersion(t *testing.T) {
 	if base != key(model.OperationWriteChapter, "\n{ \"directives\" : [ ],\n \"chapter_plan_id\":\"c\" }") {
 		t.Fatal("key order and whitespace changed the context key")
 	}
-	if key(model.OperationRevisePlan, `{"intent":"x","existing_chapters":9007199254740993}`) ==
-		key(model.OperationRevisePlan, `{"intent":"x","existing_chapters":9007199254740992}`) {
+	if key(model.OperationRevisePlan, `{"existing_chapters":9007199254740993}`) ==
+		key(model.OperationRevisePlan, `{"existing_chapters":9007199254740992}`) {
 		t.Fatal("large integers lost precision in the context key")
 	}
 	if base == key(model.OperationRewriteChapter, `{"chapter_plan_id":"c","directives":[]}`) {

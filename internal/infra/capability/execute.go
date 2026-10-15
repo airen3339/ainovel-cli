@@ -264,6 +264,8 @@ func taskActivityScope(task model.TaskInput) activity.Scope {
 		return activity.Scope{PlanNodeID: input.ChapterPlanID}
 	case *model.RewriteChapterInput:
 		return activity.Scope{PlanNodeID: input.ChapterPlanID, ChapterIDs: []string{input.ChapterID}}
+	case *model.ReworkChapterInput:
+		return activity.Scope{PlanNodeID: input.ChapterPlanID, ChapterIDs: []string{input.ChapterID}}
 	case *model.ReviewRangeInput:
 		return activity.Scope{ChapterIDs: input.ChapterIDs}
 	case *model.ReviseCanonInput:

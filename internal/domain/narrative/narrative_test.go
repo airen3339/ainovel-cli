@@ -18,6 +18,7 @@ func fixture() *Story {
 			Blocks: []model.ManuscriptBlock{{ID: "b1", Text: "山风很冷。"}, {ID: "b2", Text: "他走进山门。"}}}
 	}
 	return New(Content{
+		Intent: model.Intent{Premise: "林凡拜入宗门，与苏晴同修"},
 		Plan: []model.PlanNode{
 			{ID: "v1", Kind: model.PlanVolume, Order: 1, Title: "入门", Summary: "进入宗门"},
 			{ID: "a1", Kind: model.PlanArc, ParentID: "v1", Order: 1, Title: "试炼", Summary: "外门试炼"},
@@ -182,6 +183,98 @@ func TestResolveRedeclarationByNaturalKey(t *testing.T) {
 	}
 }
 
+// 返工重申报本章的章题与章纲（D87）：必须给出，变了才入账；别的任务提交不了。
+func TestReworkRedeclaresItsChapterOutline(t *testing.T) {
+	story := fixture()
+	rework := &model.ReworkChapterInput{ChapterID: "c2", ChapterPlanID: "c2", Directives: []model.Directive{{
+		ID: "d1", Scope: model.DirectiveScopePlanNode("c2"), Text: "改成拒绝立誓", Status: model.DirectiveActive, Rework: true}}}
+	draft, err := story.Draft(rework, ChapterDraft{Blocks: []model.ManuscriptBlock{{ID: "b1", Text: "他没有立誓。"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolve := func(input model.TaskInput, outline *OutlineEdit) ([]model.Patch, error) {
+		return story.Resolve(input, Submission{Outline: outline, Remove: []FactRef{{Subject: "林凡", Predicate: "event.oath"}}}, []model.ManuscriptChapter{draft})
+	}
+	if _, err := resolve(rework, nil); !errors.Is(err, model.ErrInvalid) || !strings.Contains(err.Error(), "重申报本章的章题与章纲") {
+		t.Fatalf("rework without its outline: %v", err)
+	}
+	patches, err := resolve(rework, &OutlineEdit{Title: "拒誓", Summary: "林凡拒绝立誓"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if node := decodePatch[model.PlanNode](t, patches, "plan:c2"); node.Title != "拒誓" || node.Summary != "林凡拒绝立誓" || node.ParentID != "a1" {
+		t.Fatalf("outline = %+v", node)
+	}
+	if patches, err = resolve(rework, &OutlineEdit{Title: "立誓", Summary: "立誓"}); err != nil || slices.Contains(patchIDs(patches), "plan:c2/put") {
+		t.Fatalf("unchanged outline = %v, %v", patchIDs(patches), err)
+	}
+	rewrite := &model.RewriteChapterInput{ChapterID: "c2", ChapterPlanID: "c2", Findings: []string{"节奏拖沓"}}
+	if _, err := resolve(rewrite, &OutlineEdit{Title: "拒誓", Summary: "林凡拒绝立誓"}); !errors.Is(err, model.ErrInvalid) {
+		t.Fatalf("a review rewrite edited its outline: %v", err)
+	}
+}
+
+// 规划核对逐处下结论（D87）：要核对的是改动碰到或牵连的没写成正文的规划——没写的大纲（按
+// 改后的故事称呼，这次新增的章也有章号）、规划时定下的事实、作品前提；已写章的章纲与事实随
+// 正文走，改动自己写下的事实是设定本身，都不在其中。每一处都要有结论，漏了或多了是分析器
+// 出错；还按改前设定写的落在那一处文档上。
+func TestPlanningCheckJudgesEachUnwrittenPlan(t *testing.T) {
+	plan := func(node model.PlanNode) model.Patch {
+		content, err := json.Marshal(node)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return model.Patch{Document: model.DocumentRef{Kind: model.DocumentPlan, ID: node.ID}, Operation: model.PatchPut, Content: content}
+	}
+	ref := func(kind model.DocumentKind, id string) model.DocumentRef {
+		return model.DocumentRef{Kind: kind, ID: id}
+	}
+	premise, rule := ref(model.DocumentIntent, model.SingletonDocumentID), ref(model.DocumentCanon, "f3")
+	patches := []model.Patch{
+		plan(model.PlanNode{ID: "c3", Kind: model.PlanChapter, ParentID: "a1", Order: 3, Title: "下山", Summary: "林凡独自下山"}),
+		plan(model.PlanNode{ID: "c4", Kind: model.PlanChapter, ParentID: "a1", Order: 4, Title: "归来", Summary: "归来"}),
+	}
+	affected := []model.DocumentRef{ref(model.DocumentManuscript, "c2"), ref(model.DocumentPlan, "c2"), ref(model.DocumentPlan, "a1"),
+		rule, ref(model.DocumentCanon, "f1"), premise}
+	_, planning, err := fixture().Impact("改下山", patches, []model.DocumentRef{ref(model.DocumentPlan, "c3"), ref(model.DocumentPlan, "c4")}, affected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checks := planning.Checks(); !slices.Equal(checks, []string{"第 1 个故事弧", "第 3 章", "第 4 章", "「苏晴」rule.spirit_cost", "作品前提"}) {
+		t.Fatalf("checks = %v", checks)
+	}
+	if len(planning.Facts) != 1 || planning.Facts[0].Predicate != "rule.spirit_cost" || planning.Premise != "林凡拜入宗门，与苏晴同修" {
+		t.Fatalf("planning = %+v", planning)
+	}
+	verdicts := map[string]PlanningVerdict{
+		"第 1 个故事弧":             {Explanation: "没写到下山"},
+		"第 3 章":                {Explanation: "还写着结伴下山", Stale: true},
+		"第 4 章":                {Explanation: "对得上"},
+		"「苏晴」rule.spirit_cost": {Explanation: "对得上"},
+		"作品前提":                 {Explanation: "前提还写着同修", Stale: true},
+	}
+	stale, err := planning.Stale(verdicts)
+	if err != nil || len(stale) != 2 || *stale[0].Document != ref(model.DocumentPlan, "c3") || *stale[1].Document != premise {
+		t.Fatalf("stale = %+v, %v", stale, err)
+	}
+	delete(verdicts, "第 4 章")
+	if _, err := planning.Stale(verdicts); !errors.Is(err, model.ErrInvalid) || !strings.Contains(err.Error(), "漏了第 4 章") {
+		t.Fatalf("a missing verdict was accepted: %v", err)
+	}
+	verdicts["第 2 章"] = PlanningVerdict{Explanation: "已经写了"}
+	if _, err := planning.Stale(verdicts); !errors.Is(err, model.ErrInvalid) {
+		t.Fatalf("a verdict on a written chapter was accepted: %v", err)
+	}
+	// 改动自己写下的事实是设定本身，拿来对照，不再核对它。
+	_, planning, err = fixture().Impact("改施法", nil, []model.DocumentRef{rule}, []model.DocumentRef{rule, premise})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checks := planning.Checks(); !slices.Equal(checks, []string{"作品前提"}) || len(planning.After.Facts) != 1 {
+		t.Fatalf("checks = %v, after = %+v", checks, planning.After)
+	}
+}
+
 // 模型读到的任务、上下文片段与回查结果里没有任何内部 ID。
 func TestModelFacingViewsCarryNoInternalIDs(t *testing.T) {
 	story := fixture()
@@ -246,9 +339,9 @@ func TestHumanizeTranslatesIDsAndKeepsErrorChain(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cause := fmt.Errorf(`rewritten chapter "c2" must redeclare canon "f2", see "entity:e1": %w`, model.ErrStructuralConflict)
+	cause := fmt.Errorf(`rewritten chapter "c2" must redeclare canon "f2", see "entity:e1" and "intent:root": %w`, model.ErrStructuralConflict)
 	got := projected.Humanize(cause)
-	if !errors.Is(got, model.ErrStructuralConflict) || internalID.MatchString(got.Error()) ||
+	if !errors.Is(got, model.ErrStructuralConflict) || internalID.MatchString(got.Error()) || strings.Contains(got.Error(), "root") ||
 		!strings.Contains(got.Error(), "第 2 章《立誓》") || !strings.Contains(got.Error(), "「林凡」event.oath（第 2 章）") {
 		t.Fatalf("humanized = %v", got)
 	}
@@ -302,6 +395,14 @@ func TestEntityRenameKeepsOneNamePerEntity(t *testing.T) {
 	if !slices.Contains(patchIDs(patches), "canon:f3/delete") {
 		t.Fatalf("patches = %v", patchIDs(patches))
 	}
+	// 改名后旧的本名与别名都不再指它（“小凡”不跟着走），还要用的列进 aliases。
+	patches, _, err = story.ResolveEdit(Edit{Entities: []EntityEdit{{Name: "林凡", Kind: model.EntityCharacter, Rename: "林帆", Aliases: []string{"林凡"}}}}, Settings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if renamed := decodePatch[model.Entity](t, patches, "entity:e1"); renamed.Name != "林帆" || !slices.Equal(renamed.Aliases, []string{"林凡"}) {
+		t.Fatalf("renamed = %+v", renamed)
+	}
 	if _, _, err := story.ResolveEdit(Edit{Entities: []EntityEdit{{Name: "苏雨", Kind: model.EntityCharacter, Aliases: []string{"苏晴"}}}}, Settings{}); err == nil || !strings.Contains(err.Error(), "用 rename") {
 		t.Fatalf("a new entity taking an existing name: %v", err)
 	}
@@ -313,7 +414,7 @@ func TestEntityRenameKeepsOneNamePerEntity(t *testing.T) {
 // 事实引用错了时，报错说出用这个谓词的现有事实：事件按来源章区分，没给章号的照着补上。
 func TestMissingFactReferenceNamesTheExistingOnes(t *testing.T) {
 	_, _, err := fixture().ResolveEdit(Edit{Remove: []FactRef{{Subject: "林凡", Predicate: "event.oath"}}}, Settings{})
-	if err == nil || !strings.Contains(err.Error(), "用这个谓词的事实有：「林凡」event.oath（chapter=2）") {
+	if err == nil || !strings.Contains(err.Error(), "用这个谓词的事实有：「林凡」event.oath（chapter=2）；事件与关系按来源章区分，引用时照着带上 chapter") {
 		t.Fatalf("err = %v", err)
 	}
 }

@@ -83,10 +83,12 @@ func TestRuntimeToolsRespectAuthoritySnapshotAndWorkspaceBoundary(t *testing.T) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	var chapter domainmodel.ManuscriptChapter
-	if err := json.Unmarshal(stored.Content, &chapter); err != nil || chapter.ID != "chapter-plan-1" || chapter.PlanNodeID != "chapter-plan-1" ||
-		chapter.Number != 1 || chapter.Author != domainmodel.AuthorAI {
-		t.Fatalf("host-filled chapter = %+v, %v", chapter, err)
+	// 工作稿记下它照的作品版本（D87）。
+	var draft workspace.Draft
+	if err := json.Unmarshal(stored.Content, &draft); err != nil || draft.Revision != operation.Snapshot.BaseRevision ||
+		draft.Chapter.ID != "chapter-plan-1" || draft.Chapter.PlanNodeID != "chapter-plan-1" ||
+		draft.Chapter.Number != 1 || draft.Chapter.Author != domainmodel.AuthorAI {
+		t.Fatalf("host-filled draft = %+v, %v", draft, err)
 	}
 
 	var submitted domainmodel.Proposal
@@ -224,7 +226,7 @@ func TestRuntimeRestoresCommittedConversationAndWorkspace(t *testing.T) {
 		ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1, Author: domainmodel.AuthorAI,
 		Blocks: []domainmodel.ManuscriptBlock{{ID: "block-1", Text: "已经写入工作区的半成品。"}},
 	}
-	if _, err := workspace.New(authorityStore).PutChapter(ctx, first.ID, chapter, first.Attempt, now.Add(2*time.Second)); err != nil {
+	if _, err := workspace.New(authorityStore).PutChapter(ctx, first.ID, workspace.Draft{Revision: first.Snapshot.BaseRevision, Chapter: chapter}, first.Attempt, now.Add(2*time.Second)); err != nil {
 		t.Fatalf("write recoverable draft: %v", err)
 	}
 	previous := agentcore.UserText("这是崩溃前已经提交到会话日志的原始任务")
@@ -470,7 +472,7 @@ func createRuntimeTestRun(
 	t.Helper()
 	run := domainmodel.CreationRun{
 		ID: "run:" + projectID, ProjectID: projectID,
-		Goal: domainmodel.NovelGoal{Premise: "测试创作", TargetChapters: 3}.Goal(),
+		Goal: domainmodel.NovelGoal{TargetChapters: 3}.Goal(),
 		Strategy: domainmodel.CreationRunStrategy{
 			AutoRepairBudget: 3,
 		},
@@ -678,6 +680,65 @@ func TestPublishActivityThinkingTextAndToolError(t *testing.T) {
 	}
 }
 
+// 后继任务接手前任的工作稿（D87）：稿子照的作品版本早于本任务时，读回工作稿一并列出这之后
+// 书里每次修改的说明；整篇重写后照的就是本任务的版本，不再列。
+func TestInheritedDraftNamesTheChangesSinceIt(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	authorityStore, err := store.Open(ctx, filepath.Join(t.TempDir(), "ainovel.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer authorityStore.Close()
+	target := domainmodel.AuthorityTarget{Kind: domainmodel.AuthorityProject, ID: "book-1"}
+	seedRuntimeProject(t, ctx, authorityStore, target, now)
+	origin, _ := json.Marshal(domainmodel.CanonFact{
+		ID: "hero-origin", Kind: domainmodel.CanonState, SubjectID: "hero", Predicate: "state.origin", Value: json.RawMessage(`"孤儿"`),
+	})
+	change := approvedRuntimeProposal("change", target, 1, now, domainmodel.Patch{
+		Document: domainmodel.DocumentRef{Kind: domainmodel.DocumentCanon, ID: "hero-origin"}, Operation: domainmodel.PatchPut, Content: origin,
+	})
+	change.Reason = "主角改成孤儿"
+	pending := change
+	pending.ApprovalState, pending.DecidedBy, pending.DecidedAt = domainmodel.ApprovalPending, nil, nil
+	if _, err := authorityStore.SaveProposal(ctx, pending); err != nil {
+		t.Fatalf("save change: %v", err)
+	}
+	if _, err := authorityStore.CommitProposal(ctx, change); err != nil {
+		t.Fatalf("commit change: %v", err)
+	}
+	task := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1"}`)
+	operation := domainmodel.Operation{
+		ID: "write-1:redo2", Kind: domainmodel.OperationWriteChapter, Target: target,
+		State: domainmodel.OperationQueued, RunID: createRuntimeTestRun(t, ctx, authorityStore, target.ID, now),
+		Snapshot: runtimeSnapshot(task, 2, domainmodel.ApprovalManual, "profile"),
+		Input:    task, CreatedAt: now, UpdatedAt: now,
+	}
+	if _, err := authorityStore.CreateOperation(ctx, operation); err != nil {
+		t.Fatalf("create operation: %v", err)
+	}
+	if operation, err = authorityStore.ClaimNextOperation(ctx, "worker-1", time.Minute, now.Add(time.Second)); err != nil {
+		t.Fatalf("claim operation: %v", err)
+	}
+	inherited := domainmodel.ManuscriptChapter{ID: "chapter-plan-1", PlanNodeID: "chapter-plan-1", Number: 1, Author: domainmodel.AuthorAI,
+		Blocks: []domainmodel.ManuscriptBlock{{ID: "p-1", Text: "农家子走进山门。"}}}
+	if _, err := workspace.New(authorityStore).PutChapter(ctx, operation.ID, workspace.Draft{Revision: 1, Chapter: inherited}, operation.Attempt, now); err != nil {
+		t.Fatalf("put inherited draft: %v", err)
+	}
+	runtime := NewRuntime(authorityStore)
+	read := testTool(t, runtime, operation, "writer.compose@1", prompt.ToolWorkspaceRead, nil)
+	if view, err := read(ctx, json.RawMessage(`{}`)); err != nil || !strings.Contains(string(view), `"changed_since":["主角改成孤儿"]`) {
+		t.Fatalf("inherited draft = %s, %v", view, err)
+	}
+	put := testTool(t, runtime, operation, "writer.compose@1", prompt.ToolWorkspacePutChapter, nil)
+	if _, err := put(ctx, json.RawMessage(`{"chapter":{"blocks":[{"id":"p-1","text":"孤儿走进山门。"}]}}`)); err != nil {
+		t.Fatal(err)
+	}
+	if view, err := read(ctx, json.RawMessage(`{}`)); err != nil || strings.Contains(string(view), "changed_since") {
+		t.Fatalf("rewritten draft = %s, %v", view, err)
+	}
+}
+
 func approvedRuntimeProposal(
 	id string,
 	target domainmodel.AuthorityTarget,
@@ -814,7 +875,11 @@ func TestRuntimeAnalyzesSemanticImpactInStoryLanguage(t *testing.T) {
 		Value: json.RawMessage(`"捡到一把铜钥匙"`), SourceChapterID: "chapter-1",
 	}
 	seed := approvedRuntimeProposal("seed-semantic", target, 0, now,
-		put(domainmodel.DocumentPlan, "plan-1", domainmodel.PlanNode{ID: "plan-1", Kind: domainmodel.PlanChapter, Order: 1, Title: "来信"}),
+		put(domainmodel.DocumentIntent, domainmodel.SingletonDocumentID, domainmodel.Intent{Premise: "陈渡循着一把铜钥匙找姐姐"}),
+		put(domainmodel.DocumentPlan, "volume-1", domainmodel.PlanNode{ID: "volume-1", Kind: domainmodel.PlanVolume, Order: 1, Title: "雨城", Summary: "陈渡找姐姐"}),
+		put(domainmodel.DocumentPlan, "arc-1", domainmodel.PlanNode{ID: "arc-1", Kind: domainmodel.PlanArc, ParentID: "volume-1", Order: 1, Title: "来信", Summary: "钥匙指向雨巷"}),
+		put(domainmodel.DocumentPlan, "plan-1", domainmodel.PlanNode{ID: "plan-1", Kind: domainmodel.PlanChapter, ParentID: "arc-1", Order: 1, Title: "来信"}),
+		put(domainmodel.DocumentPlan, "plan-2", domainmodel.PlanNode{ID: "plan-2", Kind: domainmodel.PlanChapter, ParentID: "arc-1", Order: 2, Title: "开柜", Summary: "陈渡用铜钥匙打开保险柜"}),
 		put(domainmodel.DocumentEntity, "hero", domainmodel.Entity{ID: "hero", Kind: domainmodel.EntityCharacter, Name: "陈渡"}),
 		put(domainmodel.DocumentManuscript, "chapter-1", domainmodel.ManuscriptChapter{
 			ID: "chapter-1", PlanNodeID: "plan-1", Number: 1, Blocks: []domainmodel.ManuscriptBlock{{ID: "b1", Text: "陈渡捡到一把铜钥匙。"}},
@@ -829,7 +894,70 @@ func TestRuntimeAnalyzesSemanticImpactInStoryLanguage(t *testing.T) {
 	if _, err := authorityStore.CommitProposal(ctx, seed); err != nil {
 		t.Fatalf("seed project: %v", err)
 	}
-	model := litellmtest.New(litellmtest.Text(`{
+	fact.Value = json.RawMessage(`"捡到一枚旧邮票"`)
+	proposal := domainmodel.Proposal{
+		ID: "semantic-change", Target: target, BaseRevision: 1,
+		Author: domainmodel.Author{Kind: domainmodel.AuthorUser, ID: "user-1"}, Reason: "钥匙改成邮票",
+		Patches: []domainmodel.Patch{put(domainmodel.DocumentCanon, "fact-key", fact)}, ApprovalState: domainmodel.ApprovalPending, CreatedAt: now.Add(time.Minute),
+	}
+	analyze := func(replies ...litellmtest.Reply) (domainmodel.SemanticImpactReport, []string, string) {
+		t.Helper()
+		model := litellmtest.New(replies...)
+		reportJSON, err := boundRuntime(authorityStore, testChat(model)).Analyze(ctx, proposal, domainmodel.StructuralImpact{
+			Direct: []domainmodel.DocumentRef{{Kind: domainmodel.DocumentCanon, ID: "fact-key"}},
+			Affected: []domainmodel.DocumentRef{
+				{Kind: domainmodel.DocumentManuscript, ID: "chapter-1"}, {Kind: domainmodel.DocumentPlan, ID: "plan-2"}, {Kind: domainmodel.DocumentPlan, ID: "arc-1"},
+				{Kind: domainmodel.DocumentIntent, ID: domainmodel.SingletonDocumentID},
+			},
+		})
+		if err != nil {
+			t.Fatalf("analyze semantic impact: %v", err)
+		}
+		var report domainmodel.SemanticImpactReport
+		if err := json.Unmarshal(reportJSON, &report); err != nil || !usedJSONSchema(model) {
+			t.Fatalf("report = %s, schema = %v, error = %v", reportJSON, usedJSONSchema(model), err)
+		}
+		var inputs []string
+		for _, request := range model.Requests() {
+			input, err := json.Marshal(request.Messages)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, id := range []string{"chapter-1", "plan-1", "plan-2", "arc-1", "volume-1", "fact-key", "hero", "b1"} {
+				if strings.Contains(string(input), `"`+id+`"`) {
+					t.Fatalf("analyzer input leaks %q: %s", id, input)
+				}
+			}
+			inputs = append(inputs, string(input))
+		}
+		return report, inputs, string(model.Requests()[0].ResponseFormat.JSONSchema.Schema)
+	}
+	// 两个问题分开问（D87）：规划核对只看改动与没写成正文的规划（大纲、作品前提），看不到已写
+	// 正文，对要核对的每一处都下结论，漏了一处就带着原因重给；还按旧设定写的换回章纲、故事弧
+	// 梗概或作品前提，不再问已写章节。
+	report, inputs, schema := analyze(litellmtest.Text(`{"第 2 章":{"explanation":"章纲还写着铜钥匙","stale":true}}`), litellmtest.Text(`{
+		"第 1 个故事弧":{"explanation":"梗概还写着钥匙","stale":true},
+		"第 2 章":{"explanation":"章纲还写着铜钥匙","stale":true},
+		"作品前提":{"explanation":"前提还写着铜钥匙","stale":true}}`))
+	if len(inputs) != 2 || !strings.Contains(inputs[0], "陈渡用铜钥匙打开保险柜") || !strings.Contains(inputs[0], "捡到一枚旧邮票") ||
+		!strings.Contains(inputs[0], `\"premise\":\"陈渡循着一把铜钥匙找姐姐\"`) ||
+		strings.Contains(inputs[0], "陈渡捡到一把铜钥匙") || !strings.Contains(schema, `"required":["第 1 个故事弧","第 2 章","作品前提"]`) ||
+		!strings.Contains(inputs[1], "漏了第 1 个故事弧、作品前提") {
+		t.Fatalf("planning check input = %q, schema = %s", inputs, schema)
+	}
+	for i, want := range []domainmodel.DocumentRef{
+		{Kind: domainmodel.DocumentPlan, ID: "arc-1"}, {Kind: domainmodel.DocumentPlan, ID: "plan-2"},
+		{Kind: domainmodel.DocumentIntent, ID: domainmodel.SingletonDocumentID},
+	} {
+		if document := report.Findings[i].Document; document == nil || *document != want {
+			t.Fatalf("outline finding %d = %#v, want %v", i, report.Findings[i], want)
+		}
+	}
+	// 大纲没问题才问已写章节：它看不到大纲，出入与重写只落在已写的章上。
+	report, inputs, _ = analyze(litellmtest.Text(`{
+		"第 1 个故事弧":{"explanation":"只写到钥匙指路，邮票也能指路","stale":false},
+		"第 2 章":{"explanation":"对得上","stale":false},
+		"作品前提":{"explanation":"前提只是起点","stale":false}}`), litellmtest.Text(`{
 		"status":"conflict",
 		"findings":[{"chapter":1,"explanation":"第 1 章写的是铜钥匙"}],
 		"options":[
@@ -837,41 +965,14 @@ func TestRuntimeAnalyzesSemanticImpactInStoryLanguage(t *testing.T) {
 			{"strategy":"reinterpret_future","explanation":"在后文重新解释"},
 			{"strategy":"abandon","explanation":"放弃变更"}
 		]}`))
-	runtime := boundRuntime(authorityStore, testChat(model))
-	fact.Value = json.RawMessage(`"捡到一枚旧邮票"`)
-	proposal := domainmodel.Proposal{
-		ID: "semantic-change", Target: target, BaseRevision: 1,
-		Author: domainmodel.Author{Kind: domainmodel.AuthorUser, ID: "user-1"}, Reason: "钥匙改成邮票",
-		Patches: []domainmodel.Patch{put(domainmodel.DocumentCanon, "fact-key", fact)}, ApprovalState: domainmodel.ApprovalPending, CreatedAt: now.Add(time.Minute),
+	if len(inputs) != 2 || !strings.Contains(inputs[1], "陈渡捡到一把铜钥匙") || !strings.Contains(inputs[1], "捡到一枚旧邮票") ||
+		strings.Contains(inputs[1], "陈渡用铜钥匙打开保险柜") {
+		t.Fatalf("chapter analysis input = %q", inputs)
 	}
-	reportJSON, err := runtime.Analyze(ctx, proposal, domainmodel.StructuralImpact{
-		Direct:   []domainmodel.DocumentRef{{Kind: domainmodel.DocumentCanon, ID: "fact-key"}},
-		Affected: []domainmodel.DocumentRef{{Kind: domainmodel.DocumentManuscript, ID: "chapter-1"}},
-	})
-	if err != nil {
-		t.Fatalf("analyze semantic impact: %v", err)
-	}
-	var report domainmodel.SemanticImpactReport
-	if err := json.Unmarshal(reportJSON, &report); err != nil || report.Status != domainmodel.SemanticImpactConflict || !usedJSONSchema(model) {
-		t.Fatalf("report = %#v, schema = %v, error = %v", report, usedJSONSchema(model), err)
-	}
-	if document := report.Findings[0].Document; document == nil || *document != (domainmodel.DocumentRef{Kind: domainmodel.DocumentManuscript, ID: "chapter-1"}) ||
+	if document := report.Findings[0].Document; report.Status != domainmodel.SemanticImpactConflict || document == nil ||
+		*document != (domainmodel.DocumentRef{Kind: domainmodel.DocumentManuscript, ID: "chapter-1"}) ||
 		!slices.Equal(report.Options[0].ChapterIDs, []string{"chapter-1"}) {
 		t.Fatalf("report = %#v", report)
-	}
-	request, err := json.Marshal(model.Requests()[0].Messages)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, want := range []string{"陈渡捡到一把铜钥匙", "捡到一把铜钥匙", "捡到一枚旧邮票"} {
-		if !strings.Contains(string(request), want) {
-			t.Fatalf("analyzer input misses %q: %s", want, request)
-		}
-	}
-	for _, id := range []string{"chapter-1", "plan-1", "fact-key", "hero", "b1"} {
-		if strings.Contains(string(request), `"`+id+`"`) {
-			t.Fatalf("analyzer input leaks %q: %s", id, request)
-		}
 	}
 }
 
@@ -890,7 +991,7 @@ func TestRuntimePlanSubmissionEnforcesLengthBound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load architect capability: %v", err)
 	}
-	task := json.RawMessage(`{"intent":"规划开篇","fixed_chapters":1}`)
+	task := json.RawMessage(`{"fixed_chapters":1}`)
 	operation := domainmodel.Operation{
 		ID: "plan-1", Kind: domainmodel.OperationDevelopPlan,
 		Target: domainmodel.AuthorityTarget{Kind: domainmodel.AuthorityProject, ID: "book-plan"},
@@ -1029,10 +1130,8 @@ func TestWriterSubmissionRequiresRedeclaringChapterFacts(t *testing.T) {
 		ID: "chapter-1", PlanNodeID: "plan-1", Number: 1, Author: domainmodel.AuthorAI,
 		Blocks: []domainmodel.ManuscriptBlock{{ID: "block-1", Text: "新正文"}},
 	}
-	content, _ := json.Marshal(chapter)
-	if _, err := authorityStore.PutWorkspaceArtifact(ctx, domainmodel.WorkspaceArtifact{
-		OperationID: operation.ID, Key: workspace.ChapterKey, MediaType: workspace.ChapterMediaType, Content: content, UpdatedAt: now,
-	}, nil, operation.Attempt); err != nil {
+	if _, err := workspace.New(authorityStore).PutChapter(ctx, operation.ID,
+		workspace.Draft{Revision: operation.Snapshot.BaseRevision, Chapter: chapter}, operation.Attempt, now); err != nil {
 		t.Fatalf("put workspace chapter: %v", err)
 	}
 	runtime := NewRuntime(authorityStore)
@@ -1096,6 +1195,57 @@ func TestWriterSubmissionRequiresRedeclaringChapterFacts(t *testing.T) {
 	var confirmed domainmodel.CanonFact
 	if err := json.Unmarshal(last.Patches[1].Content, &confirmed); err != nil || string(confirmed.Value) != "true" || string(confirmed.PreviousValue) != "true" {
 		t.Fatalf("confirmation must copy the frozen baseline: %s, %v", last.Patches[1].Content, err)
+	}
+}
+
+// 返工重申报本章的章题与章纲（D87）：变了的随正文入账，工具边界照常校验。
+func TestReworkSubmissionCarriesItsOutline(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	authorityStore, err := store.Open(ctx, filepath.Join(t.TempDir(), "ainovel.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer authorityStore.Close()
+	target := domainmodel.AuthorityTarget{Kind: domainmodel.AuthorityProject, ID: "book-1"}
+	seedWrittenChapters(t, ctx, authorityStore, target, now, 2)
+	input := json.RawMessage(`{"chapter_id":"chapter-1","chapter_plan_id":"plan-1","directives":[` +
+		`{"id":"rework","scope":"plan_node:plan-1","text":"钥匙改成邮票，重写","status":"active","rework":true}]}`)
+	operation := domainmodel.Operation{
+		ID: "rework-1", Kind: domainmodel.OperationReworkChapter, Target: target, State: domainmodel.OperationQueued,
+		RunID: createRuntimeTestRun(t, ctx, authorityStore, "book-1", now), Snapshot: runtimeSnapshot(input, 1, domainmodel.ApprovalAuto, "profile"),
+		Input: input, CreatedAt: now, UpdatedAt: now,
+	}
+	if _, err := authorityStore.CreateOperation(ctx, operation); err != nil {
+		t.Fatalf("create operation: %v", err)
+	}
+	if operation, err = authorityStore.ClaimOperationForExecutor(ctx, operation.ID, "worker-1", prompt.ExecutorIdentity, time.Minute, now); err != nil {
+		t.Fatalf("claim operation: %v", err)
+	}
+	chapter := domainmodel.ManuscriptChapter{ID: "chapter-1", PlanNodeID: "plan-1", Number: 1, Author: domainmodel.AuthorAI,
+		Blocks: []domainmodel.ManuscriptBlock{{ID: "b1", Text: "信里是一枚旧邮票。"}}}
+	if _, err := workspace.New(authorityStore).PutChapter(ctx, operation.ID,
+		workspace.Draft{Revision: operation.Snapshot.BaseRevision, Chapter: chapter}, operation.Attempt, now); err != nil {
+		t.Fatalf("put workspace chapter: %v", err)
+	}
+	var submitted domainmodel.Proposal
+	submit := testTool(t, NewRuntime(authorityStore), operation, "writer.rework@1", prompt.ToolProposalSubmit, func(proposal domainmodel.Proposal) (domainmodel.Proposal, error) {
+		submitted = proposal
+		return proposal, nil
+	})
+	if _, err := submit(ctx, json.RawMessage(`{"reason":"按返工要求重写","outline":{"title":"火漆印下的旧邮票","summary":"推进"},`+
+		`"entities":[{"name":"陈渡","kind":"character"}],"facts":[{"subject":"陈渡","predicate":"event.find","value":"信里是一枚旧邮票"}]}`)); err != nil {
+		t.Fatalf("submit rework: %v", err)
+	}
+	index := slices.IndexFunc(submitted.Patches, func(patch domainmodel.Patch) bool {
+		return patch.Document == domainmodel.DocumentRef{Kind: domainmodel.DocumentPlan, ID: "plan-1"}
+	})
+	if index < 0 {
+		t.Fatalf("patches = %+v", submitted.Patches)
+	}
+	var node domainmodel.PlanNode
+	if err := json.Unmarshal(submitted.Patches[index].Content, &node); err != nil || node.Title != "火漆印下的旧邮票" || node.Summary != "推进" || node.ParentID != "arc-1" {
+		t.Fatalf("outline = %+v, %v", node, err)
 	}
 }
 

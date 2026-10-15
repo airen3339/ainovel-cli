@@ -47,8 +47,9 @@ func TestReviseCanonSubmissionCoversRequestedFacts(t *testing.T) {
 	}
 }
 
-// 章节任务只写它的目标章节（写章：目标计划节点的一章；重写：任务章节；受影响重写：
-// 全部受影响章节），不得删除正文，正文满足任务携带要求的字数约束（S13）。
+// 章节任务只写它的目标章节（写章：目标计划节点的一章；修订与返工：任务章节），不得删除
+// 正文，正文满足任务携带要求的字数约束（S13）。大纲归规划任务：只有返工能改本章的章题与
+// 章纲（D87），修订照章纲改正文。
 func TestChapterTasksWriteExactlyTheirTargets(t *testing.T) {
 	chapter := func(id, plan, text string) Patch {
 		content, _ := json.Marshal(ManuscriptChapter{ID: id, PlanNodeID: plan, Number: 1, Author: AuthorAI,
@@ -63,7 +64,24 @@ func TestChapterTasksWriteExactlyTheirTargets(t *testing.T) {
 		Constraints: &DirectiveConstraints{TargetWords: 10}}}
 	write := task(OperationWriteChapter, &WriteChapterInput{ChapterPlanID: "plan-1", Directives: length})
 	rewrite := task(OperationRewriteChapter, &RewriteChapterInput{ChapterID: "chapter-1", ChapterPlanID: "plan-1", Findings: []string{"仓促"}})
+	rework := task(OperationReworkChapter, &ReworkChapterInput{ChapterID: "chapter-1", ChapterPlanID: "plan-1", Directives: []Directive{{
+		ID: "rework", Scope: DirectiveScopePlanNode("plan-1"), Text: "钥匙改成邮票，重写", Status: DirectiveActive, Rework: true}}})
 	ten := strings.Repeat("好", 10)
+	base := story{plans: map[string]PlanNode{
+		"arc-1":  {ID: "arc-1", Kind: PlanArc, Title: "雨城", Summary: "陈渡循钥匙找姐姐"},
+		"arc-2":  {ID: "arc-2", Kind: PlanArc, Order: 1, Title: "邮局", Summary: "撞破秘密"},
+		"plan-1": {ID: "plan-1", Kind: PlanChapter, ParentID: "arc-1", Order: 1, Title: "火漆印下的铜钥匙", Summary: "信里只有一把铜钥匙"},
+		"plan-2": {ID: "plan-2", Kind: PlanChapter, ParentID: "arc-1", Order: 2, Title: "死信房", Summary: "按钥匙编号找柜格"},
+	}}
+	outline := func(id string, edit func(*PlanNode)) Patch {
+		node := base.plans[id]
+		edit(&node)
+		content, _ := json.Marshal(node)
+		return Patch{Document: DocumentRef{Kind: DocumentPlan, ID: id}, Operation: PatchPut, Content: content}
+	}
+	retitled := outline("plan-1", func(node *PlanNode) {
+		node.Title, node.Summary = "火漆印下的旧邮票", "信里只有一枚旧邮票"
+	})
 	for _, c := range []struct {
 		name    string
 		task    Operation
@@ -79,17 +97,36 @@ func TestChapterTasksWriteExactlyTheirTargets(t *testing.T) {
 		{"rewrite another chapter", rewrite, []Patch{chapter("chapter-2", "plan-1", "新")}, "exactly chapter chapter-1"},
 		{"rewrite cannot delete", rewrite, []Patch{chapter("chapter-1", "plan-1", "新"),
 			{Document: DocumentRef{Kind: DocumentManuscript, ID: "chapter-2"}, Operation: PatchDelete}}, "cannot delete chapter"},
+		{"rework retitles its chapter", rework, []Patch{chapter("chapter-1", "plan-1", "新"), retitled}, ""},
+		{"rework cannot edit another outline", rework, []Patch{chapter("chapter-1", "plan-1", "新"), retitled,
+			outline("plan-2", func(node *PlanNode) { node.Summary = "按邮票编号找柜格" })}, "only planning tasks edit the plan"},
+		{"rework cannot edit its arc", rework, []Patch{chapter("chapter-1", "plan-1", "新"),
+			outline("arc-1", func(node *PlanNode) { node.Summary = "陈渡循邮票找姐姐" })}, "only planning tasks edit the plan"},
+		{"rework cannot move its chapter", rework, []Patch{chapter("chapter-1", "plan-1", "新"),
+			outline("plan-1", func(node *PlanNode) { node.ParentID = "arc-2" })}, "only planning tasks edit the plan"},
+		{"rewrite cannot edit its outline", rewrite, []Patch{chapter("chapter-1", "plan-1", "新"), retitled}, "only planning tasks edit the plan"},
+		{"write cannot edit its outline", write, []Patch{chapter("chapter-1", "plan-1", ten), retitled}, "only planning tasks edit the plan"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			projected := story{chapters: make(map[string]ManuscriptChapter)}
+			projected := story{chapters: make(map[string]ManuscriptChapter), plans: make(map[string]PlanNode)}
+			for id, node := range base.plans {
+				projected.plans[id] = node
+			}
 			for _, patch := range c.patches {
-				if patch.Operation == PatchPut {
-					if err := decodeInto(projected.chapters, DocumentVersion{Document: patch.Document, Content: patch.Content}); err != nil {
-						t.Fatal(err)
-					}
+				version := DocumentVersion{Document: patch.Document, Content: patch.Content}
+				var err error
+				switch {
+				case patch.Operation != PatchPut:
+				case patch.Document.Kind == DocumentPlan:
+					err = decodeInto(projected.plans, version)
+				default:
+					err = decodeInto(projected.chapters, version)
+				}
+				if err != nil {
+					t.Fatal(err)
 				}
 			}
-			err := validateTaskSubmission(c.task, story{}, projected, c.patches)
+			err := validateTaskSubmission(c.task, base, projected, c.patches)
 			if c.wantErr == "" && err != nil {
 				t.Fatalf("rejected: %v", err)
 			}

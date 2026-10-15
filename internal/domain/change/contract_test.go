@@ -22,7 +22,7 @@ func TestTaskContractHoldsOnEveryPath(t *testing.T) {
 	now := testTime()
 	run, err := s.CreateCreationRun(ctx, model.CreationRun{
 		ID: "run:book-1", ProjectID: target.ID,
-		Goal:     model.NovelGoal{Premise: "凡人修仙", TargetChapters: 3}.Goal(),
+		Goal:     model.NovelGoal{TargetChapters: 3}.Goal(),
 		Strategy: model.CreationRunStrategy{AutoRepairBudget: 3},
 		Preset:   model.CreationRunPreset{Source: "test", Digest: "test-preset", Approval: model.ApprovalAuto},
 		State:    model.RunRunning, CreatedAt: now, UpdatedAt: now,

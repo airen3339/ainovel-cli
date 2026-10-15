@@ -14,9 +14,14 @@ import (
 
 // 进行中环节要点名正在处理的章：审阅与重写的都是已入稿章节，不能笼统成种类文案。
 func TestOperationPhaseNamesChaptersInFlight(t *testing.T) {
-	project := projectdoc.Snapshot{Manuscript: []model.ManuscriptChapter{
-		{ID: "c1", PlanNodeID: "p1", Number: 1}, {ID: "c2", PlanNodeID: "p2", Number: 2}, {ID: "c3", PlanNodeID: "p3", Number: 3},
-	}}
+	project := projectdoc.Snapshot{
+		Plan: []model.PlanNode{
+			{ID: "p1", Kind: model.PlanChapter, Order: 1}, {ID: "p2", Kind: model.PlanChapter, Order: 2}, {ID: "p3", Kind: model.PlanChapter, Order: 3},
+		},
+		Manuscript: []model.ManuscriptChapter{
+			{ID: "c1", PlanNodeID: "p1", Number: 1}, {ID: "c2", PlanNodeID: "p2", Number: 2}, {ID: "c3", PlanNodeID: "p3", Number: 3},
+		},
+	}
 	const basis = `"basis":{"documents":[{"ref":{"kind":"manuscript","id":"c1"},"revision":3}]}`
 	for _, tc := range []struct {
 		kind               model.OperationKind
@@ -26,6 +31,7 @@ func TestOperationPhaseNamesChaptersInFlight(t *testing.T) {
 		{model.OperationReviewRange, `{"chapter_ids":["c2"],` + basis + `}`, "正在审阅第 2 章", ""},
 		{model.OperationReviewRange, `{"chapter_ids":["c1","c2","c3"],"reviewed":["c1","c3"],` + basis + `}`, "正在复审第 1–3 章", ""},
 		{model.OperationRewriteChapter, `{"chapter_id":"c1","chapter_plan_id":"p1","findings":["称呼混用"]}`, "正在按意见重写第 1 章", "p1"},
+		{model.OperationReworkChapter, `{"chapter_id":"c2","chapter_plan_id":"p2","directives":[{"id":"r","scope":"plan_node:p2","text":"重写","status":"active","rework":true}]}`, "正在按你的要求重写第 2 章", "p2"},
 	} {
 		if phase, plan := operationPhase(model.Operation{Kind: tc.kind, Input: []byte(tc.input)}, project); phase != tc.phase || plan != tc.plan {
 			t.Errorf("%s: phase=%q plan=%q, want %q %q", tc.kind, phase, plan, tc.phase, tc.plan)

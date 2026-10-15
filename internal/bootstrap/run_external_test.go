@@ -185,7 +185,7 @@ func newExternalTestService(t *testing.T) (*testApp, *externalGenerationExecutor
 	}
 	if _, err := api.Runs.StartCreationRun(ctx, runs.StartCreationRunCommand{
 		RunID: "run:" + externalTestProject + ":1", ProjectID: externalTestProject,
-		Goal: model.NovelGoal{Premise: "故事", TargetChapters: 1}.Goal(), Strategy: strategy, Preset: preset, CreatedAt: testTime(),
+		Goal: model.NovelGoal{TargetChapters: 1}.Goal(), Strategy: strategy, Preset: preset, CreatedAt: testTime(),
 	}); err != nil {
 		t.Fatalf("start run: %v", err)
 	}

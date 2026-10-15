@@ -184,6 +184,8 @@ func buildStoryContext(content ProjectContent, kind model.OperationKind, task js
 		err = s.writing(input.ChapterPlanID, "", policy)
 	case *model.RewriteChapterInput:
 		err = s.writing(input.ChapterPlanID, input.ChapterID, policy)
+	case *model.ReworkChapterInput:
+		err = s.writing(input.ChapterPlanID, input.ChapterID, policy)
 	case *model.ReviseCanonInput:
 		// 事实核验（D41）：本章正文与来源于它的事实，对着正文逐条核对。
 		chapter, ok := s.manuscripts[input.ChapterID]
@@ -449,11 +451,8 @@ func (s *selector) relevantEntities() map[string]bool {
 	}
 	corpus := text.String()
 	for _, entity := range s.entities {
-		for _, name := range append([]string{entity.Name}, entity.Aliases...) {
-			if utf8.RuneCountInString(name) >= 2 && strings.Contains(corpus, name) {
-				relevant[entity.ID] = true
-				break
-			}
+		if entity.MentionedIn(corpus) {
+			relevant[entity.ID] = true
 		}
 	}
 	return relevant

@@ -11,11 +11,12 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain/narrative"
 	"github.com/voocel/ainovel-cli/internal/infra/capability/prompt"
 	"github.com/voocel/ainovel-cli/internal/infra/llm"
+	"github.com/voocel/ainovel-cli/internal/infra/llm/models"
 	"github.com/voocel/litellm"
 	"github.com/voocel/litellm/catalog"
 )
 
-// 三个语义判断都是三分法第二类（§11 第 7 条）：边界清晰的单次 LLM 函数。
+// 这些语义判断都是三分法第二类（§11 第 7 条）：边界清晰的单次 LLM 函数。
 // 提示词、输入组装与输出契约就近留在这里，通用调用与严格解码收口在 llm。
 
 // preferenceEdit 是偏好分析看到的一处用户修改：故事语言（D66），按章号说，不带内部编号。
@@ -83,26 +84,28 @@ func (r *Runtime) AnalyzePreference(ctx context.Context, input model.PreferenceL
 	return candidate, nil
 }
 
-// Analyze 判断改动与已写的故事是否冲突（S4）。分析器只看故事语言（D66）：改前改后的那几处、
-// 可能受牵连的章节正文与设定，章节按章号说，宿主再换回文档引用。
+// Analyze 判断改动的语义影响（S4、D87）。分两个问题问，各自只看自己的材料：先核对没写成正文
+// 的规划还按不按改前的设定写，有就把那几处报回去，修改由提出者补齐；再判断改动与已写正文是否冲突。
+// 分析器只看故事语言（D66），章节按章号说，宿主再换回文档引用。
 func (r *Runtime) Analyze(
 	ctx context.Context,
 	proposal model.Proposal,
 	structural model.StructuralImpact,
 ) (json.RawMessage, error) {
-	story, err := r.storyAt(ctx, proposal.Target, proposal.BaseRevision)
+	content, err := r.contentAt(ctx, proposal.Target, proposal.BaseRevision)
 	if err != nil {
 		return nil, err
 	}
-	impact, err := story.Impact(proposal.Reason, proposal.Patches, structural.Direct, structural.Affected)
+	// 作品前提也是规划，改设定时要一并核对（D87）。
+	intent, err := r.store.GetDocument(ctx, proposal.Target, model.DocumentRef{Kind: model.DocumentIntent, ID: model.SingletonDocumentID}, proposal.BaseRevision)
 	if err != nil {
 		return nil, err
 	}
-	input, err := json.Marshal(impact)
-	if err != nil {
-		return nil, fmt.Errorf("encode semantic impact input: %w", err)
+	if err := json.Unmarshal(intent.Content, &content.Intent); err != nil {
+		return nil, fmt.Errorf("decode intent: %w", err)
 	}
-	cacheKey, err := prompt.CacheKey(proposal.Target.ID, "semantic.impact@2", model.Digest(input), proposal.ID)
+	story := narrative.New(content)
+	impact, planning, err := story.Impact(proposal.Reason, proposal.Patches, structural.Direct, structural.Affected)
 	if err != nil {
 		return nil, err
 	}
@@ -110,8 +113,34 @@ func (r *Runtime) Analyze(
 	if !ok {
 		return nil, fmt.Errorf("%w: model is not bound", change.ErrSemanticUnavailable)
 	}
-	chapters := map[string]any{"type": "array", "items": map[string]any{"type": "integer", "minimum": 1}}
+	if len(planning.Checks()) > 0 {
+		stale, err := r.stalePlanning(ctx, binding, proposal, planning)
+		if err != nil {
+			return nil, err
+		}
+		if len(stale) > 0 {
+			return json.Marshal(model.SemanticImpactReport{Status: model.SemanticImpactConflict, Findings: stale})
+		}
+	}
+	if len(impact.Chapters) == 0 {
+		return json.Marshal(model.SemanticImpactReport{Status: model.SemanticImpactConsistent})
+	}
+	input, err := json.Marshal(impact)
+	if err != nil {
+		return nil, fmt.Errorf("encode semantic impact input: %w", err)
+	}
+	cacheKey, err := prompt.CacheKey(proposal.Target.ID, "semantic.impact@3", model.Digest(input), proposal.ID)
+	if err != nil {
+		return nil, err
+	}
+	// 出入与重写都只能落在给出的已写章上。
+	numbers := make([]int, len(impact.Chapters))
+	for i, chapter := range impact.Chapters {
+		numbers[i] = chapter.Chapter
+	}
+	written := map[string]any{"type": "integer", "enum": numbers}
 	var report narrative.ImpactReport
+	var converted model.SemanticImpactReport
 	if _, err := llm.Structured(ctx, binding, llm.Call{
 		System: "你是小说变更影响分析器。对照改前改后与已写章节，判断这次改动与已经发生的故事事实、人物动机和因果链是否冲突。consistent 时 findings/options 必须为空；conflict 或 uncertain 时必须给出 rewrite_affected、reinterpret_future、abandon 三种明确选项，rewrite_affected 列出要重写的章号。章节一律按章号说。不得替用户作决定。",
 		Input:  string(input),
@@ -123,14 +152,14 @@ func (r *Runtime) Analyze(
 					"status": map[string]any{"type": "string", "enum": []string{"consistent", "conflict", "uncertain"}},
 					"findings": map[string]any{"type": "array", "items": map[string]any{
 						"type": "object", "properties": map[string]any{
-							"chapter":     map[string]any{"type": "integer", "minimum": 1, "description": "出入所在的章号；不落在某一章时省略"},
+							"chapter":     map[string]any{"type": "integer", "enum": numbers, "description": "出入所在的已写章号；不落在某一章时省略"},
 							"explanation": map[string]any{"type": "string"},
 						}, "required": []string{"explanation"}, "additionalProperties": false,
 					}},
 					"options": map[string]any{"type": "array", "items": map[string]any{
 						"type": "object", "properties": map[string]any{
 							"strategy":    map[string]any{"type": "string", "enum": []string{"rewrite_affected", "reinterpret_future", "abandon"}},
-							"chapters":    chapters,
+							"chapters":    map[string]any{"type": "array", "items": written},
 							"explanation": map[string]any{"type": "string"},
 						}, "required": []string{"strategy", "explanation"}, "additionalProperties": false,
 					}},
@@ -139,14 +168,59 @@ func (r *Runtime) Analyze(
 			},
 		},
 		CacheKey: cacheKey, SessionID: proposal.ID + ":semantic-impact",
+		Check: func() (err error) {
+			if converted, err = story.Report(report); err != nil {
+				return err
+			}
+			return converted.Validate()
+		},
 	}, &report); err != nil {
 		return nil, err
 	}
-	converted, err := story.Report(report)
+	return json.Marshal(converted)
+}
+
+// stalePlanning 核对没写成正文的规划（D87）：只给改动与规划，不给已写正文——改后的规划与旧
+// 正文对不上是已写章的事，由用户选处置，不能记到规划头上。要核对的每一处都是必填的键，逐处
+// 下结论。
+func (r *Runtime) stalePlanning(ctx context.Context, binding models.Binding, proposal model.Proposal, planning narrative.PlanningInput) ([]model.SemanticImpactFinding, error) {
+	input, err := json.Marshal(planning)
+	if err != nil {
+		return nil, fmt.Errorf("encode planning check input: %w", err)
+	}
+	cacheKey, err := prompt.CacheKey(proposal.Target.ID, "semantic.planning@1", model.Digest(input), proposal.ID)
 	if err != nil {
 		return nil, err
 	}
-	return json.Marshal(converted)
+	checks := planning.Checks()
+	verdict := map[string]any{
+		"type": "object", "properties": map[string]any{
+			"explanation": map[string]any{"type": "string"},
+			"stale":       map[string]any{"type": "boolean"},
+		}, "required": []string{"explanation", "stale"}, "additionalProperties": false,
+	}
+	properties := make(map[string]any, len(checks))
+	for _, label := range checks {
+		properties[label] = verdict
+	}
+	var verdicts map[string]narrative.PlanningVerdict
+	var stale []model.SemanticImpactFinding
+	if _, err := llm.Structured(ctx, binding, llm.Call{
+		System: "你核对一次设定修改之后还没写成正文的规划。before/after 是这次改动的设定与人物；outline 是还没写的章纲与卷、故事弧的标题和梗概，" +
+			"planned_facts 是规划时定下的设定，premise 是作品前提，都已是这次修改之后的样子。" +
+			"输出的每个键是一处要核对的规划（第几卷、第几个故事弧、第几章，「主体」谓词，作品前提），每一处都下结论：explanation 说它写到这次改动的什么、" +
+			"与改后的设定对不对得上；它仍按改前的设定写、与改后的设定矛盾时 stale 为 true。只对照这次改动判断，不评价写得好不好。",
+		Input: string(input),
+		Schema: llm.Schema{
+			Name: "story_planning_check", Description: "逐处判断没写成正文的规划是否还按改前的设定写",
+			JSON: map[string]any{"type": "object", "properties": properties, "required": checks, "additionalProperties": false},
+		},
+		CacheKey: cacheKey, SessionID: proposal.ID + ":planning-check",
+		Check: func() (err error) { stale, err = planning.Stale(verdicts); return err },
+	}, &verdicts); err != nil {
+		return nil, err
+	}
+	return stale, nil
 }
 
 func (r *Runtime) AnalyzeSemanticCompliance(
@@ -222,15 +296,12 @@ func (r *Runtime) AnalyzeSemanticCompliance(
 			},
 		},
 		CacheKey: cacheKey, SessionID: operation.ID + ":semantic-compliance",
-		Observe: feed.observe, Retried: feed.retried,
+		Observe: feed.observe, Retried: feed.retried, Check: func() error { return report.Validate() },
 	}, &report)
 	feed.finish(err)
 	// 判断用的是默认绑定、不在 Agent 会话里：对话记录记下实际模型与结论，用量按同一价目
 	// 并入所在尝试，创作团队的统计计入所在任务。
 	judgment := semanticJudgment{Provider: binding.Provider, Model: binding.Model}
-	if err == nil {
-		err = report.Validate()
-	}
 	if err != nil {
 		judgment.Error = err.Error()
 	} else {

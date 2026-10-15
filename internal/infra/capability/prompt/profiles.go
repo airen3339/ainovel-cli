@@ -98,7 +98,7 @@ var builtinCapabilities = []CapabilityDefinition{
 			Tools: []ToolSchema{
 				tool(ToolAuthorityRead, authorityReadDescription, StoryReadSchema),
 				tool(ToolWorkspacePutCandidate, "把结构化草案写入当前任务工作区", `{"type":"object","properties":{"key":{"type":"string"},"content":{"type":"object"}},"required":["key","content"],"additionalProperties":false}`),
-				proposalTool(false, true, true),
+				proposalTool(submission{redeclare: true, planning: true}),
 			},
 			StopCondition: "已提交合法的候选，或返回明确错误",
 		},
@@ -108,7 +108,7 @@ var builtinCapabilities = []CapabilityDefinition{
 		Worker: WorkerProfile{
 			ID: "writer.compose", Version: "1", ModelRole: "writer",
 			PromptSlots:   []Slot{SlotWriterChapterPlan, SlotWriterChapterDraft},
-			Tools:         writerTools(false),
+			Tools:         writerTools(submission{prose: true}),
 			StopCondition: "章节工作稿通过本地校验并提交候选，或返回明确错误",
 		},
 	},
@@ -117,8 +117,17 @@ var builtinCapabilities = []CapabilityDefinition{
 		Worker: WorkerProfile{
 			ID: "writer.revise", Version: "1", ModelRole: "writer",
 			// 重写与新写共用写作标准，重写方法另成一段。
-			PromptSlots: []Slot{SlotWriterChapterDraft, SlotWriterRewrite}, Tools: writerTools(true),
+			PromptSlots: []Slot{SlotWriterChapterDraft, SlotWriterRewrite}, Tools: writerTools(submission{prose: true, redeclare: true}),
 			StopCondition: "修订工作稿通过本地校验，并重申报本章全部既有事实（确认、更新或删除）后提交候选，或返回明确错误",
+		},
+	},
+	{
+		OperationKinds: []model.OperationKind{model.OperationReworkChapter},
+		Worker: WorkerProfile{
+			ID: "writer.rework", Version: "1", ModelRole: "writer",
+			// 返工与修订共用重写方法；只有返工能随正文改本章的章题与章纲（D87）。
+			PromptSlots: []Slot{SlotWriterChapterDraft, SlotWriterRewrite}, Tools: writerTools(submission{prose: true, redeclare: true, outline: true}),
+			StopCondition: "返工稿通过本地校验，并重申报本章全部既有事实（确认、更新或删除）与章题章纲后提交候选，或返回明确错误",
 		},
 	},
 	{
@@ -163,15 +172,15 @@ func BuiltinWorkerProfile(id string) (WorkerProfile, error) {
 	return WorkerProfile{}, fmt.Errorf("worker profile %q does not exist: %w", id, model.ErrInvalid)
 }
 
-// writerTools 是写作类 Worker 的工具；redeclare 表示任务改动已有事实的章节、需要重申报。
-// 一次任务只写一章、只有一份章节工作稿（D86），稿件键由宿主定，不做成模型参数（D60）。
-func writerTools(redeclare bool) []ToolSchema {
+// writerTools 是写作类 Worker 的工具，can 是它能提交的内容。一次任务只写一章、只有一份
+// 章节工作稿（D86），稿件键由宿主定，不做成模型参数（D60）。
+func writerTools(can submission) []ToolSchema {
 	return []ToolSchema{
 		tool(ToolAuthorityRead, authorityReadDescription, StoryReadSchema),
-		tool(ToolWorkspaceRead, "读回本章工作稿的当前版本：段落编号与正文", `{"type":"object","properties":{},"additionalProperties":false}`),
+		tool(ToolWorkspaceRead, "读回本章工作稿的当前版本：段落编号与正文。工作稿是照更早的作品写的（前任留下的稿）时，changed_since 列出这之后书里的修改，照现在的书核对着改", `{"type":"object","properties":{},"additionalProperties":false}`),
 		putChapterTool(),
 		tool(ToolWorkspaceReplaceBlock, "按段落编号修改本章工作稿的一个段落；改几段就调用几次，返回改后的版本", `{"type":"object","properties":{"block_id":{"type":"string"},"text":`+proseTextSchema+`},"required":["block_id","text"],"additionalProperties":false}`),
-		proposalTool(true, redeclare, false),
+		proposalTool(can),
 	}
 }
 
@@ -249,11 +258,14 @@ const compassSchema = `{"type":"object","description":"故事罗盘，只有规�
 	`"properties":{"scale_max":{"type":"integer","minimum":1},"ending":{"type":"string"},"final":{"type":"integer","minimum":1}},` +
 	`"required":["ending"],"additionalProperties":false}`
 
-// proposalTool 按任务公开提交参数：没有合法用途的参数不出现，模型就不会误用。prose 是
-// 写章任务：正文由宿主取本章工作稿装配；redeclare 公开确认与删除，只给要重申报已有事实的
-// 任务——写新章时本章还没有事实；planning 公开罗盘与卷弧章编辑。创作意图只装用户的原话，
-// AI 不写（D70）。
-func proposalTool(prose, redeclare, planning bool) ToolSchema {
+// submission 是一种任务能提交的内容。prose 是写章任务：正文由宿主取本章工作稿装配；
+// redeclare 公开确认与删除，只给要重申报已有事实的任务——写新章时本章还没有事实；planning
+// 公开罗盘与卷弧章编辑；outline 要求重申报本章的章题与章纲，只给返工（D87）。
+type submission struct{ prose, redeclare, planning, outline bool }
+
+// proposalTool 按任务公开提交参数：没有合法用途的参数不出现，模型就不会误用。创作意图只装
+// 用户的原话，AI 不写（D70）。
+func proposalTool(can submission) ToolSchema {
 	required := []string{"reason"}
 	facts := map[string]any{"type": "array", "items": factSchema(),
 		"description": "只写本次新确立或改变的事实；其他章节的既有事实原样保留，不要重复提交"}
@@ -264,22 +276,31 @@ func proposalTool(prose, redeclare, planning bool) ToolSchema {
 	}
 	description := `把结果提交为候选，不直接修改作品。实体按名称、事实按主体+谓词定位：state/rule/foreshadow 的同一主体同一谓词就是同一事实，` +
 		`再次提交即更新；事件与关系按来源章区分，同一章里同一主体的同一谓词只记一条。`
-	if prose {
+	if can.prose {
 		description += `正文由宿主取本章工作稿的当前版本装配。` +
 			`例：{"reason":"完成本章","facts":[{"subject":"<实体名>","predicate":"event.oath","value":"在山门前立誓入宗"}]}。`
 	}
-	if prose && !redeclare {
+	if can.prose && !can.redeclare {
 		facts["minItems"] = 1
 		required = append(required, "facts")
 	}
-	if redeclare {
+	if can.redeclare {
 		properties["confirm_facts"] = map[string]any{"type": "array", "items": factRefSchema(),
 			"description": "重申报时原样保留的既有事实，宿主复制原值"}
 		properties["remove_facts"] = map[string]any{"type": "array", "items": factRefSchema(),
 			"description": "不再成立的既有事实；想撤销对某状态的改动就把值改回原值，不要删除整个事实"}
 		description += `重申报所改章节的全部既有事实：不变的列进 confirm_facts，要改的在 facts 里提交新值，不再成立的列进 remove_facts；其他章节的事实不要动。`
 	}
-	if planning {
+	if can.outline {
+		properties["outline"] = map[string]any{"type": "object",
+			"description": "重申报本章的章题与章纲：照重写后的正文给出，返工改了本章写的事就改，没变就原样给出",
+			"properties": map[string]any{
+				"title":   map[string]any{"type": "string", "minLength": 1},
+				"summary": map[string]any{"type": "string", "minLength": 1, "description": "一两句话说本章写了什么"},
+			}, "required": []string{"title", "summary"}, "additionalProperties": false}
+		required = append(required, "outline")
+	}
+	if can.planning {
 		properties["compass"] = json.RawMessage(compassSchema)
 		properties["volumes"] = planEditSchema("volume", "", "")
 		properties["arcs"] = planEditSchema("arc", "volume", "所属卷序号，新增时必填")

@@ -44,16 +44,15 @@ func (g CreationRunGoal) Equal(other CreationRunGoal) bool {
 	return g.Kind == other.Kind && bytes.Equal(g.Payload, other.Payload)
 }
 
-// NovelGoal 是小说目标的载荷：一句话前提与全书章数。TargetChapters 为 0 表示篇幅
-// 交给 AI（由故事罗盘收官承诺，D63），正数表示用户固定。
+// NovelGoal 是小说目标的载荷：全书章数。TargetChapters 为 0 表示篇幅交给 AI（由故事
+// 罗盘收官承诺，D63），正数表示用户固定。前提只在作品的创作意图里，会随修改变，不抄进目标。
 type NovelGoal struct {
-	Premise        string `json:"premise"`
-	TargetChapters int    `json:"target_chapters,omitempty"`
+	TargetChapters int `json:"target_chapters,omitempty"`
 }
 
 func (g NovelGoal) Validate() error {
-	if strings.TrimSpace(g.Premise) == "" || g.TargetChapters < 0 {
-		return fmt.Errorf("creation run premise is required and target chapters cannot be negative: %w", ErrInvalid)
+	if g.TargetChapters < 0 {
+		return fmt.Errorf("creation run target chapters cannot be negative: %w", ErrInvalid)
 	}
 	return nil
 }

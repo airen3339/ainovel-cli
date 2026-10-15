@@ -103,6 +103,7 @@ func (e *Engine) prepare(ctx context.Context, proposal model.Proposal, analyzeSe
 		if err != nil {
 			return model.Proposal{}, fmt.Errorf("analyze semantic impact: %w", err)
 		}
+		// 报告能否进入提案由创作领域判定：有的出入要提出者在同一次修改里补齐（D87），退回。
 		if proposal.Impact.Semantic, err = model.DecodeSemanticImpact(semantic, checked.base); err != nil {
 			return model.Proposal{}, err
 		}

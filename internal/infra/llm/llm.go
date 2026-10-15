@@ -6,6 +6,7 @@ package llm
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain/model"
@@ -33,11 +34,16 @@ type Call struct {
 	Observe func(litellm.Event) error
 	// Retried 在暂时性失败后、等 delay 重发前收到第 attempt 次重发的通知；重发的流从头再来。
 	Retried func(attempt int, delay time.Duration, err error)
+	// Check 在严格解码后校验输出合不合调用方的契约：Schema 表达不了的（逐处都有结论、章号
+	// 只能是已写的章），以及服务商不强制的（DeepSeek 等的 Schema 输出只是提示词加 JSON 模式）。
+	// 为空时只做严格解码。
+	Check func() error
 }
 
 // Structured 用绑定的模型（含其思考强度）发起一次严格 JSON Schema 约束的流式调用，
-// 并把响应严格解码到 out；暂时性失败按 models.Retry 退避重发，最终失败经 models.Classify
-// 标上类别。返回本次调用的 usage 供调用方落审计事件。
+// 并把响应严格解码到 out、经 Check 校验；暂时性失败按 models.Retry 退避重发，最终失败经
+// models.Classify 标上类别。输出不合契约时把原因告诉模型重给一次，再不合就是模型一侧的
+// 失败（model_malformed）。返回本次调用（含重给）的 usage 供调用方落审计事件。
 func Structured(ctx context.Context, binding models.Binding, call Call, out any) (litellm.Usage, error) {
 	format, err := litellm.NewResponseFormatJSONSchema(call.Schema.Name, call.Schema.Description, call.Schema.JSON)
 	if err != nil {
@@ -48,33 +54,63 @@ func Structured(ctx context.Context, binding models.Binding, call Call, out any)
 	request := chat.Request
 	request.Messages = []litellm.Message{litellm.System(call.System), litellm.UserText(call.Input)}
 	request.ResponseFormat = format
-	policy := models.Retry()
-	var response *litellm.Response
-	for attempt := 1; ; attempt++ {
-		response, err = stream(ctx, chat.Client, request, call.Observe)
+	var usage litellm.Usage
+	for repaired := false; ; repaired = true {
+		response, err := complete(ctx, chat.Client, request, call)
+		if err != nil {
+			return usage, err
+		}
+		usage.Add(response.Usage)
+		err = decode(response.Text(), out, call.Check)
 		if err == nil {
-			break
+			return usage, nil
+		}
+		if repaired {
+			// 模型一侧的失败，不是调用方给错了：不沿用校验错误的类别（如 ErrInvalid），免得被
+			// 读成输入不合规。
+			return usage, &model.Failure{Code: model.FailureModelMalformed, Err: fmt.Errorf("structured response %q: %v", call.Schema.Name, err)}
+		}
+		request.Messages = append(request.Messages, litellm.AssistantText(response.Text()),
+			litellm.UserText("这份输出不合要求："+err.Error()+"。按同样的要求重新给出完整的输出。"))
+	}
+}
+
+// complete 发出一次调用：暂时性失败按 models.Retry 退避重发。
+func complete(ctx context.Context, client *litellm.Client, request litellm.Request, call Call) (*litellm.Response, error) {
+	policy := models.Retry()
+	for attempt := 1; ; attempt++ {
+		response, err := stream(ctx, client, request, call.Observe)
+		if err == nil {
+			return response, nil
 		}
 		if ctx.Err() != nil || !litellm.IsTemporaryError(err) || attempt >= policy.MaxAttempts {
-			return litellm.Usage{}, models.Classify(err)
+			return nil, models.Classify(err)
 		}
 		delay, ok := policy.Delay(attempt, litellm.RetryAfter(err))
 		if !ok {
-			return litellm.Usage{}, models.Classify(err)
+			return nil, models.Classify(err)
 		}
 		if call.Retried != nil {
 			call.Retried(attempt+1, delay, err)
 		}
 		select {
 		case <-ctx.Done():
-			return litellm.Usage{}, ctx.Err()
+			return nil, ctx.Err()
 		case <-time.After(delay):
 		}
 	}
-	if err := model.DecodeStrict([]byte(response.Text()), out); err != nil {
-		return litellm.Usage{}, fmt.Errorf("decode structured response %q: %w", call.Schema.Name, err)
+}
+
+// decode 把输出严格解码到清零的 out 再校验：重给的输出不能带上前一份残留的字段或键。
+func decode(text string, out any, check func() error) error {
+	reflect.ValueOf(out).Elem().SetZero()
+	if err := model.DecodeStrict([]byte(text), out); err != nil {
+		return err
 	}
-	return response.Usage, nil
+	if check == nil {
+		return nil
+	}
+	return check()
 }
 
 func stream(ctx context.Context, client *litellm.Client, request litellm.Request, observe func(litellm.Event) error) (*litellm.Response, error) {

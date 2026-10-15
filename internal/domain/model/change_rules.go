@@ -385,6 +385,9 @@ func validateTaskSubmission(task Operation, base, projected story, patches []Pat
 	if err := validateBlueprint(input, base, projected, patches); err != nil {
 		return err
 	}
+	if err := validatePlanEdits(input, base, projected, patches); err != nil {
+		return err
+	}
 	switch input := input.(type) {
 	case *WriteChapterInput:
 		written := manuscriptPuts(patches)
@@ -397,6 +400,10 @@ func validateTaskSubmission(task Operation, base, projected story, patches []Pat
 			return err
 		}
 	case *RewriteChapterInput:
+		if err := requireManuscripts(patches, sameKeys(manuscriptPuts(patches), input.ChapterID), "chapter "+input.ChapterID); err != nil {
+			return err
+		}
+	case *ReworkChapterInput:
 		if err := requireManuscripts(patches, sameKeys(manuscriptPuts(patches), input.ChapterID), "chapter "+input.ChapterID); err != nil {
 			return err
 		}
@@ -453,6 +460,29 @@ func validateBlueprint(input TaskInput, base, projected story, patches []Patch) 
 		return fmt.Errorf("plan reaches the compass scale_max %d: declare the final chapter count (not below the %d planned chapters), or raise scale_max if the story needs more: %w", compass.ScaleMax, existing, ErrInvalid)
 	case chapters <= existing:
 		return noProgress(existing)
+	}
+	return nil
+}
+
+// validatePlanEdits：大纲归规划任务。已写章的章题与章纲描述的是它的正文，返工改变了正文
+// 写的事，就随正文一起改本章的这两项（D87）；其余任务照大纲写，不碰大纲。
+func validatePlanEdits(input TaskInput, base, projected story, patches []Patch) error {
+	if _, planning := planRequest(input); planning {
+		return nil
+	}
+	var own string
+	if rework, ok := input.(*ReworkChapterInput); ok {
+		own = rework.ChapterPlanID
+	}
+	for _, patch := range patches {
+		if patch.Document.Kind != DocumentPlan {
+			continue
+		}
+		before, after := base.plans[patch.Document.ID], projected.plans[patch.Document.ID]
+		if patch.Document.ID != own || patch.Operation != PatchPut || after.Kind != before.Kind ||
+			after.ParentID != before.ParentID || after.Order != before.Order || !slices.Equal(after.DependsOn, before.DependsOn) {
+			return fmt.Errorf("only planning tasks edit the plan; a rework changes only the title and summary of its own chapter: %w", ErrInvalid)
+		}
 	}
 	return nil
 }

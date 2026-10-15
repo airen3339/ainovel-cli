@@ -1005,15 +1005,23 @@ func (e *scriptedQuickExecutor) Execute(ctx context.Context, operation model.Ope
 		if err != nil {
 			return model.OperationOutcome{}, err
 		}
-		note := "按审阅意见重写：" + strings.Join(input.Findings, "；")
-		if input.Rework {
-			note = "按返工要求重写"
+		number, err := e.chapterNumber(ctx, operation, input.ChapterPlanID)
+		if err != nil {
+			return model.OperationOutcome{}, err
+		}
+		if patches, err = e.rewrite(input.ChapterID, input.ChapterPlanID, number, "按审阅意见重写："+strings.Join(input.Findings, "；")); err != nil {
+			return model.OperationOutcome{}, err
+		}
+	case model.OperationReworkChapter:
+		input, err := model.TaskInputAs[model.ReworkChapterInput](operation)
+		if err != nil {
+			return model.OperationOutcome{}, err
 		}
 		number, err := e.chapterNumber(ctx, operation, input.ChapterPlanID)
 		if err != nil {
 			return model.OperationOutcome{}, err
 		}
-		if patches, err = e.rewrite(input.ChapterID, input.ChapterPlanID, number, note); err != nil {
+		if patches, err = e.rewrite(input.ChapterID, input.ChapterPlanID, number, "按返工要求重写"); err != nil {
 			return model.OperationOutcome{}, err
 		}
 	case model.OperationReviseCanon:

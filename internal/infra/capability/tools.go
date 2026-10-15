@@ -10,6 +10,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain/model"
 	"github.com/voocel/ainovel-cli/internal/domain/narrative"
 	"github.com/voocel/ainovel-cli/internal/infra/capability/prompt"
+	"github.com/voocel/ainovel-cli/internal/infra/workspace"
 	"github.com/voocel/litellm"
 )
 
@@ -66,27 +67,56 @@ func (r *Runtime) storyLoader(operation model.Operation) func(context.Context) (
 	}
 }
 
+// draftView 是写手读回的本章工作稿。工作稿照的作品版本早于本任务时（前任留下的稿，D87），
+// ChangedSince 按先后列出这之间书里每次修改的说明：草稿可能还照着改前的样子写。
+type draftView struct {
+	Blocks       []model.ManuscriptBlock `json:"blocks"`
+	ChangedSince []string                `json:"changed_since,omitempty"`
+}
+
+// changesBetween 是作品从 from 到 to 之间每次修改的说明。
+func (r *Runtime) changesBetween(ctx context.Context, target model.AuthorityTarget, from, to model.Revision) ([]string, error) {
+	reasons := make([]string, 0, to-from)
+	for revision := from + 1; revision <= to; revision++ {
+		changeSet, err := r.store.GetChangeSetByRevision(ctx, target, revision)
+		if err != nil {
+			return nil, err
+		}
+		reasons = append(reasons, changeSet.Reason)
+	}
+	return reasons, nil
+}
+
 // storyAt 是作品在 revision 上的故事索引。任务读冻结基线，从不读最新 Revision：之后的用户
 // 修改不会成为 old_value 的来源。
 func (r *Runtime) storyAt(ctx context.Context, target model.AuthorityTarget, revision model.Revision) (*narrative.Story, error) {
-	var content narrative.Content
-	if revision <= model.InitialRevision {
-		return narrative.New(content), nil
-	}
-	var err error
-	if content.Plan, err = documentsAt[model.PlanNode](ctx, r.store, target, revision, model.DocumentPlan); err != nil {
-		return nil, err
-	}
-	if content.Entities, err = documentsAt[model.Entity](ctx, r.store, target, revision, model.DocumentEntity); err != nil {
-		return nil, err
-	}
-	if content.Canon, err = documentsAt[model.CanonFact](ctx, r.store, target, revision, model.DocumentCanon); err != nil {
-		return nil, err
-	}
-	if content.Manuscript, err = documentsAt[model.ManuscriptChapter](ctx, r.store, target, revision, model.DocumentManuscript); err != nil {
+	content, err := r.contentAt(ctx, target, revision)
+	if err != nil {
 		return nil, err
 	}
 	return narrative.New(content), nil
+}
+
+// contentAt 读作品在 revision 上的大纲、实体、设定与正文；作品意图由用得着的一方另读。
+func (r *Runtime) contentAt(ctx context.Context, target model.AuthorityTarget, revision model.Revision) (narrative.Content, error) {
+	var content narrative.Content
+	if revision <= model.InitialRevision {
+		return content, nil
+	}
+	var err error
+	if content.Plan, err = documentsAt[model.PlanNode](ctx, r.store, target, revision, model.DocumentPlan); err != nil {
+		return narrative.Content{}, err
+	}
+	if content.Entities, err = documentsAt[model.Entity](ctx, r.store, target, revision, model.DocumentEntity); err != nil {
+		return narrative.Content{}, err
+	}
+	if content.Canon, err = documentsAt[model.CanonFact](ctx, r.store, target, revision, model.DocumentCanon); err != nil {
+		return narrative.Content{}, err
+	}
+	if content.Manuscript, err = documentsAt[model.ManuscriptChapter](ctx, r.store, target, revision, model.DocumentManuscript); err != nil {
+		return narrative.Content{}, err
+	}
+	return content, nil
 }
 
 func documentsAt[T any](ctx context.Context, store runtimeStore, target model.AuthorityTarget, revision model.Revision, kind model.DocumentKind) ([]T, error) {
@@ -161,11 +191,17 @@ func (r *Runtime) executor(
 			if err := decodeToolArgs(raw, &args); err != nil {
 				return nil, err
 			}
-			chapter, err := r.workspace.Chapter(ctx, operation.ID)
+			draft, err := r.workspace.Chapter(ctx, operation.ID)
 			if err != nil {
 				return nil, err
 			}
-			return json.Marshal(narrative.ChapterDraft{Blocks: chapter.Blocks})
+			view := draftView{Blocks: draft.Chapter.Blocks}
+			if draft.Revision < operation.Snapshot.BaseRevision {
+				if view.ChangedSince, err = r.changesBetween(ctx, operation.Target, draft.Revision, operation.Snapshot.BaseRevision); err != nil {
+					return nil, err
+				}
+			}
+			return json.Marshal(view)
 		}, nil
 	case prompt.ToolWorkspacePutChapter:
 		return func(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
@@ -188,7 +224,7 @@ func (r *Runtime) executor(
 			if err != nil {
 				return nil, err
 			}
-			artifact, err := r.workspace.PutChapter(ctx, operation.ID, chapter, operation.Attempt, r.now())
+			artifact, err := r.workspace.PutChapter(ctx, operation.ID, workspace.Draft{Revision: operation.Snapshot.BaseRevision, Chapter: chapter}, operation.Attempt, r.now())
 			if err != nil {
 				return nil, err
 			}

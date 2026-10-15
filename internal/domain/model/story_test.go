@@ -88,14 +88,14 @@ func TestValidateBlueprint(t *testing.T) {
 		return put(t, DocumentRef{Kind: DocumentCompass, ID: SingletonDocumentID}, Compass{ScaleMax: scaleMax, Ending: "称帝", Final: final})
 	}
 	extend := func(t *testing.T, fixed, existing int) Operation {
-		input, err := json.Marshal(RevisePlanInput{Intent: "逆袭", FixedChapters: fixed, ExistingChapters: existing})
+		input, err := json.Marshal(RevisePlanInput{FixedChapters: fixed, ExistingChapters: existing})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return Operation{Kind: OperationRevisePlan, Input: input}
 	}
 	develop := func(t *testing.T, fixed int) Operation {
-		input, err := json.Marshal(DevelopPlanInput{Intent: "逆袭", FixedChapters: fixed})
+		input, err := json.Marshal(DevelopPlanInput{FixedChapters: fixed})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -227,14 +227,13 @@ func TestPlanInputsValidateRequest(t *testing.T) {
 		input TaskInput
 		ok    bool
 	}{
-		{DevelopPlanInput{Intent: "逆袭"}, true},
-		{DevelopPlanInput{Intent: "逆袭", FixedChapters: 2}, true},
-		{DevelopPlanInput{Intent: "逆袭", FixedChapters: -1}, false},
-		{DevelopPlanInput{Intent: " "}, false},
-		{RevisePlanInput{Intent: "逆袭", ExistingChapters: 3}, true},
-		{RevisePlanInput{Intent: "逆袭", FixedChapters: 5, ExistingChapters: 3}, true},
-		{RevisePlanInput{Intent: "逆袭"}, false},
-		{RevisePlanInput{Intent: "逆袭", FixedChapters: 3, ExistingChapters: 3}, false},
+		{DevelopPlanInput{}, true},
+		{DevelopPlanInput{FixedChapters: 2}, true},
+		{DevelopPlanInput{FixedChapters: -1}, false},
+		{RevisePlanInput{ExistingChapters: 3}, true},
+		{RevisePlanInput{FixedChapters: 5, ExistingChapters: 3}, true},
+		{RevisePlanInput{}, false},
+		{RevisePlanInput{FixedChapters: 3, ExistingChapters: 3}, false},
 	} {
 		if err := c.input.Validate(); (err == nil) != c.ok {
 			t.Fatalf("%+v validate = %v, want ok %v", c.input, err, c.ok)

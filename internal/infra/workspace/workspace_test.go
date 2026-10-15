@@ -22,7 +22,7 @@ func TestReplaceChapterBlockUsesStableID(t *testing.T) {
 	defer authorityStore.Close()
 	run := model.CreationRun{
 		ID: "run:book-1", ProjectID: "book-1",
-		Goal: model.NovelGoal{Premise: "测试创作", TargetChapters: 1}.Goal(),
+		Goal: model.NovelGoal{TargetChapters: 1}.Goal(),
 		Strategy: model.CreationRunStrategy{
 			AutoRepairBudget: 1,
 		},
@@ -56,7 +56,7 @@ func TestReplaceChapterBlockUsesStableID(t *testing.T) {
 		ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1, Author: model.AuthorAI,
 		Blocks: []model.ManuscriptBlock{{ID: "p-1", Text: "旧段落"}, {ID: "p-2", Text: "保持不变"}},
 	}
-	artifact, err := workspace.PutChapter(ctx, operation.ID, chapter, claimed.Attempt, now.Add(2*time.Second))
+	artifact, err := workspace.PutChapter(ctx, operation.ID, Draft{Revision: 1, Chapter: chapter}, claimed.Attempt, now.Add(2*time.Second))
 	if err != nil {
 		t.Fatalf("put chapter: %v", err)
 	}
@@ -71,12 +71,13 @@ func TestReplaceChapterBlockUsesStableID(t *testing.T) {
 	if artifact.Version != 3 {
 		t.Fatalf("workspace version = %d, want 3", artifact.Version)
 	}
-	var updated model.ManuscriptChapter
+	// 按段落改是在原稿上改：照的作品版本不变。
+	var updated Draft
 	if err := json.Unmarshal(artifact.Content, &updated); err != nil {
-		t.Fatalf("decode updated chapter: %v", err)
+		t.Fatalf("decode updated draft: %v", err)
 	}
-	if updated.Blocks[0].ID != "p-1" || updated.Blocks[0].Text != "新段落" || updated.Blocks[1].Text != "也改了" {
-		t.Fatalf("updated blocks = %#v", updated.Blocks)
+	if blocks := updated.Chapter.Blocks; updated.Revision != 1 || blocks[0].ID != "p-1" || blocks[0].Text != "新段落" || blocks[1].Text != "也改了" {
+		t.Fatalf("updated draft = %#v", updated)
 	}
 	if _, err := workspace.ReplaceChapterBlock(
 		ctx, operation.ID, "p-1", "过期实例", claimed.Attempt+1, now.Add(5*time.Second),

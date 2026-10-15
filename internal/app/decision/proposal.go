@@ -238,6 +238,8 @@ func (s *Review) rejectionScope(ctx context.Context, operation model.Operation, 
 		return model.DirectiveScopePlanNode(input.ChapterPlanID), nil
 	case *model.RewriteChapterInput:
 		return model.DirectiveScopePlanNode(input.ChapterPlanID), nil
+	case *model.ReworkChapterInput:
+		return model.DirectiveScopePlanNode(input.ChapterPlanID), nil
 	case *model.DevelopPlanInput, *model.RevisePlanInput:
 		project, err := s.projects.Project(ctx, projectID, model.InitialRevision)
 		if err != nil {

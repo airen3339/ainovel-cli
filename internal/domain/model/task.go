@@ -42,6 +42,8 @@ var operationKinds = []OperationKindSpec{
 		NewInput: func() TaskInput { return &WriteChapterInput{} }},
 	{Kind: OperationRewriteChapter, Executor: ExecutorLLM, Label: "正在按意见重写章节",
 		NewInput: func() TaskInput { return &RewriteChapterInput{} }},
+	{Kind: OperationReworkChapter, Executor: ExecutorLLM, Label: "正在按你的要求重写章节",
+		NewInput: func() TaskInput { return &ReworkChapterInput{} }},
 	{Kind: OperationReviewRange, Executor: ExecutorLLM, Label: "正在审阅已完成章节",
 		NewInput: func() TaskInput { return &ReviewRangeInput{} }},
 	{Kind: OperationGenerateAsset, Executor: ExecutorExternal, Label: "正在生成衍生资产",
@@ -99,17 +101,14 @@ func TaskInputAs[T any, PT interface {
 // DevelopPlanInput / RevisePlanInput 不指定章数：这次展开或追加多少章由规划者决定，
 // 提交边界只守篇幅上界与进展（§6.3 D67）。FixedChapters 为 0 表示篇幅交给 AI，正数
 // 表示用户固定的全书章数。PendingRequirements 是尚未兑现的要求原文（D62），供规划安排落点。
+// 作品前提不在输入里：任务按基线读创作意图，前提改了不留旧抄本。
 type DevelopPlanInput struct {
-	Intent              string   `json:"intent"`
 	FixedChapters       int      `json:"fixed_chapters,omitempty"`
 	PendingRequirements []string `json:"pending_requirements,omitempty"`
 	Goal                string   `json:"goal,omitempty"`
 }
 
 func (v DevelopPlanInput) Validate() error {
-	if strings.TrimSpace(v.Intent) == "" {
-		return fmt.Errorf("intent is required: %w", ErrInvalid)
-	}
 	if v.FixedChapters < 0 {
 		return fmt.Errorf("fixed chapters %d must not be negative: %w", v.FixedChapters, ErrInvalid)
 	}
@@ -119,7 +118,6 @@ func (v DevelopPlanInput) Validate() error {
 // RevisePlanInput 的 Basis 是扩窗所依据的窗口审阅裁定基线（D51）：相干要求或正文
 // 再变化时扩窗任务失效，先重审再扩。
 type RevisePlanInput struct {
-	Intent              string        `json:"intent"`
 	FixedChapters       int           `json:"fixed_chapters,omitempty"`
 	ExistingChapters    int           `json:"existing_chapters"`
 	ReviewNotes         []string      `json:"review_notes,omitempty"`
@@ -129,9 +127,6 @@ type RevisePlanInput struct {
 }
 
 func (v RevisePlanInput) Validate() error {
-	if strings.TrimSpace(v.Intent) == "" {
-		return fmt.Errorf("intent is required: %w", ErrInvalid)
-	}
 	if v.FixedChapters < 0 || v.ExistingChapters < 1 || (v.FixedChapters > 0 && v.ExistingChapters >= v.FixedChapters) {
 		return fmt.Errorf("extending %d existing chapters requires room below fixed %d: %w", v.ExistingChapters, v.FixedChapters, ErrInvalid)
 	}
@@ -174,14 +169,11 @@ func (v WriteChapterInput) Validate() error {
 	return v.Basis.Validate()
 }
 
-// RewriteChapterInput 是重写一章：按审阅的阻塞意见（Findings），或是用户点名的返工
-// （Rework，D78）——没有审阅意见，按 Directives 里标了 rework 的要求重写，不计入自动修订
-// 预算。
+// RewriteChapterInput 是按审阅的阻塞意见修订一章：照章纲改正文，计入自动修订预算（D63）。
 type RewriteChapterInput struct {
 	ChapterID     string        `json:"chapter_id"`
 	ChapterPlanID string        `json:"chapter_plan_id"`
-	Findings      []string      `json:"findings,omitempty"`
-	Rework        bool          `json:"rework,omitempty"`
+	Findings      []string      `json:"findings"`
 	Directives    []Directive   `json:"directives,omitempty"`
 	Basis         EvidenceBasis `json:"basis,omitzero"`
 	Goal          string        `json:"goal,omitempty"`
@@ -191,9 +183,32 @@ func (v RewriteChapterInput) Validate() error {
 	if strings.TrimSpace(v.ChapterID) == "" || strings.TrimSpace(v.ChapterPlanID) == "" {
 		return fmt.Errorf("chapter and plan are required: %w", ErrInvalid)
 	}
-	reworks := slices.ContainsFunc(v.Directives, func(directive Directive) bool { return directive.Rework })
-	if v.Rework != (len(v.Findings) == 0) || v.Rework && !reworks {
-		return fmt.Errorf("a rewrite follows either review findings or a rework directive: %w", ErrInvalid)
+	if len(v.Findings) == 0 {
+		return fmt.Errorf("a rewrite follows review findings: %w", ErrInvalid)
+	}
+	if err := validateTaskDirectives(v.Directives); err != nil {
+		return err
+	}
+	return v.Basis.Validate()
+}
+
+// ReworkChapterInput 是按用户点名的返工要求重写一章（D78）：Directives 里标了 rework 的
+// 要求是用户对现有正文的意见。返工可能改变这一章写了什么，章题与章纲随正文一起改（D87）；
+// 不是自动修订，不计入预算。
+type ReworkChapterInput struct {
+	ChapterID     string        `json:"chapter_id"`
+	ChapterPlanID string        `json:"chapter_plan_id"`
+	Directives    []Directive   `json:"directives"`
+	Basis         EvidenceBasis `json:"basis,omitzero"`
+	Goal          string        `json:"goal,omitempty"`
+}
+
+func (v ReworkChapterInput) Validate() error {
+	if strings.TrimSpace(v.ChapterID) == "" || strings.TrimSpace(v.ChapterPlanID) == "" {
+		return fmt.Errorf("chapter and plan are required: %w", ErrInvalid)
+	}
+	if !slices.ContainsFunc(v.Directives, func(directive Directive) bool { return directive.Rework }) {
+		return fmt.Errorf("a rework follows a rework directive: %w", ErrInvalid)
 	}
 	if err := validateTaskDirectives(v.Directives); err != nil {
 		return err
@@ -332,6 +347,8 @@ func taskDirectives(input TaskInput) []Directive {
 		return value.Directives
 	case *RewriteChapterInput:
 		return value.Directives
+	case *ReworkChapterInput:
+		return value.Directives
 	default:
 		return nil
 	}
@@ -340,7 +357,7 @@ func taskDirectives(input TaskInput) []Directive {
 // RepairChapters 返回自动修订任务针对的章节，修订预算按章计（D63）。
 // 用户点名的返工不是自动修订，不计入（D78）。
 func RepairChapters(input TaskInput) []string {
-	if value, ok := input.(*RewriteChapterInput); ok && !value.Rework {
+	if value, ok := input.(*RewriteChapterInput); ok {
 		return []string{value.ChapterID}
 	}
 	return nil
@@ -353,6 +370,8 @@ func taskBasis(input TaskInput) EvidenceBasis {
 	case *WriteChapterInput:
 		return value.Basis
 	case *RewriteChapterInput:
+		return value.Basis
+	case *ReworkChapterInput:
 		return value.Basis
 	case *RevisePlanInput:
 		return value.Basis

@@ -19,14 +19,19 @@ func TestSubmissionSchemaExposesOnlyUsableParameters(t *testing.T) {
 		"architect.design": {
 			required: []string{"reason"}, present: append(append([]string{"entities", "facts"}, planning...), redeclare...),
 			// 创作意图只装用户的原话（D70），任何 Worker 都不能提交它。
-			absent: append([]string{"intent"}, drafts...),
+			absent: append([]string{"intent", "outline"}, drafts...),
 		},
 		"writer.compose": {
 			required: []string{"reason", "facts"}, present: []string{"entities"},
-			absent: append(append(slices.Clone(drafts), planning...), redeclare...),
+			absent: append(append(append(slices.Clone(drafts), planning...), redeclare...), "outline"),
 		},
+		// 审阅修订照章纲改正文，改不了章纲：否则写手能改大纲躲开“与章纲不符”的意见（D87）。
 		"writer.revise": {
 			required: []string{"reason"}, present: append([]string{"entities", "facts"}, redeclare...),
+			absent: append(append(slices.Clone(drafts), planning...), "outline"),
+		},
+		"writer.rework": {
+			required: []string{"reason", "outline"}, present: append([]string{"entities", "facts"}, redeclare...),
 			absent: append(slices.Clone(drafts), planning...),
 		},
 	}
