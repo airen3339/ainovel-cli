@@ -108,14 +108,19 @@ const (
 	ApprovalRejected ApprovalState = "rejected"
 )
 
-// ImpactReport 的两个语义字段承载不同的报告：Semantic 是面向用户三选一的
-// 语义影响报告（SemanticImpactReport），Compliance 是自动批准前对
-// locked/guided 约束的独立合规裁定（SemanticComplianceReport）。二者 schema
-// 不兼容，禁止复用同一字段。
+// ImpactReport 是提案的影响：Structural 是 Change Engine 按依赖图算出的结构影响；
+// Semantic 是面向用户三选一的语义影响报告；Compliance 是自动批准前对 locked/guided
+// 约束的独立合规裁定。各报告在产出处校验，之后按类型读取。
 type ImpactReport struct {
-	Structural json.RawMessage `json:"structural,omitempty"`
-	Semantic   json.RawMessage `json:"semantic,omitempty"`
-	Compliance json.RawMessage `json:"compliance,omitempty"`
+	Structural *StructuralImpact         `json:"structural,omitempty"`
+	Semantic   *SemanticImpactReport     `json:"semantic,omitempty"`
+	Compliance *SemanticComplianceReport `json:"compliance,omitempty"`
+}
+
+// StructuralImpact 是一次变更直接改动的文档与沿依赖受牵连的文档。
+type StructuralImpact struct {
+	Direct   []DocumentRef `json:"direct"`
+	Affected []DocumentRef `json:"affected"`
 }
 
 // Proposal describes a requested authority change. It is not authoritative until
@@ -194,15 +199,6 @@ func (p Proposal) Validate() error {
 			return fmt.Errorf("duplicate patch document %q: %w", key, ErrInvalid)
 		}
 		seen[key] = struct{}{}
-	}
-	if len(p.Impact.Structural) != 0 && !json.Valid(p.Impact.Structural) {
-		return fmt.Errorf("structural impact must be valid JSON: %w", ErrInvalid)
-	}
-	if len(p.Impact.Semantic) != 0 && !json.Valid(p.Impact.Semantic) {
-		return fmt.Errorf("semantic impact must be valid JSON: %w", ErrInvalid)
-	}
-	if len(p.Impact.Compliance) != 0 && !json.Valid(p.Impact.Compliance) {
-		return fmt.Errorf("compliance impact must be valid JSON: %w", ErrInvalid)
 	}
 	switch p.ApprovalState {
 	case ApprovalPending:

@@ -27,12 +27,9 @@ type FileManifest struct {
 }
 
 type Loaded struct {
-	Root       string             `json:"root"`
-	Manifest   model.PackManifest `json:"manifest"`
-	References map[string]string  `json:"references,omitempty"`
-	Templates  map[string]string  `json:"templates,omitempty"`
-	Evals      map[string]string  `json:"evals,omitempty"`
-	Digest     string             `json:"digest"`
+	Root     string             `json:"root"`
+	Manifest model.PackManifest `json:"manifest"`
+	Digest   string             `json:"digest"`
 }
 
 func LoadDirectory(dir string) (Loaded, error) {
@@ -99,9 +96,6 @@ func load(read func(relative string) ([]byte, error)) (Loaded, error) {
 			Evals:          append([]string(nil), manifest.Evals...),
 			EvalData:       make(map[string]string, len(manifest.Evals)),
 		},
-		References: make(map[string]string, len(manifest.References)),
-		Templates:  make(map[string]string, len(manifest.Templates)),
-		Evals:      make(map[string]string, len(manifest.Evals)),
 	}
 	for slot, assetPath := range manifest.Prompts {
 		if strings.TrimSpace(slot) == "" {
@@ -125,9 +119,9 @@ func load(read func(relative string) ([]byte, error)) (Loaded, error) {
 		assets map[string]string
 		kind   string
 	}{
-		{manifest.References, loaded.References, "reference"},
-		{manifest.Templates, loaded.Templates, "template"},
-		{manifest.Evals, loaded.Evals, "eval"},
+		{manifest.References, loaded.Manifest.ReferenceData, "reference"},
+		{manifest.Templates, loaded.Manifest.TemplateData, "template"},
+		{manifest.Evals, loaded.Manifest.EvalData, "eval"},
 	} {
 		for _, assetPath := range entry.paths {
 			content, err := read(assetPath)
@@ -137,9 +131,6 @@ func load(read func(relative string) ([]byte, error)) (Loaded, error) {
 			entry.assets[filepath.ToSlash(assetPath)] = string(content)
 		}
 	}
-	loaded.Manifest.ReferenceData = loaded.References
-	loaded.Manifest.TemplateData = loaded.Templates
-	loaded.Manifest.EvalData = loaded.Evals
 	if err := loaded.Manifest.Validate(); err != nil {
 		return Loaded{}, err
 	}

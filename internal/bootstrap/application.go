@@ -9,7 +9,6 @@ import (
 	"github.com/voocel/ainovel-cli/internal/app/chief"
 	"github.com/voocel/ainovel-cli/internal/app/decision"
 	"github.com/voocel/ainovel-cli/internal/app/diag"
-	"github.com/voocel/ainovel-cli/internal/app/evidence"
 	"github.com/voocel/ainovel-cli/internal/app/novel"
 	"github.com/voocel/ainovel-cli/internal/app/profile"
 	"github.com/voocel/ainovel-cli/internal/app/project"
@@ -37,7 +36,6 @@ type App struct {
 	Reviews   *novel.Reviews
 	Decisions *decision.Review
 	Workbench *workbench.Query
-	Evidence  *evidence.Reader
 	// Models 是模型绑定用例：常驻 capability Runtime 随时重绑，不重建应用。
 	Models *binding.Service
 	// Chief 是主编（D74）：一本书打开时的对话与创作推进。
@@ -61,13 +59,15 @@ type Options struct {
 // New 装配应用。未注入 LLM 执行器时装配常驻的 capability Runtime：模型绑定是运行时
 // 属性（D57），未绑定的 Runtime 不领取任务，绑定后队列任务自然接上。
 func New(s *store.Store, options Options) *App {
-	var runtime *capability.Runtime
+	// 实时活动通道只有交互入口的内置执行器装配。
+	var hub *activity.Hub
 	binder, _ := options.Executors.LLM.(binding.Binder) // 注入的执行器能重绑就用它
 	if options.Executors.LLM == nil {
-		runtime = capability.NewRuntime(s)
+		runtime := capability.NewRuntime(s)
 		options.Executors.LLM, binder = runtime, runtime
 		if options.Interactive {
-			runtime.SetActivitySink(activity.NewHub())
+			hub = activity.NewHub()
+			runtime.SetActivitySink(hub)
 		}
 	}
 	changes := change.New(s)
@@ -96,14 +96,13 @@ func New(s *store.Store, options Options) *App {
 		now = func() time.Time { return time.Now().UTC() }
 	}
 	runs := creation.New(s, goals, now)
-	decisions := decision.New(s, changes, projects, tasks)
+	decisions := decision.New(s, changes, projects)
 	app := &App{
 		Diag:     diag.New(s, options.Version, now),
 		Projects: projects, Resources: resources, Prompts: prompts,
 		Tasks: tasks, Runs: runs, Reviews: reviews, Decisions: decisions,
 		Novels:    novel.New(s, changes, projects, runs, tasks),
 		Workbench: workbench.New(s, projects, runs, reviews, decisions),
-		Evidence:  evidence.New(s, changes, engine),
 		Models:    binding.New(options.ConfigDir, binder),
 	}
 	chiefModels := options.ChiefModels
@@ -111,9 +110,9 @@ func New(s *store.Store, options Options) *App {
 		chiefModels = app.Models
 	}
 	app.Chief = chief.New(s, projects, decisions, app.Novels, runs, app.Workbench, prompts, chiefModels)
-	if runtime != nil && options.Interactive {
-		tasks.SetActivitySink(runtime.ActivityHub())
-		app.Workbench.AttachActivityFeed(runtime.ActivityHub())
+	if hub != nil {
+		tasks.SetActivitySink(hub)
+		app.Workbench.AttachActivityFeed(hub)
 	}
 	return app
 }

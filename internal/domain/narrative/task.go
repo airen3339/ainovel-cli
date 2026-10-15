@@ -52,19 +52,14 @@ func (s *Story) Task(kind model.OperationKind, raw json.RawMessage) (json.RawMes
 			Chapter    int             `json:"chapter"`
 			Directives []DirectiveView `json:"directives,omitempty"`
 			Goal       string          `json:"goal,omitempty"`
-		}{input.ChapterNumber, s.directives(input.Directives), input.Goal}
+		}{s.chapterNumberOf(input.ChapterPlanID), s.directives(input.Directives), input.Goal}
 	case *model.RewriteChapterInput:
 		view = struct {
 			Chapter    int             `json:"chapter"`
 			Findings   []string        `json:"findings,omitempty"`
 			Directives []DirectiveView `json:"directives,omitempty"`
 			Goal       string          `json:"goal,omitempty"`
-		}{input.ChapterNumber, input.Findings, s.directives(input.Directives), input.Goal}
-	case *model.RewriteAffectedInput:
-		view = struct {
-			Chapters []int  `json:"chapters"`
-			Reason   string `json:"reason"`
-		}{s.chapterNumbers(input.ChapterIDs), input.Reason}
+		}{s.chapterNumberOf(input.ChapterPlanID), input.Findings, s.directives(input.Directives), input.Goal}
 	case *model.ReviewRangeInput:
 		prior := make([]Finding, 0, len(input.PriorFindings))
 		for _, finding := range input.PriorFindings {
@@ -114,24 +109,20 @@ type RuleView struct {
 
 // Ownership 渲染作品的控制规则；目标已不在故事里的规则对模型没有意义，跳过——
 // 锁定始终由 Change Engine 执行，不依赖模型看见它。
-func (s *Story) Ownership(rules []model.OwnershipRule) ([]RuleView, error) {
+func (s *Story) Ownership(rules []model.OwnershipRule) []RuleView {
 	views := make([]RuleView, 0, len(rules))
 	for _, rule := range rules {
-		if err := rule.Validate(); err != nil {
-			return nil, err
-		}
 		if label, ok := s.Label(rule.Target); ok {
 			views = append(views, RuleView{Target: label, Control: rule.Control, Guidance: rule.Guidance})
 		}
 	}
 	slices.SortFunc(views, func(left, right RuleView) int { return strings.Compare(left.Target, right.Target) })
-	return views, nil
+	return views
 }
 
 // ChapterDraft 是模型写入的章节工作稿：章的身份（ID、所属计划、章号、署名）由宿主
-// 按任务填写，标题在章节计划上；Number 只在一次改写多章时用来指明是哪一章。
+// 按任务填写，标题在章节计划上。
 type ChapterDraft struct {
-	Number int                     `json:"number,omitempty"`
 	Blocks []model.ManuscriptBlock `json:"blocks"`
 }
 
@@ -143,18 +134,9 @@ func (s *Story) Draft(input model.TaskInput, draft ChapterDraft) (model.Manuscri
 		if existing, ok := s.manuscripts[input.ChapterPlanID]; ok && existing.PlanNodeID != input.ChapterPlanID {
 			return model.ManuscriptChapter{}, fmt.Errorf("manuscript id %q is taken by another chapter: %w", input.ChapterPlanID, model.ErrStateConflict)
 		}
-		chapter.ID, chapter.PlanNodeID, chapter.Number = input.ChapterPlanID, input.ChapterPlanID, input.ChapterNumber
+		chapter.ID, chapter.PlanNodeID, chapter.Number = input.ChapterPlanID, input.ChapterPlanID, s.chapterNumberOf(input.ChapterPlanID)
 	case *model.RewriteChapterInput:
-		chapter.ID, chapter.PlanNodeID, chapter.Number = input.ChapterID, input.ChapterPlanID, input.ChapterNumber
-	case *model.RewriteAffectedInput:
-		target, err := s.manuscript(draft.Number)
-		if err != nil {
-			return model.ManuscriptChapter{}, err
-		}
-		if !slices.Contains(input.ChapterIDs, target.ID) {
-			return model.ManuscriptChapter{}, fmt.Errorf("第 %d 章不在本次要改写的章节 %v 之内: %w", draft.Number, s.chapterNumbers(input.ChapterIDs), model.ErrInvalid)
-		}
-		chapter.ID, chapter.PlanNodeID, chapter.Number = target.ID, target.PlanNodeID, draft.Number
+		chapter.ID, chapter.PlanNodeID, chapter.Number = input.ChapterID, input.ChapterPlanID, s.chapterNumberOf(input.ChapterPlanID)
 	default:
 		return model.ManuscriptChapter{}, fmt.Errorf("this task does not write chapters: %w", model.ErrInvalid)
 	}

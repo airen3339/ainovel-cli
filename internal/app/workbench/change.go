@@ -2,9 +2,7 @@ package workbench
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"fmt"
 	"slices"
 	"time"
 
@@ -44,14 +42,8 @@ func (s *Query) pendingChange(ctx context.Context, project projectdoc.Snapshot) 
 	if change.View, err = proposalView(project, proposal.Patches); err != nil {
 		return nil, err
 	}
-	if len(proposal.Impact.Semantic) == 0 {
-		return change, nil
-	}
-	var report model.SemanticImpactReport
-	if err := json.Unmarshal(proposal.Impact.Semantic, &report); err != nil {
-		return nil, fmt.Errorf("decode semantic impact: %w", err)
-	}
-	if report.Status == model.SemanticImpactConsistent {
+	report := proposal.Impact.Semantic
+	if report == nil || report.Status == model.SemanticImpactConsistent {
 		return change, nil
 	}
 	numbers := make(map[string]int, len(project.Manuscript))

@@ -116,7 +116,7 @@ func indexOf[T comparable](items []T, want T) int {
 func (m model) openModelPanel(role string) (tea.Model, tea.Cmd) {
 	panel := &modelPanel{roles: m.api.Models.Roles()}
 	if role != "" && indexOf(panel.roles, role) == 0 {
-		m.bench.err = "用法：/model [architect|writer|editor]；不带角色调整默认模型"
+		m.bench.err = "用法：/model [" + strings.Join(panel.roles[1:], "|") + "]；不带角色调整默认模型"
 		return m, nil
 	}
 	panel.roleIdx = indexOf(panel.roles, role)

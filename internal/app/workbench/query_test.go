@@ -25,7 +25,7 @@ func TestOperationPhaseNamesChaptersInFlight(t *testing.T) {
 		{model.OperationReviewRange, `{"chapter_ids":["c1","c2","c3"],` + basis + `}`, "正在审阅第 1–3 章", ""},
 		{model.OperationReviewRange, `{"chapter_ids":["c2"],` + basis + `}`, "正在审阅第 2 章", ""},
 		{model.OperationReviewRange, `{"chapter_ids":["c1","c2","c3"],"reviewed":["c1","c3"],` + basis + `}`, "正在复审第 1–3 章", ""},
-		{model.OperationRewriteChapter, `{"chapter_id":"c1","chapter_plan_id":"p1","chapter_number":1,"findings":["称呼混用"]}`, "正在按意见重写第 1 章", "p1"},
+		{model.OperationRewriteChapter, `{"chapter_id":"c1","chapter_plan_id":"p1","findings":["称呼混用"]}`, "正在按意见重写第 1 章", "p1"},
 	} {
 		if phase, plan := operationPhase(model.Operation{Kind: tc.kind, Input: []byte(tc.input)}, project); phase != tc.phase || plan != tc.plan {
 			t.Errorf("%s: phase=%q plan=%q, want %q %q", tc.kind, phase, plan, tc.phase, tc.plan)

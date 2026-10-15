@@ -6,14 +6,12 @@ import (
 	"fmt"
 	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/ainovel-cli/internal/app/chief"
-	"github.com/voocel/ainovel-cli/internal/app/decision"
 	"github.com/voocel/ainovel-cli/internal/app/novel"
 	projectdoc "github.com/voocel/ainovel-cli/internal/app/project"
 	"github.com/voocel/ainovel-cli/internal/app/workbench"
@@ -47,7 +45,6 @@ type workbenchState struct {
 	proseCache           *wrappedText
 	sceneCache           *outputLayoutCache // 现场条里输出块的紧凑排版，按块 ID/版本/宽度缓存
 	talkCache            *talkCache         // 对话各条排好的行，条目与宽度不变就沿用
-	wordCache            *wordCache
 	outputCache          *outputLayoutCache
 	search               string
 	directoryInitialized bool
@@ -202,7 +199,7 @@ func (b *workbenchState) resumable() bool {
 }
 
 // decisionState 是决定卡：等待原因 + 可选的待裁决稿件及其故事语言描述。
-// continueAfter 标记裁决后是否自动续跑（创作运行的稿件续跑，导入草案不续）；
+// continueAfter 标记裁决后是否自动续跑（创作任务的稿件续跑，用户自己的草案不续）；
 // stale 表示稿件基线已过期（直接通过会撞版本冲突），只留重写路径；held 是自动修订
 // 预算用尽、等你接受现状或让它再改的那一章（章节 ID）。
 type decisionState struct {
@@ -255,7 +252,7 @@ func newWorkbenchState(projectID string, gen int, session *chief.Session) workbe
 		projectID: projectID, gen: gen, session: session, input: newBenchInput(),
 		collapsed: make(map[string]bool),
 		refresh:   &benchRefresh{}, rowsCache: &outlineCache{}, proseCache: &wrappedText{}, sceneCache: &outputLayoutCache{}, talkCache: &talkCache{},
-		wordCache: &wordCache{}, outputCache: &outputLayoutCache{},
+		outputCache: &outputLayoutCache{},
 	}
 }
 
@@ -423,8 +420,9 @@ func (m model) applyWorkbench(message tea.Msg) (tea.Model, tea.Cmd) {
 		if !bench.writing && bench.decision == nil && message.snap.Decision != nil {
 			bench.presentDecision(&decisionState{
 				reason: message.snap.Decision.Reason, proposal: message.snap.Decision.Proposal,
-				view: message.snap.Decision.View, hasProposal: message.snap.Decision.HasProposal, continueAfter: true,
-				stale: message.snap.Decision.Stale, held: message.snap.Decision.Held,
+				view: message.snap.Decision.View, hasProposal: message.snap.Decision.HasProposal,
+				continueAfter: message.snap.Decision.Proposal.OperationID != "",
+				stale:         message.snap.Decision.Stale, held: message.snap.Decision.Held,
 			})
 		}
 		if !bench.pinned {
@@ -534,7 +532,7 @@ func (m model) handleDriveEnd(message chief.DriveEnd) (tea.Model, tea.Cmd) {
 	return m, m.refreshBenchCmd()
 }
 
-// acceptHeld 接受卡住那一章的现状：把它的阻塞意见逐条入账为用户裁决（D43），之后不再为
+// acceptHeld 接受卡住那一章的现状：它的阻塞意见一次入账为用户裁决（D43），之后不再为
 // 它们重写（这一章再变化时裁决自动失效），接着写。
 func (m model) acceptHeld() (tea.Model, tea.Cmd) {
 	bench := &m.bench
@@ -543,40 +541,33 @@ func (m model) acceptHeld() (tea.Model, tea.Cmd) {
 	api, ctx, user := m.api, m.ctx, m.deps.UserID
 	gen, projectID := bench.gen, bench.projectID
 	bench.presentDecision(nil)
+	ids := make([]string, len(findings))
+	for i, finding := range findings {
+		ids[i] = finding.ID
+	}
 	return m, func() tea.Msg {
 		now := time.Now().UTC()
-		base := projectdoc.NewID("adjudication", now)
-		for i, finding := range findings {
-			if _, err := api.Reviews.AddAdjudication(ctx, novel.AddAdjudicationCommand{
-				ProjectID: projectID, ChangeID: fmt.Sprintf("%s:%d", base, i+1), UserID: user,
-				Finding: finding.ID, Reason: "接受当前版本", CreatedAt: now,
-			}); err != nil {
-				return decisionDoneMsg{gen: gen, err: err}
-			}
+		if _, err := api.Reviews.AddAdjudication(ctx, novel.AddAdjudicationCommand{
+			ProjectID: projectID, ChangeID: projectdoc.NewID("adjudication", now), UserID: user,
+			Findings: ids, Reason: "接受当前版本", CreatedAt: now,
+		}); err != nil {
+			return decisionDoneMsg{gen: gen, err: err}
 		}
 		return decisionDoneMsg{gen: gen, continueAfter: true, echo: fmt.Sprintf("你接受了第 %d 章的现状", number)}
 	}
 }
 
-// decideCmd 批准或带理由拒绝当前待裁决稿件；创作运行的稿件裁决后自动续跑。
-func (m model) decideCmd(approve bool, reason string) (tea.Model, tea.Cmd) {
+// approveCmd 通过当前待裁决稿件；创作运行的稿件通过后自动续跑。退稿跟主编说。
+func (m model) approveCmd() (tea.Model, tea.Cmd) {
 	bench := &m.bench
 	proposal := bench.decision.proposal
 	continueAfter := bench.decision.continueAfter
 	echo := "你通过了" + m.reviewTarget()
-	if !approve {
-		echo = "你退回了" + m.reviewTarget() + "：" + oneLine(reason)
-	}
 	api, ctx, user := m.api, m.ctx, m.deps.UserID
 	gen := bench.gen
 	bench.presentDecision(nil)
 	return m, func() tea.Msg {
-		var err error
-		if approve {
-			_, err = api.Decisions.Approve(ctx, proposal.ID, user, time.Now().UTC())
-		} else {
-			_, err = api.Decisions.Reject(ctx, decision.RejectCommand{ProposalID: proposal.ID, UserID: user, Reason: reason, At: time.Now().UTC()})
-		}
+		_, err := api.Decisions.Approve(ctx, proposal.ID, user, time.Now().UTC())
 		return decisionDoneMsg{gen: gen, continueAfter: continueAfter, err: err, echo: echo}
 	}
 }
@@ -623,9 +614,6 @@ type wrappedText struct {
 }
 
 func (c *wrappedText) wrap(text string, width int) []string {
-	if c == nil {
-		return readingLines(text, width)
-	}
 	if c.lines == nil || c.text != text || c.width != width {
 		c.text, c.width, c.lines = text, width, readingLines(text, width)
 	}
@@ -666,55 +654,30 @@ func (c *outputLayoutCache) prune(output []activity.OutputBlock) {
 	}
 }
 
-// wordCache 按快照版本缓存全书字数（几百章时不逐帧重算）。
-type wordCache struct {
-	revision domainmodel.Revision
-	chapters int
-	count    int
-}
-
-func (m model) wordCount() int {
-	snap := m.bench.snap
-	cache := m.bench.wordCache
-	if cache != nil && cache.count > 0 && cache.revision == snap.Revision && cache.chapters == len(snap.Manuscript) {
-		return cache.count
-	}
-	count := 0
-	for _, chapter := range snap.Manuscript {
-		for _, block := range chapter.Blocks {
-			count += utf8.RuneCountInString(block.Text)
-		}
-	}
-	if cache != nil {
-		*cache = wordCache{revision: snap.Revision, chapters: len(snap.Manuscript), count: count}
-	}
-	return count
-}
-
 // benchStateBadge 顶栏运行状态。
 func (m model) benchStateBadge() string {
 	bench := m.bench
 	switch bench.situation() {
 	case situationPausing:
-		return styleWarn.Render("Ⅱ 正在暂停 · 等当前任务停下")
+		return benchTheme.Warning.Render("Ⅱ 正在暂停 · 等当前任务停下")
 	case situationCancelling:
-		return styleWarn.Render("已停止创作 · 当前任务收尾中")
+		return benchTheme.Warning.Render("已停止创作 · 当前任务收尾中")
 	case situationWriting:
 		// 取正在执行的任务：审阅、重写时不能停在最后一章。
 		label := "◉ 正在创作"
 		if phase := bench.snap.CurrentPhase; phase != "" {
 			label = "◉ " + phase
 		}
-		return styleFocus.Render(label + " " + bench.pulse.spinner())
+		return benchTheme.Focus.Render(label + " " + bench.pulse.spinner())
 	case situationDecidingProposal, situationDeciding:
-		return styleWarn.Render("◇ 等你决定")
+		return benchTheme.Warning.Render("◇ 等你决定")
 	case situationCompleted:
-		return styleNotice.Render("✓ " + runStateLabel(bench.run().State))
+		return benchTheme.Success.Render("✓ " + runStateLabel(bench.run().State))
 	case situationFailed:
-		return styleErr.Render("! " + runStateLabel(bench.run().State))
+		return benchTheme.Error.Render("! " + runStateLabel(bench.run().State))
 	case situationNoRun:
-		return styleHint.Render("尚未开始")
+		return benchTheme.Muted.Render("尚未开始")
 	default:
-		return styleHint.Render(runStateLabel(bench.run().State))
+		return benchTheme.Muted.Render(runStateLabel(bench.run().State))
 	}
 }

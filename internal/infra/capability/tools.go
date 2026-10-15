@@ -10,7 +10,6 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain/model"
 	"github.com/voocel/ainovel-cli/internal/domain/narrative"
 	"github.com/voocel/ainovel-cli/internal/infra/capability/prompt"
-	"github.com/voocel/ainovel-cli/internal/infra/workspace"
 	"github.com/voocel/litellm"
 )
 
@@ -158,47 +157,19 @@ func (r *Runtime) executor(
 		}, nil
 	case prompt.ToolWorkspaceRead:
 		return func(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
-			var args struct {
-				Key string `json:"key"`
-			}
-			if err := decodeToolArgs(raw, &args); err != nil {
-				return nil, err
-			}
-			artifact, err := r.store.GetWorkspaceArtifact(ctx, operation.ID, args.Key)
-			if err != nil {
-				return nil, fmt.Errorf("read workspace %q (workspace_list lists existing keys): %w", args.Key, err)
-			}
-			content := json.RawMessage(artifact.Content)
-			if artifact.MediaType == workspace.ChapterMediaType {
-				if content, err = draftView(operation, artifact.Content); err != nil {
-					return nil, err
-				}
-			}
-			return json.Marshal(struct {
-				workspaceReceipt
-				Content json.RawMessage `json:"content"`
-			}{receiptOf(artifact), content})
-		}, nil
-	case prompt.ToolWorkspaceList:
-		return func(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
 			var args struct{}
 			if err := decodeToolArgs(raw, &args); err != nil {
 				return nil, err
 			}
-			artifacts, err := r.store.ListWorkspaceArtifacts(ctx, operation.ID)
+			chapter, err := r.workspace.Chapter(ctx, operation.ID)
 			if err != nil {
 				return nil, err
 			}
-			receipts := make([]workspaceReceipt, 0, len(artifacts))
-			for _, artifact := range artifacts {
-				receipts = append(receipts, receiptOf(artifact))
-			}
-			return json.Marshal(receipts)
+			return json.Marshal(narrative.ChapterDraft{Blocks: chapter.Blocks})
 		}, nil
 	case prompt.ToolWorkspacePutChapter:
 		return func(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
 			var args struct {
-				Key     string                 `json:"key"`
 				Chapter narrative.ChapterDraft `json:"chapter"`
 			}
 			if err := decodeToolArgs(raw, &args); err != nil {
@@ -217,7 +188,7 @@ func (r *Runtime) executor(
 			if err != nil {
 				return nil, err
 			}
-			artifact, err := r.workspace.PutChapter(ctx, operation.ID, args.Key, chapter, nil, operation.Attempt, r.now())
+			artifact, err := r.workspace.PutChapter(ctx, operation.ID, chapter, operation.Attempt, r.now())
 			if err != nil {
 				return nil, err
 			}
@@ -226,16 +197,13 @@ func (r *Runtime) executor(
 	case prompt.ToolWorkspaceReplaceBlock:
 		return func(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
 			var args struct {
-				Key     string `json:"key"`
 				BlockID string `json:"block_id"`
 				Text    string `json:"text"`
 			}
 			if err := decodeToolArgs(raw, &args); err != nil {
 				return nil, err
 			}
-			artifact, err := r.workspace.ReplaceChapterBlock(
-				ctx, operation.ID, args.Key, args.BlockID, args.Text, operation.Attempt, r.now(),
-			)
+			artifact, err := r.workspace.ReplaceChapterBlock(ctx, operation.ID, args.BlockID, args.Text, operation.Attempt, r.now())
 			if err != nil {
 				return nil, err
 			}
@@ -296,20 +264,13 @@ func (r *Runtime) executor(
 	case prompt.ToolProposalSubmit:
 		return func(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
 			var args struct {
-				Reason            string           `json:"reason"`
-				WorkspaceKey      string           `json:"workspace_key"`
-				WorkspaceVersion  int64            `json:"workspace_version"`
-				WorkspaceVersions map[string]int64 `json:"workspace_versions"`
+				Reason string `json:"reason"`
 				narrative.Submission
 			}
 			if err := decodeToolArgs(raw, &args); err != nil {
 				return nil, err
 			}
-			versions := args.WorkspaceVersions
-			if args.WorkspaceKey != "" {
-				versions = map[string]int64{args.WorkspaceKey: args.WorkspaceVersion}
-			}
-			drafts, err := r.workspaceDrafts(ctx, operation, versions)
+			drafts, err := r.chapterDrafts(ctx, operation)
 			if err != nil {
 				return nil, err
 			}
@@ -376,7 +337,7 @@ func (r *Runtime) executor(
 				return nil, err
 			}
 			verdict := model.ReviewVerdict{
-				Status: model.ReviewStatusOf(findings), Revision: operation.Snapshot.BaseRevision,
+				Revision:   operation.Snapshot.BaseRevision,
 				ChapterIDs: input.ChapterIDs, ReviewKey: args.ReviewKey, Basis: input.Basis.Normalize(),
 				Checks: args.Checks, Findings: findings,
 			}
@@ -387,9 +348,13 @@ func (r *Runtime) executor(
 			if err != nil {
 				return nil, err
 			}
+			status := model.ReviewPass
+			if verdict.Blocking() > 0 {
+				status = model.ReviewBlocked
+			}
 			return json.Marshal(struct {
 				Status string `json:"status"`
-			}{verdict.Status})
+			}{status})
 		}, nil
 	default:
 		return nil, fmt.Errorf("worker tool %q has no host implementation: %w", name, model.ErrInvalid)
@@ -428,17 +393,4 @@ type workspaceReceipt struct {
 
 func receiptOf(artifact model.WorkspaceArtifact) workspaceReceipt {
 	return workspaceReceipt{Key: artifact.Key, Version: artifact.Version}
-}
-
-// draftView 把工作稿读回成模型写入时的形状：章号只在一次改写多章时有意义。
-func draftView(operation model.Operation, content []byte) (json.RawMessage, error) {
-	var chapter model.ManuscriptChapter
-	if err := json.Unmarshal(content, &chapter); err != nil {
-		return nil, fmt.Errorf("decode workspace chapter: %w", err)
-	}
-	draft := narrative.ChapterDraft{Blocks: chapter.Blocks}
-	if operation.Kind == model.OperationRewriteAffected {
-		draft.Number = chapter.Number
-	}
-	return json.Marshal(draft)
 }

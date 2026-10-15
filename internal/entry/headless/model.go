@@ -13,9 +13,6 @@ import (
 // runModel 是模型绑定命令组：查看、列出、切换连接/模型与思考强度，按角色可覆盖。
 // 模型名可能自带斜杠（OpenRouter），所以连接用 --connection 指定而不是斜杠语法。
 func runModel(_ context.Context, api *bootstrap.App, args []string, stdout, stderr io.Writer) error {
-	if api == nil || api.Models == nil {
-		return fmt.Errorf("model 命令需要已装配的应用")
-	}
 	if len(args) == 0 {
 		selections := make([]binding.Selection, 0, 4)
 		for _, role := range api.Models.Roles() {
@@ -28,7 +25,7 @@ func runModel(_ context.Context, api *bootstrap.App, args []string, stdout, stde
 		return writeResult(stdout, api.Models.Choices(), nil)
 	case "use":
 		flags := newFlags("model use", stderr)
-		role := flags.String("role", "", "角色：architect、writer 或 editor；留空是默认绑定")
+		role := flags.String("role", "", "角色：architect、writer、editor 或 chief；留空是默认绑定")
 		connection := flags.String("connection", "", "连接名；留空沿用当前连接")
 		inherit := flags.Bool("inherit", false, "清除该角色的覆盖，跟随默认")
 		if err := flags.Parse(args[1:]); err != nil {
@@ -60,7 +57,7 @@ func runModel(_ context.Context, api *bootstrap.App, args []string, stdout, stde
 		return writeResult(stdout, api.Models.Current(*role), nil)
 	case "effort":
 		flags := newFlags("model effort", stderr)
-		role := flags.String("role", "", "角色：architect、writer 或 editor；留空是默认绑定")
+		role := flags.String("role", "", "角色：architect、writer、editor 或 chief；留空是默认绑定")
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}

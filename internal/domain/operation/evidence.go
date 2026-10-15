@@ -19,7 +19,7 @@ type VerdictValidator func(context.Context, model.Operation, json.RawMessage) (m
 
 func (e *Engine) ValidateEvidence(ctx context.Context, op model.Operation, payload json.RawMessage) (model.EvidenceBasis, error) {
 	validate, ok := e.verdicts[op.Kind]
-	if !ok || validate == nil {
+	if !ok {
 		return model.EvidenceBasis{}, fmt.Errorf("%s has no evidence contract: %w", op.Kind, model.ErrInvalid)
 	}
 	basis, err := validate(ctx, op, payload)

@@ -111,9 +111,6 @@ func TestItemsGroupBySectionAndToolStartCarriesDetail(t *testing.T) {
 	if len(snapshot.Entries) != 1 || snapshot.Entries[0].Detail != "首次规划" || snapshot.Entries[0].Bytes != 64 {
 		t.Fatalf("entry = %#v", snapshot.Entries)
 	}
-	if snapshot.Thinking {
-		t.Fatal("an item is model output and must end the thinking state")
-	}
 }
 
 // 旁白是时间线上的一行，不是模型输出：不打断等待模型的计时，换任务时照常归属新任务。
@@ -133,7 +130,7 @@ func TestNoticeIsATimelineEntry(t *testing.T) {
 	notice("op-2", ToneStep, "审阅第 1–5 章")
 	snapshot, _ = hub.Snapshot("book-1")
 	if len(snapshot.Entries) != 2 || snapshot.Entries[1].Kind != Notice || snapshot.Entries[1].Tone != ToneStep ||
-		snapshot.Entries[1].Text != "审阅第 1–5 章" || !snapshot.Entries[1].Done || snapshot.OperationID != "op-2" {
+		snapshot.Entries[1].Text != "审阅第 1–5 章" || !snapshot.Entries[1].Done {
 		t.Fatalf("entries = %#v", snapshot.Entries)
 	}
 }

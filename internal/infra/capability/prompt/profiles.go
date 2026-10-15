@@ -9,7 +9,6 @@ import (
 
 const (
 	ToolAuthorityRead         = "authority_read"
-	ToolWorkspaceList         = "workspace_list"
 	ToolWorkspaceRead         = "workspace_read"
 	ToolWorkspacePutChapter   = "workspace_put_chapter"
 	ToolWorkspaceReplaceBlock = "workspace_replace_block"
@@ -25,7 +24,10 @@ const proseTextSchema = `{"type":"string","description":"段落正文。对白�
 
 // 模型只说故事语言（D66）：章用章号，卷与故事弧用序号，实体用名称，事实用主体+谓词；
 // 文档身份全部由宿主维护，下列 Schema 与 narrative 的类型逐字段对应。
-const authorityReadSchema = `{
+
+// StoryReadSchema 是按章号、序号或名称回查故事内容的参数（narrative.Query）：Worker 的
+// authority_read 与主编的 book_read 共用。
+const StoryReadSchema = `{
 	"type": "object",
 	"properties": {
 		"chapter": {"type": "integer", "minimum": 1, "description": "章号：返回该章大纲；已写的章附正文与来源于它的事实"},
@@ -81,88 +83,68 @@ type CapabilityDefinition struct {
 	Worker         WorkerProfile
 }
 
-func BuiltinCapabilities() ([]CapabilityDefinition, error) {
-	definitions := []CapabilityDefinition{
-		{
-			OperationKinds: []model.OperationKind{
-				model.OperationDevelopPlan,
-				model.OperationRevisePlan,
-				model.OperationReviseCanon,
-			},
-			Worker: WorkerProfile{
-				ID: "architect.design", Version: "1", ModelRole: "architect",
-				PromptSlots: []Slot{SlotArchitectStoryDesign, SlotArchitectArcExpand},
-				Tools: []ToolSchema{
-					tool(ToolAuthorityRead, authorityReadDescription, authorityReadSchema),
-					tool(ToolWorkspacePutCandidate, "把结构化草案写入当前任务工作区", `{"type":"object","properties":{"key":{"type":"string"},"content":{"type":"object"}},"required":["key","content"],"additionalProperties":false}`),
-					proposalTool(noDraft, true, true),
-				},
-				InputContract: json.RawMessage(`{"type":"object","required":["intent"]}`), OutputContract: json.RawMessage(`{"type":"object","required":["status"]}`),
-				StopCondition: "已提交合法的候选，或返回明确错误",
-			},
+// builtinCapabilities 是全部内置故事能力；结构由测试守护（每种任务只归一个 Worker，槽位、
+// 工具都已登记）。
+var builtinCapabilities = []CapabilityDefinition{
+	{
+		OperationKinds: []model.OperationKind{
+			model.OperationDevelopPlan,
+			model.OperationRevisePlan,
+			model.OperationReviseCanon,
 		},
-		{
-			OperationKinds: []model.OperationKind{model.OperationWriteChapter},
-			Worker: WorkerProfile{
-				ID: "writer.compose", Version: "1", ModelRole: "writer",
-				PromptSlots:   []Slot{SlotWriterChapterPlan, SlotWriterChapterDraft},
-				Tools:         writerTools(oneDraft, false),
-				InputContract: json.RawMessage(`{"type":"object","required":["chapter"]}`), OutputContract: json.RawMessage(`{"type":"object","required":["status"]}`),
-				StopCondition: "章节工作稿通过本地校验并提交候选，或返回明确错误",
+		Worker: WorkerProfile{
+			ID: "architect.design", Version: "1", ModelRole: "architect",
+			PromptSlots: []Slot{SlotArchitectStoryDesign, SlotArchitectArcExpand},
+			Tools: []ToolSchema{
+				tool(ToolAuthorityRead, authorityReadDescription, StoryReadSchema),
+				tool(ToolWorkspacePutCandidate, "把结构化草案写入当前任务工作区", `{"type":"object","properties":{"key":{"type":"string"},"content":{"type":"object"}},"required":["key","content"],"additionalProperties":false}`),
+				proposalTool(false, true, true),
 			},
+			StopCondition: "已提交合法的候选，或返回明确错误",
 		},
-		{
-			OperationKinds: []model.OperationKind{model.OperationRewriteChapter},
-			Worker: WorkerProfile{
-				ID: "writer.revise", Version: "1", ModelRole: "writer",
-				// 重写与新写共用写作标准，重写方法另成一段。
-				PromptSlots: []Slot{SlotWriterChapterDraft, SlotWriterRewrite}, Tools: writerTools(oneDraft, true),
-				InputContract: json.RawMessage(`{"type":"object","required":["chapter","findings"]}`), OutputContract: json.RawMessage(`{"type":"object","required":["status"]}`),
-				StopCondition: "修订工作稿通过本地校验，并重申报本章全部既有事实（确认、更新或删除）后提交候选，或返回明确错误",
+	},
+	{
+		OperationKinds: []model.OperationKind{model.OperationWriteChapter},
+		Worker: WorkerProfile{
+			ID: "writer.compose", Version: "1", ModelRole: "writer",
+			PromptSlots:   []Slot{SlotWriterChapterPlan, SlotWriterChapterDraft},
+			Tools:         writerTools(false),
+			StopCondition: "章节工作稿通过本地校验并提交候选，或返回明确错误",
+		},
+	},
+	{
+		OperationKinds: []model.OperationKind{model.OperationRewriteChapter},
+		Worker: WorkerProfile{
+			ID: "writer.revise", Version: "1", ModelRole: "writer",
+			// 重写与新写共用写作标准，重写方法另成一段。
+			PromptSlots: []Slot{SlotWriterChapterDraft, SlotWriterRewrite}, Tools: writerTools(true),
+			StopCondition: "修订工作稿通过本地校验，并重申报本章全部既有事实（确认、更新或删除）后提交候选，或返回明确错误",
+		},
+	},
+	{
+		OperationKinds: []model.OperationKind{model.OperationReviewRange},
+		Worker: WorkerProfile{
+			ID: "editor.review", Version: "1", ModelRole: "editor",
+			PromptSlots: []Slot{SlotEditorStoryReview, SlotEditorStyleReview},
+			Tools: []ToolSchema{
+				tool(ToolAuthorityRead, authorityReadDescription, StoryReadSchema),
+				tool(ToolWorkspacePutReview, "把审阅记录写入当前任务工作区。findings 只记真正的问题；"+
+					"逐项核验结论（含「已满足」「待定」）走 verdict_submit 的 checks，不要写成 note 发现",
+					`{"type":"object","properties":{"key":{"type":"string"},`+
+						`"findings":{"type":"array","items":`+reviewFindingSchema+`}},`+
+						`"required":["key","findings"],"additionalProperties":false}`),
+				tool(ToolVerdictSubmit, "提交审阅裁定：引用 workspace_put_review 写好的审阅记录。章节范围、发现与结论由宿主按任务和记录填入，记录里有 blocking 发现即未通过。"+
+					"每个 violated 的要求，都要在审阅记录里有一条 blocking 发现通过 requirement 链接到它", verdictSubmitSchema),
 			},
+			StopCondition: "已提交覆盖请求范围的结构化裁定（verdict_submit），或返回明确错误",
 		},
-		{
-			OperationKinds: []model.OperationKind{model.OperationRewriteAffected},
-			Worker: WorkerProfile{
-				ID: "writer.revise_affected", Version: "1", ModelRole: "writer",
-				PromptSlots: []Slot{SlotWriterChapterDraft, SlotWriterRewrite}, Tools: writerTools(draftRange, true),
-				InputContract:  json.RawMessage(`{"type":"object","required":["chapters","reason"]}`),
-				OutputContract: json.RawMessage(`{"type":"object","required":["status"]}`),
-				StopCondition:  "所有受影响章节工作稿通过本地校验，并在一次提交里带上各章正文与事实变化，或返回明确错误",
-			},
-		},
-		{
-			OperationKinds: []model.OperationKind{model.OperationReviewRange},
-			Worker: WorkerProfile{
-				ID: "editor.review", Version: "1", ModelRole: "editor",
-				PromptSlots: []Slot{SlotEditorStoryReview, SlotEditorStyleReview},
-				Tools: []ToolSchema{
-					tool(ToolAuthorityRead, authorityReadDescription, authorityReadSchema),
-					tool(ToolWorkspacePutReview, "把审阅记录写入当前任务工作区。findings 只记真正的问题；"+
-						"逐项核验结论（含「已满足」「待定」）走 verdict_submit 的 checks，不要写成 note 发现",
-						`{"type":"object","properties":{"key":{"type":"string"},`+
-							`"findings":{"type":"array","items":`+reviewFindingSchema+`}},`+
-							`"required":["key","findings"],"additionalProperties":false}`),
-					tool(ToolVerdictSubmit, "提交审阅裁定：引用 workspace_put_review 写好的审阅记录。章节范围、发现与结论由宿主按任务和记录填入，记录里有 blocking 发现即未通过。"+
-						"每个 violated 的要求，都要在审阅记录里有一条 blocking 发现通过 requirement 链接到它", verdictSubmitSchema),
-				},
-				InputContract: json.RawMessage(`{"type":"object","required":["chapters"]}`), OutputContract: json.RawMessage(`{"type":"object","required":["status"]}`),
-				StopCondition: "已提交覆盖请求范围的结构化裁定（verdict_submit），或返回明确错误",
-			},
-		},
-	}
-	if err := validateBuiltinCapabilities(definitions); err != nil {
-		return nil, err
-	}
-	return definitions, nil
+	},
 }
 
+func BuiltinCapabilities() []CapabilityDefinition { return builtinCapabilities }
+
 func BuiltinCapability(kind model.OperationKind) (CapabilityDefinition, error) {
-	definitions, err := BuiltinCapabilities()
-	if err != nil {
-		return CapabilityDefinition{}, err
-	}
-	for _, definition := range definitions {
+	for _, definition := range builtinCapabilities {
 		for _, candidate := range definition.OperationKinds {
 			if candidate == kind {
 				return definition, nil
@@ -173,11 +155,7 @@ func BuiltinCapability(kind model.OperationKind) (CapabilityDefinition, error) {
 }
 
 func BuiltinWorkerProfile(id string) (WorkerProfile, error) {
-	definitions, err := BuiltinCapabilities()
-	if err != nil {
-		return WorkerProfile{}, err
-	}
-	for _, definition := range definitions {
+	for _, definition := range builtinCapabilities {
 		if definition.Worker.ID == id {
 			return definition.Worker, nil
 		}
@@ -185,84 +163,43 @@ func BuiltinWorkerProfile(id string) (WorkerProfile, error) {
 	return WorkerProfile{}, fmt.Errorf("worker profile %q does not exist: %w", id, model.ErrInvalid)
 }
 
-func validateBuiltinCapabilities(definitions []CapabilityDefinition) error {
-	seenKinds := make(map[model.OperationKind]string)
-	seenWorkers := make(map[string]struct{})
-	for _, definition := range definitions {
-		if len(definition.OperationKinds) == 0 {
-			return fmt.Errorf("worker profile %q has no operation kinds: %w", definition.Worker.ID, model.ErrInvalid)
-		}
-		if err := definition.Worker.Validate(); err != nil {
-			return err
-		}
-		if _, exists := seenWorkers[definition.Worker.ID]; exists {
-			return fmt.Errorf("duplicate worker profile %q: %w", definition.Worker.ID, model.ErrInvalid)
-		}
-		seenWorkers[definition.Worker.ID] = struct{}{}
-		for _, kind := range definition.OperationKinds {
-			if owner, exists := seenKinds[kind]; exists {
-				return fmt.Errorf("operation %s is registered by both %s and %s: %w", kind, owner, definition.Worker.ID, model.ErrInvalid)
-			}
-			seenKinds[kind] = definition.Worker.ID
-		}
-	}
-	return nil
-}
-
 // writerTools 是写作类 Worker 的工具；redeclare 表示任务改动已有事实的章节、需要重申报。
-func writerTools(draft draftSubmission, redeclare bool) []ToolSchema {
+// 一次任务只写一章、只有一份章节工作稿（D86），稿件键由宿主定，不做成模型参数（D60）。
+func writerTools(redeclare bool) []ToolSchema {
 	return []ToolSchema{
-		tool(ToolAuthorityRead, authorityReadDescription, authorityReadSchema),
-		tool(ToolWorkspaceList, "列出当前任务工作区的工作稿键与版本", `{"type":"object","properties":{},"additionalProperties":false}`),
-		tool(ToolWorkspaceRead, "读取当前任务工作区的工作稿", `{"type":"object","properties":{"key":{"type":"string"}},"required":["key"],"additionalProperties":false}`),
-		putChapterTool(draft),
-		tool(ToolWorkspaceReplaceBlock, "按段落编号修改一个段落；改几段就调用几次，返回改后的版本", `{"type":"object","properties":{"key":{"type":"string"},"block_id":{"type":"string"},"text":`+proseTextSchema+`},"required":["key","block_id","text"],"additionalProperties":false}`),
-		proposalTool(draft, redeclare, false),
+		tool(ToolAuthorityRead, authorityReadDescription, StoryReadSchema),
+		tool(ToolWorkspaceRead, "读回本章工作稿的当前版本：段落编号与正文", `{"type":"object","properties":{},"additionalProperties":false}`),
+		putChapterTool(),
+		tool(ToolWorkspaceReplaceBlock, "按段落编号修改本章工作稿的一个段落；改几段就调用几次，返回改后的版本", `{"type":"object","properties":{"block_id":{"type":"string"},"text":`+proseTextSchema+`},"required":["block_id","text"],"additionalProperties":false}`),
+		proposalTool(true, redeclare, false),
 	}
 }
 
-// putChapterTool 只收正文：章的身份（哪一章、署名）由宿主按任务确定，标题在章节计划上；
-// 一次改写多章时用 number 指明是哪一章。
-func putChapterTool(draft draftSubmission) ToolSchema {
-	properties := map[string]any{
-		"blocks": map[string]any{"type": "array", "minItems": 1, "items": map[string]any{
-			"type": "object",
-			"properties": map[string]any{
-				"id":   map[string]any{"type": "string", "description": "段落编号，本稿内唯一，按段修改时用"},
-				"text": json.RawMessage(proseTextSchema),
-			},
-			"required": []string{"id", "text"}, "additionalProperties": false,
-		}},
-	}
-	required := []string{"blocks"}
-	if draft == draftRange {
-		properties["number"] = map[string]any{"type": "integer", "minimum": 1, "description": "这份工作稿改写第几章，必须是任务 chapters 之一"}
-		required = append(required, "number")
-	}
-	return tool(ToolWorkspacePutChapter, "写入章节工作稿：整篇覆盖，同一章全程用同一个 key", mustSchema(map[string]any{
+// putChapterTool 只收正文：章的身份（哪一章、署名）由宿主按任务确定，标题在章节计划上。
+func putChapterTool() ToolSchema {
+	return tool(ToolWorkspacePutChapter, "写入本章工作稿：整篇覆盖", mustSchema(map[string]any{
 		"type": "object",
 		"properties": map[string]any{
-			"key":     map[string]any{"type": "string", "description": "工作稿键，一章一个，全程不要改"},
-			"chapter": map[string]any{"type": "object", "properties": properties, "required": required, "additionalProperties": false},
+			"chapter": map[string]any{"type": "object", "properties": map[string]any{
+				"blocks": map[string]any{"type": "array", "minItems": 1, "items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"id":   map[string]any{"type": "string", "description": "段落编号，本稿内唯一，按段修改时用"},
+						"text": json.RawMessage(proseTextSchema),
+					},
+					"required": []string{"id", "text"}, "additionalProperties": false,
+				}},
+			}, "required": []string{"blocks"}, "additionalProperties": false},
 		},
-		"required": []string{"key", "chapter"}, "additionalProperties": false,
+		"required": []string{"chapter"}, "additionalProperties": false,
 	}))
 }
-
-// draftSubmission 是提交引用工作稿的方式：正文只经工作稿提交，由宿主按键与版本装配。
-type draftSubmission int
-
-const (
-	noDraft    draftSubmission = iota // 规划、事实核验：不带正文
-	oneDraft                          // 单章：workspace_key + workspace_version
-	draftRange                        // 多章：workspace_versions
-)
 
 const predicateDescription = "受控谓词，前缀决定种类：event.（事件，跨章只追加）、state.（状态）、relation.（关系，对象写进 value）、" +
 	"rule.（世界规则）、foreshadow.（伏笔，命名具体线索）；前缀后用小写字母、数字、下划线"
 
-// factSchema 是一条事实；多章改写时必须用 chapter 指明来源章，单章任务由宿主填。
-func factSchema(draft draftSubmission) map[string]any {
+// factSchema 是一条事实；来源章由宿主按任务填。
+func factSchema() map[string]any {
 	properties := map[string]any{
 		"subject":   map[string]any{"type": "string", "description": "主体的名称或别名：已有实体，或本次 entities 里新建的"},
 		"predicate": map[string]any{"type": "string", "description": predicateDescription},
@@ -271,21 +208,13 @@ func factSchema(draft draftSubmission) map[string]any {
 			"description": "只在插叙、回忆时填：状态在故事里生效的章号，缺省即来源章；生效位置不得早于现值，倒叙记为事件"},
 		"resolved": map[string]any{"type": "boolean", "description": "只用于 foreshadow：回收伏笔时按同一主体+谓词提交 true"},
 	}
-	required := []string{"subject", "predicate", "value"}
-	if draft == draftRange {
-		properties["chapter"] = map[string]any{"type": "integer", "minimum": 1, "description": "来源章：本次改写的章之一"}
-		required = append(required, "chapter")
-	}
-	return map[string]any{"type": "object", "properties": properties, "required": required, "additionalProperties": false}
+	return map[string]any{"type": "object", "properties": properties, "required": []string{"subject", "predicate", "value"}, "additionalProperties": false}
 }
 
-func factRefSchema(draft draftSubmission) map[string]any {
+func factRefSchema() map[string]any {
 	properties := map[string]any{
 		"subject":   map[string]any{"type": "string", "description": "主体的名称或别名"},
 		"predicate": map[string]any{"type": "string"},
-	}
-	if draft == draftRange {
-		properties["chapter"] = map[string]any{"type": "integer", "minimum": 1, "description": "事件与关系的来源章"}
 	}
 	return map[string]any{"type": "object", "properties": properties, "required": []string{"subject", "predicate"}, "additionalProperties": false}
 }
@@ -320,12 +249,13 @@ const compassSchema = `{"type":"object","description":"故事罗盘，只有规�
 	`"properties":{"scale_max":{"type":"integer","minimum":1},"ending":{"type":"string"},"final":{"type":"integer","minimum":1}},` +
 	`"required":["ending"],"additionalProperties":false}`
 
-// proposalTool 按任务公开提交参数：没有合法用途的参数不出现，模型就不会误用。redeclare
-// 公开确认与删除，只给要重申报已有事实的任务——写新章时本章还没有事实；planning 公开
-// 罗盘与卷弧章编辑。创作意图只装用户的原话，AI 不写（D70）。
-func proposalTool(draft draftSubmission, redeclare, planning bool) ToolSchema {
+// proposalTool 按任务公开提交参数：没有合法用途的参数不出现，模型就不会误用。prose 是
+// 写章任务：正文由宿主取本章工作稿装配；redeclare 公开确认与删除，只给要重申报已有事实的
+// 任务——写新章时本章还没有事实；planning 公开罗盘与卷弧章编辑。创作意图只装用户的原话，
+// AI 不写（D70）。
+func proposalTool(prose, redeclare, planning bool) ToolSchema {
 	required := []string{"reason"}
-	facts := map[string]any{"type": "array", "items": factSchema(draft),
+	facts := map[string]any{"type": "array", "items": factSchema(),
 		"description": "只写本次新确立或改变的事实；其他章节的既有事实原样保留，不要重复提交"}
 	properties := map[string]any{
 		"reason":   map[string]any{"type": "string"},
@@ -334,29 +264,18 @@ func proposalTool(draft draftSubmission, redeclare, planning bool) ToolSchema {
 	}
 	description := `把结果提交为候选，不直接修改作品。实体按名称、事实按主体+谓词定位：state/rule/foreshadow 的同一主体同一谓词就是同一事实，` +
 		`再次提交即更新；事件与关系按来源章区分，同一章里同一主体的同一谓词只记一条。`
-	switch draft {
-	case oneDraft:
-		required = append(required, "workspace_key", "workspace_version")
-		properties["workspace_key"] = map[string]any{"type": "string", "minLength": 1}
-		properties["workspace_version"] = map[string]any{"type": "integer", "minimum": 1}
-		description += `正文由宿主按 workspace_key 与 workspace_version（workspace_put_chapter 或 workspace_read 的返回值）装配。` +
-			`例：{"reason":"完成本章","workspace_key":"draft","workspace_version":2,"facts":[{"subject":"<实体名>","predicate":"event.oath","value":"在山门前立誓入宗"}]}。`
-	case draftRange:
-		required = append(required, "workspace_versions")
-		properties["workspace_versions"] = map[string]any{
-			"type": "object", "minProperties": 1, "additionalProperties": map[string]any{"type": "integer", "minimum": 1},
-			"description": "每章工作稿的 key → version（workspace_put_chapter 或 workspace_read 的返回值），覆盖本次改写的全部章节",
-		}
-		description += `正文由宿主按 workspace_versions 装配；每条事实用 chapter 指明来源章。`
+	if prose {
+		description += `正文由宿主取本章工作稿的当前版本装配。` +
+			`例：{"reason":"完成本章","facts":[{"subject":"<实体名>","predicate":"event.oath","value":"在山门前立誓入宗"}]}。`
 	}
-	if draft != noDraft && !redeclare {
+	if prose && !redeclare {
 		facts["minItems"] = 1
 		required = append(required, "facts")
 	}
 	if redeclare {
-		properties["confirm_facts"] = map[string]any{"type": "array", "items": factRefSchema(draft),
+		properties["confirm_facts"] = map[string]any{"type": "array", "items": factRefSchema(),
 			"description": "重申报时原样保留的既有事实，宿主复制原值"}
-		properties["remove_facts"] = map[string]any{"type": "array", "items": factRefSchema(draft),
+		properties["remove_facts"] = map[string]any{"type": "array", "items": factRefSchema(),
 			"description": "不再成立的既有事实；想撤销对某状态的改动就把值改回原值，不要删除整个事实"}
 		description += `重申报所改章节的全部既有事实：不变的列进 confirm_facts，要改的在 facts 里提交新值，不再成立的列进 remove_facts；其他章节的事实不要动。`
 	}

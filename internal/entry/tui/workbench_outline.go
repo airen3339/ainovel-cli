@@ -3,7 +3,7 @@ package tui
 import (
 	"fmt"
 	"maps"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -205,9 +205,6 @@ func (m model) outlineRows() []outlineRow {
 		first = &m.bench.snap.Outline[0]
 	}
 	target := m.bench.snap.Length.Final
-	if cache == nil {
-		return m.buildOutlineRows()
-	}
 	if cache.rows == nil || cache.first != first || cache.count != len(m.bench.snap.Outline) || cache.target != target || !maps.Equal(cache.collapsed, m.bench.collapsed) {
 		*cache = outlineCache{first: first, count: len(m.bench.snap.Outline), target: target, collapsed: maps.Clone(m.bench.collapsed), rows: m.buildOutlineRows()}
 	}
@@ -290,6 +287,16 @@ func (m model) selectedChapterID() string {
 		return chapter.ID
 	}
 	return ""
+}
+
+// planNumber 是章节计划在大纲里的章号；不是大纲里的章为 0。
+func (m model) planNumber(id string) int {
+	for _, entry := range m.bench.snap.Outline {
+		if entry.Node.ID == id && entry.Node.Kind == domainmodel.PlanChapter {
+			return entry.Number
+		}
+	}
+	return 0
 }
 
 // currentChapter 卡在修订预算上 > 正在写 > 待确认 > 最近入稿的章节号。卡住的那一章选中
@@ -432,22 +439,13 @@ func (m *model) toggleFold(id string) string {
 	} else {
 		bench.collapsed[id] = true
 	}
-	state, err := appconfig.LoadState(m.deps.ConfigDir)
-	if err != nil {
-		// 读不出来就不回写：用空状态读改写会抹掉其他作品的偏好。
-		return "折叠已生效，但偏好文件异常未保存：" + err.Error()
-	}
-	if state.Collapsed == nil {
-		state.Collapsed = make(map[string][]string)
-	}
-	ids := make([]string, 0, len(bench.collapsed))
-	for nodeID := range bench.collapsed {
-		ids = append(ids, nodeID)
-	}
-	sort.Strings(ids)
-	state.Collapsed[bench.projectID] = ids
-	if err := appconfig.SaveState(m.deps.ConfigDir, state); err != nil {
-		return "折叠已生效，但布局偏好保存失败：" + err.Error()
+	if err := appconfig.UpdateState(m.deps.ConfigDir, func(state *appconfig.State) {
+		if state.Collapsed == nil {
+			state.Collapsed = make(map[string][]string)
+		}
+		state.Collapsed[bench.projectID] = slices.Sorted(maps.Keys(bench.collapsed))
+	}); err != nil {
+		return "折叠已生效，但布局偏好未能保存：" + err.Error()
 	}
 	return ""
 }
@@ -521,7 +519,7 @@ func (m model) outlineRowAt(l benchLayout, x, y int) (int, bool) {
 
 func paneTitle(text string, focused bool) string {
 	if focused {
-		return styleFocus.Render("▎" + text)
+		return benchTheme.Focus.Render("▎" + text)
 	}
 	return benchTheme.Muted.Render(" " + text)
 }
@@ -558,11 +556,11 @@ func (m model) directoryColumn(l benchLayout) []string {
 // directoryNote 目录脚注：全书字数、生效中的要求数、推进方式（进度已在页眉）。
 func (m model) directoryNote() []string {
 	snap := m.bench.snap
-	note := " " + groupDigits(m.wordCount()) + " 字"
-	if active := len(domainmodel.ActiveDirectives(snap.Directives)); active > 0 {
-		note += fmt.Sprintf(" · %d 条要求", active)
+	note := " " + groupDigits(snap.Words) + " 字"
+	if len(snap.Directives) > 0 {
+		note += fmt.Sprintf(" · %d 条要求", len(snap.Directives))
 	}
-	return []string{benchTheme.Muted.Render(note), benchTheme.Muted.Render(" " + approvalLabel(snap.Approval))}
+	return []string{benchTheme.Muted.Render(note), benchTheme.Muted.Render(" " + workbench.ApprovalLabel(snap.Approval))}
 }
 
 // outlineRowLine 一行目录：一列选中标记，在卷下缩进两列，两列行标（折叠箭头或章节状态），
@@ -623,7 +621,7 @@ func (m model) outlineChapterLine(entry workbench.OutlineNode, indent string, se
 	symbol, style, titleStyle := "○", benchTheme.Muted, benchTheme.Muted
 	switch {
 	case entry.State == workbench.ChapterConfirmed:
-		symbol, style, titleStyle = "✓", styleNotice, benchTheme.Text
+		symbol, style, titleStyle = "✓", benchTheme.Success, benchTheme.Text
 	case entry.State == workbench.ChapterPending || entry.Proposed:
 		symbol, style, titleStyle = "◇", benchTheme.Warning, benchTheme.Text
 	case entry.State == workbench.ChapterInProgress:

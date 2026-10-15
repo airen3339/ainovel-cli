@@ -12,7 +12,6 @@ import (
 
 	projectdoc "github.com/voocel/ainovel-cli/internal/app/project"
 	"github.com/voocel/ainovel-cli/internal/app/resource"
-	"github.com/voocel/ainovel-cli/internal/app/task"
 	"github.com/voocel/ainovel-cli/internal/domain/change"
 	"github.com/voocel/ainovel-cli/internal/domain/model"
 	"github.com/voocel/ainovel-cli/internal/infra/store"
@@ -21,16 +20,8 @@ import (
 // stubAnalyzer 返回预设的语义影响报告；用例在建提案前改 report。
 type stubAnalyzer struct{ report model.SemanticImpactReport }
 
-func (a *stubAnalyzer) Analyze(context.Context, model.Proposal, change.StructuralImpact) (json.RawMessage, error) {
+func (a *stubAnalyzer) Analyze(context.Context, model.Proposal, model.StructuralImpact) (json.RawMessage, error) {
 	return json.Marshal(a.report)
-}
-
-// boundLLM 只让 task.Manager.HasLLM 为真，不执行任务。
-type boundLLM struct{}
-
-func (boundLLM) Identity() string { return "llm.agent@1" }
-func (boundLLM) Execute(context.Context, model.Operation) (model.OperationOutcome, error) {
-	return model.OperationOutcome{}, errors.New("not executed in decision tests")
 }
 
 func conflictReport() model.SemanticImpactReport {
@@ -58,13 +49,11 @@ type reviewFixture struct {
 
 const (
 	fixtureProject = "book"
-	fixtureRun     = "run-1"
 	fixtureUser    = "user-1"
 )
 
-// newReviewFixture 建库并种一部作品：revision 1 是设定，revision 2 加入用户写的第一章，
-// 另有一个 running 的创作 Run 供受影响重写归属。
-func newReviewFixture(t *testing.T, withModel bool) *reviewFixture {
+// newReviewFixture 建库并种一部作品：revision 1 是设定，revision 2 加入用户写的第一章。
+func newReviewFixture(t *testing.T) *reviewFixture {
 	t.Helper()
 	ctx := context.Background()
 	s, err := store.Open(ctx, filepath.Join(t.TempDir(), "decision.db"))
@@ -76,13 +65,9 @@ func newReviewFixture(t *testing.T, withModel bool) *reviewFixture {
 	changes := change.NewWithSemanticAnalyzer(s, analyzer)
 	official := resource.NewOfficial(s, changes, fstest.MapFS{"pack.jsonc": {Data: []byte(`{"id":"official","version":"1","name":"官方基线"}`)}})
 	projects := projectdoc.New(s, changes, official)
-	var executors task.ExecutorSet
-	if withModel {
-		executors.LLM = boundLLM{}
-	}
 	f := &reviewFixture{
 		ctx: ctx, store: s, projects: projects, analyzer: analyzer,
-		review: New(s, changes, projects, task.New(s, nil, executors, nil)),
+		review: New(s, changes, projects),
 		now:    time.Date(2026, 9, 21, 10, 0, 0, 0, time.UTC),
 	}
 	if _, err := projects.CreateProject(ctx, projectdoc.CreateProjectCommand{
@@ -109,15 +94,6 @@ func newReviewFixture(t *testing.T, withModel bool) *reviewFixture {
 			DependsOn: []model.DocumentRef{{Kind: model.DocumentEntity, ID: "hero"}},
 		})
 	})
-	if _, err := s.CreateCreationRun(ctx, model.CreationRun{
-		ID: fixtureRun, ProjectID: fixtureProject,
-		Goal:     model.NovelGoal{Premise: "测试创作", TargetChapters: 3}.Goal(),
-		Strategy: model.CreationRunStrategy{ReviewCadence: model.ReviewPerPlanWindow, AutoRepairBudget: 3},
-		Preset:   model.CreationRunPreset{Source: "test", Digest: "test-preset", Approval: model.ApprovalAuto},
-		State:    model.RunRunning, CreatedAt: f.now, UpdatedAt: f.now,
-	}); err != nil {
-		t.Fatalf("create run: %v", err)
-	}
 	return f
 }
 
@@ -153,7 +129,7 @@ func (f *reviewFixture) conflict(t *testing.T, id string) model.Proposal {
 	if err != nil {
 		t.Fatalf("prepare semantic proposal: %v", err)
 	}
-	if proposal.BaseRevision != 2 || len(proposal.Impact.Semantic) == 0 {
+	if proposal.BaseRevision != 2 || proposal.Impact.Semantic == nil {
 		t.Fatalf("semantic proposal = %#v", proposal)
 	}
 	return proposal
@@ -162,7 +138,7 @@ func (f *reviewFixture) conflict(t *testing.T, id string) model.Proposal {
 func (f *reviewFixture) command(proposalID string, strategy model.ResolutionStrategy) ResolveProposalCommand {
 	return ResolveProposalCommand{
 		ProposalID: proposalID, UserID: fixtureUser, Strategy: string(strategy), Reason: " 放弃改动 ",
-		RunID: fixtureRun, CreatedAt: f.now.Add(5 * time.Minute),
+		CreatedAt: f.now.Add(5 * time.Minute),
 	}
 }
 
@@ -178,31 +154,8 @@ func (f *reviewFixture) assertState(t *testing.T, proposalID string, state model
 	}
 }
 
-// rewriteOperation 预先登记受影响重写任务，模拟上一次裁决已建任务但调用方重试。
-func (f *reviewFixture) rewriteOperation(t *testing.T, proposalID string, input model.RewriteAffectedInput, baseRevision model.Revision) model.Operation {
-	t.Helper()
-	payload, err := json.Marshal(input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	operation, err := f.store.CreateOperation(f.ctx, model.Operation{
-		ID: proposalID + ":rewrite-affected", Kind: model.OperationRewriteAffected,
-		Target: model.AuthorityTarget{Kind: model.AuthorityProject, ID: fixtureProject},
-		State:  model.OperationQueued, RunID: fixtureRun, Input: payload,
-		Snapshot: model.ExecutionSnapshot{
-			Executor: "llm.agent@1", BaseRevision: baseRevision, InputDigest: model.Digest(payload),
-			ConfigDigest: "profile", ApprovalPolicy: model.ApprovalManual,
-		},
-		CreatedAt: f.now, UpdatedAt: f.now,
-	})
-	if err != nil {
-		t.Fatalf("create rewrite operation: %v", err)
-	}
-	return operation
-}
-
 func TestResolveProposalRejectsIncompleteCommand(t *testing.T) {
-	f := newReviewFixture(t, true)
+	f := newReviewFixture(t)
 	proposal := f.conflict(t, "change-bottom-line")
 	cases := map[string]struct {
 		edit func(*ResolveProposalCommand)
@@ -226,7 +179,7 @@ func TestResolveProposalRejectsIncompleteCommand(t *testing.T) {
 }
 
 func TestResolveProposalRequiresSemanticConflict(t *testing.T) {
-	f := newReviewFixture(t, true)
+	f := newReviewFixture(t)
 	plain, err := f.projects.ImportProject(f.ctx, "plain-edit", fixtureUser, "无语义报告", func() projectdoc.ProjectProjection {
 		projection := f.export(t)
 		projection.Plan[2].Summary = "冒雨抵达山门"
@@ -262,14 +215,14 @@ func TestResolveProposalRequiresSemanticConflict(t *testing.T) {
 }
 
 func TestResolveProposalAbandonRejectsWithReason(t *testing.T) {
-	f := newReviewFixture(t, false)
+	f := newReviewFixture(t)
 	proposal := f.conflict(t, "change-bottom-line")
 	command := f.command(proposal.ID, model.ResolutionAbandon)
 	result, err := f.review.ResolveProposal(f.ctx, command)
 	if err != nil {
 		t.Fatalf("abandon: %v", err)
 	}
-	if result.Strategy != "abandon" || result.ChangeSet != nil || len(result.Operations) != 0 || result.Proposal == nil {
+	if result.Strategy != "abandon" || result.ChangeSet != nil || len(result.Reworks) != 0 || result.Proposal == nil {
 		t.Fatalf("result = %#v", result)
 	}
 	rejected := *result.Proposal
@@ -292,14 +245,14 @@ func TestResolveProposalAbandonRejectsWithReason(t *testing.T) {
 	}
 }
 
-func TestResolveProposalReinterpretFutureCommitsWithoutOperation(t *testing.T) {
-	f := newReviewFixture(t, false)
+func TestResolveProposalReinterpretFutureCommitsWithoutRework(t *testing.T) {
+	f := newReviewFixture(t)
 	proposal := f.conflict(t, "change-bottom-line")
 	result, err := f.review.ResolveProposal(f.ctx, f.command(proposal.ID, model.ResolutionReinterpretFuture))
 	if err != nil {
 		t.Fatalf("reinterpret future: %v", err)
 	}
-	if result.Strategy != "reinterpret_future" || result.Proposal != nil || len(result.Operations) != 0 || result.ChangeSet == nil {
+	if result.Strategy != "reinterpret_future" || result.Proposal != nil || len(result.Reworks) != 0 || result.ChangeSet == nil {
 		t.Fatalf("result = %#v", result)
 	}
 	if result.ChangeSet.ID != proposal.ID || result.ChangeSet.NewRevision != 3 || result.ChangeSet.ApprovalState != model.ApprovalApproved {
@@ -322,85 +275,38 @@ func TestResolveProposalReinterpretFutureCommitsWithoutOperation(t *testing.T) {
 	f.assertState(t, proposal.ID, model.ApprovalApproved, 3)
 }
 
-func TestResolveProposalRewriteAffectedChecksPrerequisitesBeforeCommit(t *testing.T) {
-	cases := map[string]struct {
-		withModel bool
-		edit      func(*ResolveProposalCommand)
-		want      error
-		message   string
-	}{
-		"no model":     {false, nil, model.ErrInvalid, "requires a configured model"},
-		"no run":       {true, func(c *ResolveProposalCommand) { c.RunID = " " }, model.ErrInvalid, "requires a creation run"},
-		"unknown pack": {true, func(c *ResolveProposalCommand) { c.Packs = []resource.PackRef{{ID: "ghost-pack", Revision: 1}} }, model.ErrNotFound, ""},
-		"unknown profile": {true, func(c *ResolveProposalCommand) {
-			c.CreatorProfiles = []resource.CreatorProfileRef{{ID: "ghost", Scope: "global", Revision: 1}}
-		}, model.ErrNotFound, ""},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			f := newReviewFixture(t, tc.withModel)
-			proposal := f.conflict(t, "change-bottom-line")
-			command := f.command(proposal.ID, model.ResolutionRewriteAffected)
-			if tc.edit != nil {
-				tc.edit(&command)
-			}
-			_, err := f.review.ResolveProposal(f.ctx, command)
-			if !errors.Is(err, tc.want) || !strings.Contains(err.Error(), tc.message) {
-				t.Fatalf("error = %v, want %v containing %q", err, tc.want, tc.message)
-			}
-			f.assertState(t, proposal.ID, model.ApprovalPending, 2)
-		})
-	}
-}
-
-func TestResolveProposalRewriteAffectedAdoptsMatchingOperation(t *testing.T) {
-	f := newReviewFixture(t, true)
+// 重写受影响的章：批准之后逐章记为返工要求（D86），入账晚于正文，由推导派返工；重试幂等。
+func TestResolveProposalRewriteAffectedNotesReworks(t *testing.T) {
+	f := newReviewFixture(t)
 	proposal := f.conflict(t, "change-bottom-line")
-	existing := f.rewriteOperation(t, proposal.ID, model.RewriteAffectedInput{
-		ChapterIDs: []string{"chapter-1"}, BaseRevision: 3, ResolutionProposalID: proposal.ID, Reason: "同步重写第一章",
-	}, 3)
-	result, err := f.review.ResolveProposal(f.ctx, f.command(proposal.ID, model.ResolutionRewriteAffected))
+	command := f.command(proposal.ID, model.ResolutionRewriteAffected)
+	result, err := f.review.ResolveProposal(f.ctx, command)
 	if err != nil {
 		t.Fatalf("rewrite affected: %v", err)
 	}
-	if result.ChangeSet == nil || result.ChangeSet.NewRevision != 3 || len(result.Operations) != 1 {
+	if result.ChangeSet == nil || result.ChangeSet.NewRevision != 3 || len(result.Reworks) != 1 {
 		t.Fatalf("result = %#v", result)
 	}
-	if got := result.Operations[0]; got.ID != existing.ID || got.State != model.OperationQueued || got.RunID != fixtureRun {
-		t.Fatalf("adopted operation = %#v", got)
+	want := model.Directive{
+		ID: "change-bottom-line:rework:1", Scope: model.DirectiveScopePlanNode("chapter-plan-1"),
+		Text: "同步重写第一章", Status: model.DirectiveActive, Rework: true,
 	}
-	f.assertState(t, proposal.ID, model.ApprovalApproved, 3)
-}
-
-func TestResolveProposalRewriteAffectedRejectsForeignOperation(t *testing.T) {
-	cases := map[string]struct {
-		input        model.RewriteAffectedInput
-		baseRevision model.Revision
-	}{
-		"different chapters": {model.RewriteAffectedInput{ChapterIDs: []string{"chapter-2"}, BaseRevision: 3, ResolutionProposalID: "change-bottom-line", Reason: "x"}, 3},
-		"different base":     {model.RewriteAffectedInput{ChapterIDs: []string{"chapter-1"}, BaseRevision: 2, ResolutionProposalID: "change-bottom-line", Reason: "x"}, 2},
-		"other proposal":     {model.RewriteAffectedInput{ChapterIDs: []string{"chapter-1"}, BaseRevision: 3, ResolutionProposalID: "someone-else", Reason: "x"}, 3},
+	if got := result.Reworks[0]; got.ID != want.ID || got.Scope != want.Scope || got.Text != want.Text || got.Status != want.Status || !got.Rework {
+		t.Fatalf("rework = %#v", got)
 	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			f := newReviewFixture(t, true)
-			proposal := f.conflict(t, "change-bottom-line")
-			f.rewriteOperation(t, proposal.ID, tc.input, tc.baseRevision)
-			result, err := f.review.ResolveProposal(f.ctx, f.command(proposal.ID, model.ResolutionRewriteAffected))
-			if !errors.Is(err, model.ErrIdempotencyConflict) {
-				t.Fatalf("error = %v, want ErrIdempotencyConflict", err)
-			}
-			// 提案已经提交，冲突只阻止把陌生任务当作本次裁决的后续。
-			if result.ChangeSet == nil || result.ChangeSet.NewRevision != 3 || len(result.Operations) != 0 {
-				t.Fatalf("partial result = %#v", result)
-			}
-			f.assertState(t, proposal.ID, model.ApprovalApproved, 3)
-		})
+	f.assertState(t, proposal.ID, model.ApprovalApproved, 4)
+	snapshot, err := f.projects.Project(f.ctx, fixtureProject, 0)
+	if err != nil || len(snapshot.Directives) != 1 || snapshot.Directives[0].ID != want.ID {
+		t.Fatalf("directives = %#v (%v)", snapshot.Directives, err)
 	}
+	if again, err := f.review.ResolveProposal(f.ctx, command); err != nil || len(again.Reworks) != 1 {
+		t.Fatalf("repeated resolution = %#v, %v", again, err)
+	}
+	f.assertState(t, proposal.ID, model.ApprovalApproved, 4)
 }
 
 func TestResolveProposalStaleProposalCannotBeApprovedButCanBeAbandoned(t *testing.T) {
-	f := newReviewFixture(t, false)
+	f := newReviewFixture(t)
 	proposal := f.conflict(t, "change-bottom-line")
 	// 报告判断过的正文其后改了：报告过时，不能照它批准。
 	f.commitEdit(t, "later-edit", func(projection *projectdoc.ProjectProjection) {

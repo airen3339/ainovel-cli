@@ -61,9 +61,8 @@ func TestChapterTasksWriteExactlyTheirTargets(t *testing.T) {
 	}
 	length := []Directive{{ID: "length", Scope: DirectiveScopeProject, Text: "每章十字左右", Status: DirectiveActive,
 		Constraints: &DirectiveConstraints{TargetWords: 10}}}
-	write := task(OperationWriteChapter, &WriteChapterInput{ChapterPlanID: "plan-1", ChapterNumber: 1, Directives: length})
-	rewrite := task(OperationRewriteChapter, &RewriteChapterInput{ChapterID: "chapter-1", ChapterPlanID: "plan-1", ChapterNumber: 1, Findings: []string{"仓促"}})
-	affected := task(OperationRewriteAffected, &RewriteAffectedInput{ChapterIDs: []string{"chapter-1", "chapter-2"}, BaseRevision: 3, ResolutionProposalID: "p", Reason: "改设定"})
+	write := task(OperationWriteChapter, &WriteChapterInput{ChapterPlanID: "plan-1", Directives: length})
+	rewrite := task(OperationRewriteChapter, &RewriteChapterInput{ChapterID: "chapter-1", ChapterPlanID: "plan-1", Findings: []string{"仓促"}})
 	ten := strings.Repeat("好", 10)
 	for _, c := range []struct {
 		name    string
@@ -80,8 +79,6 @@ func TestChapterTasksWriteExactlyTheirTargets(t *testing.T) {
 		{"rewrite another chapter", rewrite, []Patch{chapter("chapter-2", "plan-1", "新")}, "exactly chapter chapter-1"},
 		{"rewrite cannot delete", rewrite, []Patch{chapter("chapter-1", "plan-1", "新"),
 			{Document: DocumentRef{Kind: DocumentManuscript, ID: "chapter-2"}, Operation: PatchDelete}}, "cannot delete chapter"},
-		{"affected covers every chapter", affected, []Patch{chapter("chapter-1", "plan-1", "新"), chapter("chapter-2", "plan-2", "新")}, ""},
-		{"affected cannot skip a chapter", affected, []Patch{chapter("chapter-1", "plan-1", "新")}, "exactly chapters"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			projected := story{chapters: make(map[string]ManuscriptChapter)}
@@ -101,8 +98,44 @@ func TestChapterTasksWriteExactlyTheirTargets(t *testing.T) {
 			}
 		})
 	}
-	stale := task(OperationRewriteAffected, &RewriteAffectedInput{ChapterIDs: []string{"chapter-1"}, BaseRevision: 2, ResolutionProposalID: "p", Reason: "改设定"})
-	if err := validateTaskSubmission(stale, story{}, story{}, nil); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("affected rewrite input must match its snapshot: %v", err)
+}
+
+// 回滚、撤销与导入共用的状态差：Canon 的 old_value 按续写规则重写——恢复一条已删除的
+// 事实是新建，不带它曾经的 old_value；只差 old_value 不算变化。只追加的记录不参与比较。
+func TestStatePatchesFollowCanonContinuity(t *testing.T) {
+	canon := func(value, previous string) DocumentVersion {
+		fact := CanonFact{ID: "fact-1", Kind: CanonState, SubjectID: "hero", Predicate: "位置", Value: json.RawMessage(value)}
+		if previous != "" {
+			fact.PreviousValue = json.RawMessage(previous)
+		}
+		content, err := json.Marshal(fact)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return DocumentVersion{Document: DocumentRef{Kind: DocumentCanon, ID: fact.ID}, Content: content}
+	}
+	decode := func(patch Patch) CanonFact {
+		var fact CanonFact
+		if err := json.Unmarshal(patch.Content, &fact); err != nil {
+			t.Fatal(err)
+		}
+		return fact
+	}
+	key := DocumentRef{Kind: DocumentCanon, ID: "fact-1"}.Key()
+	adjudication := DocumentVersion{Document: DocumentRef{Kind: DocumentAdjudication, ID: "a-1"}, Content: json.RawMessage(`{}`)}
+
+	restored, err := StatePatches(DocumentSet{adjudication.Document.Key(): adjudication}, DocumentSet{key: canon(`"京城"`, `"边关"`)})
+	if err != nil || len(restored) != 1 || restored[0].Operation != PatchPut || decode(restored[0]).PreviousValue != nil {
+		t.Fatalf("restoring a deleted fact = %+v, %v", restored, err)
+	}
+	if same, err := StatePatches(DocumentSet{key: canon(`"京城"`, "")}, DocumentSet{key: canon(`"京城"`, `"边关"`)}); err != nil || len(same) != 0 {
+		t.Fatalf("an old_value-only difference = %+v, %v", same, err)
+	}
+	updated, err := StatePatches(DocumentSet{key: canon(`"京城"`, `"边关"`)}, DocumentSet{key: canon(`"边关"`, "")})
+	if err != nil || len(updated) != 1 || string(decode(updated[0]).PreviousValue) != `"京城"` {
+		t.Fatalf("an update = %+v, %v", updated, err)
+	}
+	if deleted, err := StatePatches(DocumentSet{key: canon(`"京城"`, "")}, DocumentSet{}); err != nil || len(deleted) != 1 || deleted[0].Operation != PatchDelete {
+		t.Fatalf("a delete = %+v, %v", deleted, err)
 	}
 }

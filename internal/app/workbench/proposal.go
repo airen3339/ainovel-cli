@@ -211,7 +211,7 @@ func changeLine(project projectdoc.Snapshot, base, next *narrative.Story, patch 
 		if err := json.Unmarshal(patch.Content, &setting); err != nil {
 			return "", fmt.Errorf("decode proposed approval: %w", err)
 		}
-		return "审批改为：" + approvalLabel[setting.Policy], nil
+		return "审批改为：" + ApprovalLabel(setting.Policy), nil
 	case model.DocumentOwnership:
 		var rule model.OwnershipRule
 		if err := json.Unmarshal(patch.Content, &rule); err != nil {
@@ -234,9 +234,16 @@ func changeLine(project projectdoc.Snapshot, base, next *narrative.Story, patch 
 	return "改动" + describe(next, ref), nil
 }
 
-// approvalLabel 是审批方式的读者用语。
-var approvalLabel = map[model.ApprovalPolicy]string{
-	model.ApprovalAuto: "自动放行", model.ApprovalMilestone: "重大变化等你确认", model.ApprovalManual: "每一步都等你确认",
+// ApprovalLabel 是审批方式的读者用语（产品文档的三档推进方式），界面与变更描述共用。
+func ApprovalLabel(policy model.ApprovalPolicy) string {
+	switch policy {
+	case model.ApprovalMilestone:
+		return "里程碑确认"
+	case model.ApprovalManual:
+		return "逐章确认"
+	default:
+		return "自动推进"
+	}
 }
 
 func intentChange(before, after model.Intent) string {

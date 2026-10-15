@@ -75,24 +75,16 @@ func DecodeNovelGoal(goal CreationRunGoal) (NovelGoal, error) {
 	return novel, novel.Validate()
 }
 
-type ReviewCadence string
-
-const ReviewPerPlanWindow ReviewCadence = "per_plan_window"
-
 // CreationRunStrategy 是连续创作的显式自动化边界。预设只负责给出初值，
 // Coordinator 此后只读取这份版本化策略，不再判断预设身份（D24/D27）。每次规划
 // 多少章不在策略里：由规划者决定（D67）。
 type CreationRunStrategy struct {
-	ReviewCadence    ReviewCadence `json:"review_cadence"`
-	AutoRepairBudget int           `json:"auto_repair_budget"`
+	AutoRepairBudget int `json:"auto_repair_budget"`
 }
 
 func (s CreationRunStrategy) Validate() error {
 	if s.AutoRepairBudget < 0 {
 		return fmt.Errorf("creation run strategy requires a non-negative repair budget: %w", ErrInvalid)
-	}
-	if s.ReviewCadence != ReviewPerPlanWindow {
-		return fmt.Errorf("unknown review cadence %q: %w", s.ReviewCadence, ErrInvalid)
 	}
 	return nil
 }
@@ -128,7 +120,7 @@ func (p CreationRunPreset) Validate() error {
 		return fmt.Errorf("creation run preset source and digest are required: %w", ErrInvalid)
 	}
 	switch p.Approval {
-	case ApprovalAuto, ApprovalMilestone, ApprovalManual, ApprovalCustom:
+	case ApprovalAuto, ApprovalMilestone, ApprovalManual:
 		return nil
 	default:
 		return fmt.Errorf("unknown preset approval policy %q: %w", p.Approval, ErrInvalid)
@@ -195,7 +187,7 @@ type RunTransition struct {
 }
 
 func (t RunTransition) Validate() error {
-	if !CanTransitionCreationRun(t.From, t.To) {
+	if !canTransitionCreationRun(t.From, t.To) {
 		return fmt.Errorf("creation run cannot go %s -> %s: %w", t.From, t.To, ErrStateConflict)
 	}
 	if (t.To == RunCompleted) != (t.CompletedRevision > InitialRevision) {
@@ -227,7 +219,22 @@ type CreationRunEvent struct {
 	CreatedAt time.Time       `json:"created_at"`
 }
 
-func CanTransitionCreationRun(from, to CreationRunState) bool {
+// OperationCreated 是 operation_created 事件的载荷：创建的任务与它绑定的策略版本。
+type OperationCreated struct {
+	OperationID   string `json:"operation_id"`
+	PolicyVersion int64  `json:"policy_version"`
+}
+
+// OperationCreated 解码 operation_created 事件的载荷。
+func (e CreationRunEvent) OperationCreated() (OperationCreated, error) {
+	var payload OperationCreated
+	if err := json.Unmarshal(e.Payload, &payload); err != nil {
+		return OperationCreated{}, fmt.Errorf("run %q event %d payload is corrupt: %w", e.RunID, e.Sequence, err)
+	}
+	return payload, nil
+}
+
+func canTransitionCreationRun(from, to CreationRunState) bool {
 	switch from {
 	case RunRunning:
 		return to == RunWaitingUser || to == RunPaused || to == RunCompleted ||

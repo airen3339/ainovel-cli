@@ -87,7 +87,7 @@ func (s *Repository) SetOwnership(ctx context.Context, command SetOwnershipComma
 		Author: model.Author{Kind: model.AuthorUser, ID: command.UserID},
 		Reason: command.Reason, Patches: []model.Patch{patch},
 		ApprovalState: model.ApprovalPending, CreatedAt: command.CreatedAt,
-	}, command.CreatedAt)
+	})
 	if err != nil {
 		return OwnershipResult{}, err
 	}
@@ -138,11 +138,11 @@ func (s *Repository) SetApprovalPolicy(ctx context.Context, command SetApprovalP
 		Author:       model.Author{Kind: model.AuthorUser, ID: command.UserID},
 		Reason:       command.Reason,
 		Patches: []model.Patch{{
-			Document:  model.DocumentRef{Kind: model.DocumentApproval, ID: "root"},
+			Document:  model.DocumentRef{Kind: model.DocumentApproval, ID: model.SingletonDocumentID},
 			Operation: model.PatchPut, Content: content,
 		}},
 		ApprovalState: model.ApprovalPending, CreatedAt: command.CreatedAt,
-	}, command.CreatedAt)
+	})
 	if err != nil {
 		return ApprovalPolicyResult{}, err
 	}

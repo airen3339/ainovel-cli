@@ -19,11 +19,7 @@ func blockingOn(chapterID, note string) model.ReviewFinding {
 // staleVerdict 用当时的真实窗口基线构造裁定：之后改动其中的章，它就成了上一轮裁定。
 func staleVerdict(t *testing.T, project projectdoc.Snapshot, key string, at int, chapters []string, findings ...model.ReviewFinding) StoredVerdict {
 	t.Helper()
-	status := model.ReviewPass
-	if slices.ContainsFunc(findings, func(f model.ReviewFinding) bool { return f.Severity == model.FindingBlocking }) {
-		status = model.ReviewBlocked
-	}
-	stored := storedTestVerdict(key, at, status, chapters, append([]model.ReviewFinding{}, findings...))
+	stored := storedTestVerdict(key, at, chapters, append([]model.ReviewFinding{}, findings...))
 	basis, err := ReviewBasis(project, chapters)
 	if err != nil {
 		t.Fatal(err)
@@ -131,7 +127,7 @@ func TestRecheckSeamAndRequirementChanges(t *testing.T) {
 	second := []string{"chapter-iiii", "chapter-iiiii", "chapter-iiiiii"}
 	prior := staleVerdict(t, project, "review-b", 1, second)
 	rewriteChapter(&project, "chapter-iii", 3)
-	passed := Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 2, model.ReviewPass, firstWindow, nil)}, Prior: []StoredVerdict{prior}}
+	passed := Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 2, firstWindow, nil)}, Prior: []StoredVerdict{prior}}
 	assertStep(t, project, testRun(6, 2), passed, recheckOf(3, second, []string{"chapter-iiiii", "chapter-iiiiii"}))
 
 	project = novelFixture(t, 5, 3)

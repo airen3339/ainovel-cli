@@ -180,7 +180,7 @@ func (m model) viewWizard() string {
 	}
 	feedback := benchTheme.Error.Render(m.wizard.err)
 	if m.wizard.err == "" {
-		feedback = styleNotice.Render(m.wizard.notice)
+		feedback = benchTheme.Success.Render(m.wizard.notice)
 	}
 	lines = append(lines, "  "+benchRule(m.width-4), "  "+fitLine(feedback, m.width-4), "  "+fitLine(m.keyHint(benchTheme.Muted.Render(hint)), m.width-4))
 	return strings.Join(fitBlock(strings.Join(lines, "\n"), m.width, m.height), "\n")

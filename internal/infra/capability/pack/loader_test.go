@@ -44,7 +44,7 @@ func TestLoadDirectoryResolvesJSONCManifestAndAssets(t *testing.T) {
 		t.Fatalf("load pack: %v", err)
 	}
 	if loaded.Manifest.ID != "xianxia" || loaded.Manifest.PromptOverlays["writer.chapter_draft"] != "重视场景感" ||
-		loaded.References["references/world.md"] == "" || loaded.Templates["templates/chapter.md"] == "" || loaded.Digest == "" {
+		loaded.Manifest.ReferenceData["references/world.md"] == "" || loaded.Manifest.TemplateData["templates/chapter.md"] == "" || loaded.Digest == "" {
 		t.Fatalf("loaded pack = %#v", loaded)
 	}
 	loadedAgain, err := LoadDirectory(root)

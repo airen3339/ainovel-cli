@@ -66,20 +66,19 @@ func TestCompiledPromptsCarryNoDocumentIDs(t *testing.T) {
 			fact("fact-s2", model.CanonState, "state.status", "外门弟子", "ms-x2"),
 		},
 		ApprovalState: model.ApprovalPending, CreatedAt: now,
-	}, now)
+	})
 	if err != nil {
 		t.Fatalf("commit chapters: %v", err)
 	}
 	revision := strconv.FormatInt(int64(committed.NewRevision), 10)
 	basis := `{"documents":[{"ref":{"kind":"manuscript","id":"ms-x1"},"revision":` + revision + `}]}`
 	inputs := map[model.OperationKind]string{
-		model.OperationWriteChapter: `{"chapter_plan_id":"ch-x3","chapter_number":3,` +
+		model.OperationWriteChapter: `{"chapter_plan_id":"ch-x3",` +
 			`"directives":[{"id":"d-1","scope":"plan_node:arc-x","text":"多写心理","status":"active"}]}`,
-		model.OperationRewriteChapter:  `{"chapter_id":"ms-x2","chapter_plan_id":"ch-x2","chapter_number":2,"findings":["立誓太仓促"]}`,
-		model.OperationRewriteAffected: `{"chapter_ids":["ms-x1"],"base_revision":` + revision + `,"resolution_proposal_id":"p-ms-x1","reason":"门规改变"}`,
-		model.OperationReviewRange:     `{"chapter_ids":["ms-x1","ms-x2"],"basis":` + basis + `}`,
-		model.OperationReviseCanon:     `{"chapter_id":"ms-x1","fact_ids":["fact-e1"],"reason":"正文改动后核验"}`,
-		model.OperationRevisePlan:      `{"intent":"少年入山修行","existing_chapters":3}`,
+		model.OperationRewriteChapter: `{"chapter_id":"ms-x2","chapter_plan_id":"ch-x2","findings":["立誓太仓促"]}`,
+		model.OperationReviewRange:    `{"chapter_ids":["ms-x1","ms-x2"],"basis":` + basis + `}`,
+		model.OperationReviseCanon:    `{"chapter_id":"ms-x1","fact_ids":["fact-e1"],"reason":"正文改动后核验"}`,
+		model.OperationRevisePlan:     `{"intent":"少年入山修行","existing_chapters":3}`,
 	}
 	ids := []string{"vol-x", "arc-x", "ch-x1", "ch-x2", "ch-x3", "ent-hero", "ent-mentor", "fact-rule", "fact-e1", "fact-f1", "fact-s2", "ms-x1", "ms-x2"}
 	index := 0
@@ -87,7 +86,7 @@ func TestCompiledPromptsCarryNoDocumentIDs(t *testing.T) {
 		index++
 		operation, err := service.Tasks.StartOperation(ctx, tasks.StartOperationCommand{
 			OperationID: "op-" + string(kind), ProjectID: "book-ids", RunID: ensureTestRun(t, ctx, authorityStore, "book-ids", now),
-			Kind: kind, Input: json.RawMessage(input), CoreProtocolVersion: "core-v1",
+			Kind: kind, Input: json.RawMessage(input),
 			ApprovalPolicy: model.ApprovalManual, CreatedAt: now.Add(time.Duration(index) * time.Minute),
 		})
 		if err != nil {

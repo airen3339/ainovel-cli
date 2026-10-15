@@ -1,14 +1,14 @@
 package novel
 
 import (
-	"strings"
 	"testing"
 
 	projectdoc "github.com/voocel/ainovel-cli/internal/app/project"
 	"github.com/voocel/ainovel-cli/internal/domain/model"
 )
 
-func TestCompletionContractRejectsExtraPlanChapters(t *testing.T) {
+// 内容齐全要以全书章数已知为前提（D29/D63）；蓝图多于固定篇幅由推导器先停下等用户。
+func TestNothingLeftToWriteNeedsAKnownFinal(t *testing.T) {
 	project := projectdoc.Snapshot{
 		Plan: []model.PlanNode{
 			{ID: "chapter-1", Kind: model.PlanChapter, Order: 1, Title: "第一章", Summary: "开端"},
@@ -19,15 +19,13 @@ func TestCompletionContractRejectsExtraPlanChapters(t *testing.T) {
 			{ID: "manuscript-2", PlanNodeID: "chapter-2", Number: 2, Blocks: []model.ManuscriptBlock{{ID: "block-2", Text: "正文"}}},
 		},
 	}
-	if unmet := completionUnmet(project, Length{Fixed: 1, Final: 1}); !strings.Contains(unmet, "蓝图有 2 章") {
-		t.Fatalf("completion mismatch = %q", unmet)
+	// 篇幅交给 AI 且尚未收官：内容再齐也要接着扩写蓝图。
+	if next, ok := nextUpcoming(project, Length{Compass: &model.Compass{ScaleMax: 10, Ending: "收束"}}); !ok || next.write != nil || next.covered != 2 {
+		t.Fatalf("open-phase next = %+v, %v", next, ok)
 	}
-	// 篇幅交给 AI 且尚未收官（D63）：内容再齐也不能完成。
-	if unmet := completionUnmet(project, Length{Compass: &model.Compass{ScaleMax: 10, Ending: "收束"}}); unmet != "全书尚未收官" {
-		t.Fatalf("open-phase completion = %q", unmet)
-	}
-	if unmet := completionUnmet(project, lengthOf(projectdoc.Snapshot{Plan: project.Plan, Manuscript: project.Manuscript,
-		Compass: &model.Compass{ScaleMax: 10, Ending: "收束", Final: 2}}, 0)); unmet != "" {
-		t.Fatalf("committed finale completion = %q", unmet)
+	committed := project
+	committed.Compass = &model.Compass{ScaleMax: 10, Ending: "收束", Final: 2}
+	if next, ok := nextUpcoming(committed, lengthOf(committed, 0)); ok {
+		t.Fatalf("committed finale still has work: %+v", next)
 	}
 }

@@ -11,8 +11,8 @@ require (
 	github.com/muesli/termenv v0.16.0
 	github.com/rivo/uniseg v0.4.7
 	github.com/tailscale/hujson v0.0.0-20260727124030-b80ff77dac4f
-	github.com/voocel/agentcore v1.8.5
-	github.com/voocel/litellm v1.9.4
+	github.com/voocel/agentcore v1.8.7
+	github.com/voocel/litellm v1.9.5
 	modernc.org/sqlite v1.60.1
 )
 

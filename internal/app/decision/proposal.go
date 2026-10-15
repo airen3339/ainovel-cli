@@ -2,28 +2,14 @@ package decision
 
 import (
 	"context"
-	"encoding/json"
-	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
 	projectdoc "github.com/voocel/ainovel-cli/internal/app/project"
-	"github.com/voocel/ainovel-cli/internal/app/resource"
 	"github.com/voocel/ainovel-cli/internal/domain/change"
 	"github.com/voocel/ainovel-cli/internal/domain/model"
-
-	"github.com/voocel/ainovel-cli/internal/app/task"
 )
-
-func (s *Review) Propose(ctx context.Context, proposal model.Proposal) (model.Proposal, error) {
-	return s.changes.Prepare(ctx, proposal)
-}
-
-func (s *Review) ProposeWithSemantic(ctx context.Context, proposal model.Proposal) (model.Proposal, error) {
-	return s.changes.PrepareWithSemantic(ctx, proposal)
-}
 
 func (s *Review) Proposal(ctx context.Context, id string) (model.Proposal, error) {
 	return s.store.GetProposal(ctx, id)
@@ -34,24 +20,23 @@ func (s *Review) ProposalForOperation(ctx context.Context, operationID string) (
 }
 
 type ResolveProposalCommand struct {
-	ProposalID          string
-	UserID              string
-	Strategy            string
-	Reason              string
-	Packs               []resource.PackRef
-	CreatorProfiles     []resource.CreatorProfileRef
-	CoreProtocolVersion string
-	RunID               string
-	CreatedAt           time.Time
+	ProposalID string
+	UserID     string
+	Strategy   string
+	Reason     string
+	CreatedAt  time.Time
 }
 
 type ResolveProposalResult struct {
-	Strategy   string            `json:"strategy"`
-	Proposal   *model.Proposal   `json:"proposal,omitempty"`
-	ChangeSet  *model.ChangeSet  `json:"change_set,omitempty"`
-	Operations []model.Operation `json:"operations,omitempty"`
+	Strategy  string           `json:"strategy"`
+	Proposal  *model.Proposal  `json:"proposal,omitempty"`
+	ChangeSet *model.ChangeSet `json:"change_set,omitempty"`
+	// Reworks 是选“重写受影响的章”时逐章记下的返工要求（D86）。
+	Reworks []model.Directive `json:"reworks,omitempty"`
 }
 
+// ResolveProposal 按用户选的处置裁决带语义冲突的提案（S4）：不改了即否决；只改设定即批准；
+// 重写受影响的章是批准之后把那几章记为返工要求，由推导逐章返工（D86）。同一处置重试幂等。
 func (s *Review) ResolveProposal(ctx context.Context, command ResolveProposalCommand) (ResolveProposalResult, error) {
 	if command.ProposalID == "" || command.UserID == "" || command.CreatedAt.IsZero() {
 		return ResolveProposalResult{}, fmt.Errorf("proposal resolution requires proposal, user and time: %w", model.ErrInvalid)
@@ -77,24 +62,6 @@ func (s *Review) ResolveProposal(ctx context.Context, command ResolveProposalCom
 		result.Proposal = &rejected
 		return result, nil
 	}
-	if strategy == model.ResolutionRewriteAffected && !s.tasks.HasLLM() {
-		return ResolveProposalResult{}, fmt.Errorf("affected rewrite requires a configured model: %w", model.ErrInvalid)
-	}
-	if strategy == model.ResolutionRewriteAffected && strings.TrimSpace(command.RunID) == "" {
-		return ResolveProposalResult{}, fmt.Errorf("affected rewrite requires a creation run: %w", model.ErrInvalid)
-	}
-	if strategy == model.ResolutionRewriteAffected {
-		for _, ref := range command.Packs {
-			if _, err := resource.LoadPack(ctx, s.store, ref); err != nil {
-				return ResolveProposalResult{}, err
-			}
-		}
-		for _, ref := range command.CreatorProfiles {
-			if _, err := resource.LoadCreatorProfile(ctx, s.store, ref); err != nil {
-				return ResolveProposalResult{}, err
-			}
-		}
-	}
 	committed, err := s.Approve(ctx, proposal.ID, command.UserID, command.CreatedAt)
 	if err != nil {
 		return ResolveProposalResult{}, err
@@ -103,61 +70,14 @@ func (s *Review) ResolveProposal(ctx context.Context, command ResolveProposalCom
 	if strategy == model.ResolutionReinterpretFuture {
 		return result, nil
 	}
-	operationID := proposal.ID + ":rewrite-affected"
-	existing, err := s.store.GetOperation(ctx, operationID)
-	if err == nil {
-		if err := validateResolutionOperation(existing, proposal.ID, option.ChapterIDs, committed.NewRevision, command.RunID); err != nil {
-			return result, err
-		}
-		result.Operations = []model.Operation{existing}
-		return result, nil
-	}
-	if !errors.Is(err, model.ErrNotFound) {
-		return result, err
-	}
-
-	coreVersion := command.CoreProtocolVersion
-	if coreVersion == "" {
-		coreVersion = "core-v1"
-	}
-	input, err := json.Marshal(model.RewriteAffectedInput{
-		ChapterIDs: option.ChapterIDs, BaseRevision: committed.NewRevision,
-		ResolutionProposalID: proposal.ID, Reason: option.Explanation,
+	result.Reworks, err = s.projects.ReworkChapters(ctx, projectdoc.ReworkChaptersCommand{
+		ProjectID: proposal.Target.ID, ChangeID: proposal.ID + ":rework", UserID: command.UserID,
+		ChapterIDs: option.ChapterIDs, Text: option.Explanation, Reason: "按修改重写受影响的章", CreatedAt: command.CreatedAt,
 	})
 	if err != nil {
-		return ResolveProposalResult{}, fmt.Errorf("encode affected rewrite task: %w", err)
+		return result, fmt.Errorf("proposal was committed but the affected chapters could not be noted for rework; retry the same resolution: %w", err)
 	}
-	operation, err := s.tasks.StartOperation(ctx, task.StartOperationCommand{
-		OperationID: operationID, ProjectID: proposal.Target.ID,
-		Kind:  model.OperationRewriteAffected,
-		Input: input, Packs: command.Packs, CreatorProfiles: command.CreatorProfiles,
-		CoreProtocolVersion: coreVersion, ApprovalPolicy: model.ApprovalManual,
-		RunID: command.RunID, CreatedAt: *committed.DecidedAt,
-	})
-	if err != nil {
-		return result, fmt.Errorf("proposal was committed but affected rewrite operation could not be created; retry the same resolution: %w", err)
-	}
-	result.Operations = []model.Operation{operation}
 	return result, nil
-}
-
-func validateResolutionOperation(
-	operation model.Operation,
-	proposalID string,
-	chapterIDs []string,
-	baseRevision model.Revision,
-	runID string,
-) error {
-	if operation.Kind != model.OperationRewriteAffected || operation.Snapshot.BaseRevision != baseRevision ||
-		operation.RunID != runID {
-		return fmt.Errorf("operation %q is not the requested semantic resolution: %w", operation.ID, model.ErrIdempotencyConflict)
-	}
-	input, err := model.TaskInputAs[model.RewriteAffectedInput](operation)
-	if err != nil || input.ResolutionProposalID != proposalID ||
-		input.BaseRevision != baseRevision || !slices.Equal(input.ChapterIDs, chapterIDs) {
-		return fmt.Errorf("operation %q is not the requested semantic resolution: %w", operation.ID, model.ErrIdempotencyConflict)
-	}
-	return nil
 }
 
 func semanticResolutionOption(
@@ -167,16 +87,10 @@ func semanticResolutionOption(
 	if strategy != model.ResolutionRewriteAffected && strategy != model.ResolutionReinterpretFuture && strategy != model.ResolutionAbandon {
 		return model.SemanticImpactReport{}, model.ResolutionOption{}, fmt.Errorf("unknown resolution strategy %q: %w", strategy, model.ErrInvalid)
 	}
-	if len(proposal.Impact.Semantic) == 0 {
+	if proposal.Impact.Semantic == nil {
 		return model.SemanticImpactReport{}, model.ResolutionOption{}, fmt.Errorf("proposal %q has no semantic impact report: %w", proposal.ID, model.ErrInvalid)
 	}
-	var report model.SemanticImpactReport
-	if err := model.DecodeStrict(proposal.Impact.Semantic, &report); err != nil {
-		return model.SemanticImpactReport{}, model.ResolutionOption{}, fmt.Errorf("decode semantic impact report: %w", err)
-	}
-	if err := report.Validate(); err != nil {
-		return model.SemanticImpactReport{}, model.ResolutionOption{}, err
-	}
+	report := *proposal.Impact.Semantic
 	// 一致的报告没有候选策略，先返回让调用方给出“直接批准即可”，不要误报成策略不存在。
 	if report.Status == model.SemanticImpactConsistent {
 		return report, model.ResolutionOption{}, nil
@@ -234,8 +148,6 @@ func (s *Review) Relocate(ctx context.Context, proposal model.Proposal) (model.P
 	return s.changes.Relocate(ctx, proposal)
 }
 
-// Reject 否决提案并把理由入账为要求。等待审批的任务随之失败；已被取代（stale）或取消的
-// 任务只否决旧稿、不再转移状态。
 // RejectCommand 否决一份提案；Reason 入账为要求（S10），Source 是主编代录这句理由时用户
 // 说它的那条对话消息（D74）。
 type RejectCommand struct {
@@ -246,6 +158,8 @@ type RejectCommand struct {
 	At         time.Time
 }
 
+// Reject 否决提案并把理由入账为要求。等待审批的任务随之失败；已被取代（stale）或取消的
+// 任务只否决旧稿、不再转移状态。
 func (s *Review) Reject(ctx context.Context, command RejectCommand) (model.Proposal, error) {
 	userID, at := command.UserID, command.At
 	proposal, err := s.store.GetProposal(ctx, command.ProposalID)
@@ -280,13 +194,6 @@ func (s *Review) Reject(ctx context.Context, command RejectCommand) (model.Propo
 	if proposal.OperationID == "" {
 		return rejected, nil
 	}
-	// 否决后任务只可能被同时取代或取消，冲突即以现状为准。
-	if operation.State == model.OperationAwaitingApproval {
-		if _, err := s.store.TransitionOperation(ctx, operation.ID, operation.State, model.OperationFailed,
-			"proposal rejected by user", at); err != nil && !errors.Is(err, model.ErrStateConflict) {
-			return model.Proposal{}, err
-		}
-	}
 	if err := s.rejectionDirective(ctx, rejected, operation, userID, command.Source, at); err != nil {
 		return model.Proposal{}, err
 	}
@@ -318,10 +225,9 @@ func (s *Review) rejectionDirective(
 	return err
 }
 
-// chapterPlanIDOf 取章节任务对应的 Plan 节点；非章节任务为空。
 // rejectionScope 是否决理由的作用域（D71）：章节稿件落到该章；规划方案说的是还没写的
 // 部分，从下一章起——已写章节不因规划重写，理由若覆盖它们，每个已审窗口的要求作用域
-// 都会变、全书重审。其余任务（事实核验、受影响重写）落到整书。
+// 都会变、全书重审。其余任务（事实核验）落到整书。
 func (s *Review) rejectionScope(ctx context.Context, operation model.Operation, projectID string) (string, error) {
 	input, err := model.DecodeTaskInput(operation.Kind, operation.Input)
 	if err != nil {

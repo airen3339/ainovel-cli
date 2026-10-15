@@ -14,10 +14,7 @@ func TestOfficialPackCoversEveryBuiltinSlot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load official pack: %v", err)
 	}
-	definitions, err := prompt.BuiltinCapabilities()
-	if err != nil {
-		t.Fatalf("builtin capabilities: %v", err)
-	}
+	definitions := prompt.BuiltinCapabilities()
 	used := map[string]bool{string(prompt.SlotChiefConverse): true}
 	for _, definition := range definitions {
 		for _, slot := range definition.Worker.PromptSlots {

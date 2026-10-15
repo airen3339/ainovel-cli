@@ -33,7 +33,7 @@ func TestProjectAttemptsReadAttemptSummaries(t *testing.T) {
 	other.RunID, other.Target.ID = "run:book-2", "book-2"
 	if _, err := s.CreateCreationRun(ctx, model.CreationRun{
 		ID: other.RunID, ProjectID: "book-2", Goal: model.NovelGoal{Premise: "别的书", TargetChapters: 3}.Goal(),
-		Strategy: model.CreationRunStrategy{ReviewCadence: model.ReviewPerPlanWindow, AutoRepairBudget: 3},
+		Strategy: model.CreationRunStrategy{AutoRepairBudget: 3},
 		Preset:   model.CreationRunPreset{Source: "test", Digest: "test-preset", Approval: model.ApprovalAuto},
 		State:    model.RunRunning, CreatedAt: start, UpdatedAt: start,
 	}); err != nil {

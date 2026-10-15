@@ -104,24 +104,3 @@ func IsMilestone(proposal Proposal) bool {
 	}
 	return false
 }
-
-// RevertContent 给出回滚到 target 时写入的内容：Canon 更新必须带与现值一致的 old_value，
-// 回滚也是一次更新；其余文档原样恢复。
-func RevertContent(ref DocumentRef, current, target json.RawMessage) (json.RawMessage, error) {
-	if ref.Kind != DocumentCanon || current == nil {
-		return append(json.RawMessage(nil), target...), nil
-	}
-	var currentFact, targetFact CanonFact
-	if err := json.Unmarshal(current, &currentFact); err != nil {
-		return nil, fmt.Errorf("decode current canon for revert: %w", err)
-	}
-	if err := json.Unmarshal(target, &targetFact); err != nil {
-		return nil, fmt.Errorf("decode target canon for revert: %w", err)
-	}
-	targetFact.PreviousValue = append(json.RawMessage(nil), currentFact.Value...)
-	content, err := json.Marshal(targetFact)
-	if err != nil {
-		return nil, fmt.Errorf("encode canon revert: %w", err)
-	}
-	return content, nil
-}

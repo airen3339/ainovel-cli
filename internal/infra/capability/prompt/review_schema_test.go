@@ -129,7 +129,6 @@ func TestAuthorityReadSpeaksStoryLanguage(t *testing.T) {
 func TestReviewFindingRejectionNamesTheFieldToFix(t *testing.T) {
 	verdict := model.ReviewVerdict{
 		Revision: 2, ChapterIDs: []string{"ch-001"}, ReviewKey: "final_review_v1",
-		Status: model.ReviewPass,
 		Basis: model.EvidenceBasis{Documents: []model.DocumentBasis{{
 			Ref: model.DocumentRef{Kind: model.DocumentManuscript, ID: "ch-001"}, Revision: 2}}},
 		Findings: []model.ReviewFinding{{

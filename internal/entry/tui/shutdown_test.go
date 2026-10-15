@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/voocel/ainovel-cli/internal/app/chief"
+	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	domainmodel "github.com/voocel/ainovel-cli/internal/domain/model"
 )
 
@@ -32,7 +33,7 @@ func TestQuitWaitsForTheDriveToReleaseItsTask(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	operations, err := api.Runs.RunOperations(context.Background(), run.ID)
+	operations, err := runOperations(context.Background(), api, run.ID)
 	if err != nil || len(operations) != 1 || operations[0].State != domainmodel.OperationQueued {
 		t.Fatalf("the interrupted task must go back to the queue: %+v %v", operations, err)
 	}
@@ -100,8 +101,23 @@ func TestEscapePausesAndInterruptsTheModelCall(t *testing.T) {
 	if err != nil || run.State != domainmodel.RunPaused {
 		t.Fatalf("run must be paused: %+v %v", run, err)
 	}
-	operations, err := api.Runs.RunOperations(ctx, run.ID)
+	operations, err := runOperations(ctx, api, run.ID)
 	if err != nil || len(operations) != 1 || operations[0].State != domainmodel.OperationQueued {
 		t.Fatalf("the interrupted task must go back to the queue: %+v %v", operations, err)
 	}
+}
+
+// runOperations 按创建序取一轮创作的全部 Operation。
+func runOperations(ctx context.Context, api *bootstrap.App, runID string) ([]domainmodel.Operation, error) {
+	ids, err := api.Runs.RunOperationIDs(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	operations := make([]domainmodel.Operation, len(ids))
+	for i, id := range ids {
+		if operations[i], err = api.Tasks.Operation(ctx, id); err != nil {
+			return nil, err
+		}
+	}
+	return operations, nil
 }

@@ -37,7 +37,7 @@ func extendPlan(id string) stepWant {
 func TestAILengthRollsWithTheCompass(t *testing.T) {
 	run := testRun(0, 2)
 	first := []string{"chapter-i", "chapter-ii", "chapter-iii"}
-	reviewed := Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, model.ReviewPass, first, nil)}}
+	reviewed := Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, first, nil)}}
 	written := novelFixture(t, 3, 3)
 
 	assertStep(t, novelFixture(t, 0, 0), run, Evidence{}, stepWant{kind: model.OperationDevelopPlan, id: "run:book:1:plan:f0:s0:e0",
@@ -69,7 +69,7 @@ func TestAILengthRollsWithTheCompass(t *testing.T) {
 		t.Fatalf("finale review = %#v, %v", next, err)
 	}
 	requirementWant(t, *next.Work, map[string]bool{finale: true})
-	closed := Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, model.ReviewPass, first, nil, check(finale, model.CheckSatisfied))}}
+	closed := Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, first, nil, check(finale, model.CheckSatisfied))}}
 	assertStep(t, finished, run, closed, stepWant{done: "全书 3 章完成并通过审阅"})
 
 	// 续写：撤回收官承诺后按开放期扩窗，文案点明第 3 章是已写成的结局。
@@ -138,7 +138,7 @@ func TestAIFinaleCannotDropUserRequirements(t *testing.T) {
 	project.Directives = []model.Directive{{ID: "d-death", Scope: "chapter_range:5-6", Text: "第五六章主角死亡", Status: model.DirectiveActive}}
 	finale := finaleRequirement(project, 3).ID
 	first := []string{"chapter-i", "chapter-ii", "chapter-iii"}
-	closed := Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, model.ReviewPass, first, nil, check(finale, model.CheckSatisfied))}}
+	closed := Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, first, nil, check(finale, model.CheckSatisfied))}}
 	assertStep(t, project, testRun(0, 2), closed, stepWant{wait: "要求「第五六章主角死亡」（作用域：第 5–6 章）因此落空"})
 	assertStep(t, project, testRun(3, 2), closed, stepWant{done: "全书 3 章完成并通过审阅"})
 }
@@ -148,7 +148,7 @@ func TestPlanningRespectsKnownAndStaleFinale(t *testing.T) {
 	assertStep(t, withCompass(novelFixture(t, 0, 0), 10, 2), testRun(0, 2), Evidence{},
 		stepWant{kind: model.OperationDevelopPlan, id: "run:book:1:plan:f0:s10:e2"})
 	stale := withCompass(novelFixture(t, 3, 3), 10, 2)
-	reviewed := Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, model.ReviewPass, []string{"chapter-i", "chapter-ii", "chapter-iii"}, nil)}}
+	reviewed := Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, []string{"chapter-i", "chapter-ii", "chapter-iii"}, nil)}}
 	assertStep(t, stale, testRun(0, 2), reviewed, stepWant{kind: model.OperationRevisePlan, id: "run:book:1:plan:extend:3:f0:s10:e2",
 		check: func(t *testing.T, work creation.WorkItem) {
 			if goal := work.Input.(model.RevisePlanInput).Goal; !strings.Contains(goal, "收官承诺 2 章已少于蓝图章数而失效") {

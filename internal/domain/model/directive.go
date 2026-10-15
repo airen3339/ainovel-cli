@@ -181,7 +181,7 @@ func ActiveDirectives(directives []Directive) []Directive {
 			active = append(active, directive)
 		}
 	}
-	SortDirectives(active)
+	sortDirectives(active)
 	return active
 }
 
@@ -196,7 +196,7 @@ func ActiveDirectivesFor(directives []Directive, target DirectiveTarget) []Direc
 	return matched
 }
 
-func SortDirectives(directives []Directive) {
+func sortDirectives(directives []Directive) {
 	slices.SortFunc(directives, func(left, right Directive) int {
 		return strings.Compare(left.ID, right.ID)
 	})

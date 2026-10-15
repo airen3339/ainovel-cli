@@ -120,10 +120,7 @@ func BuildModelView(content ProjectContent, kind model.OperationKind, task json.
 		return ModelView{}, err
 	}
 	story := content.story()
-	ownership, err := story.Ownership(content.Ownership)
-	if err != nil {
-		return ModelView{}, err
-	}
+	ownership := story.Ownership(content.Ownership)
 	rendered, err := story.Task(kind, task)
 	if err != nil {
 		return ModelView{}, err
@@ -194,12 +191,6 @@ func buildStoryContext(content ProjectContent, kind model.OperationKind, task js
 			return selection{}, fmt.Errorf("context dependency %q does not exist: %w", manuscriptRef(input.ChapterID).Key(), model.ErrInvalid)
 		}
 		err = s.assemble(focus{anchor: s.position[chapter.PlanNodeID], targets: s.chapterTargets(chapter.ID)}, policy)
-	case *model.RewriteAffectedInput:
-		var refs []model.DocumentRef
-		for _, id := range input.ChapterIDs {
-			refs = append(refs, s.chapterTargets(id)...)
-		}
-		err = s.scoped(refs)
 	case *model.ReviewRangeInput:
 		// 窗口审阅（D62）：窗口各章正文与来源事实是目标，锚在首章；衔接章、近期计划与
 		// 事件随固定段进入，相关实体的当前事实按预算排序。
@@ -257,9 +248,6 @@ func newSelector(content ProjectContent, limit int) (*selector, error) {
 		payload, err := json.Marshal(value)
 		if err != nil {
 			return fmt.Errorf("encode context document %q: %w", ref.Key(), err)
-		}
-		if err := model.ValidateDocumentContent(ref, payload); err != nil {
-			return err
 		}
 		s.documents[ref.Key()] = ContextDocument{Ref: ref, Content: payload}
 		return nil
@@ -373,21 +361,6 @@ func (s *selector) assemble(f focus, policy contextPolicy) error {
 		}
 	}
 	return s.rank()
-}
-
-// scoped 装配范围由任务显式给出的受影响重写：依赖闭包加 locked/guided 目标，不裁剪。
-func (s *selector) scoped(refs []model.DocumentRef) error {
-	for _, rule := range s.ownership {
-		if rule.Control == model.ControlLocked || rule.Control == model.ControlGuided {
-			refs = append(refs, rule.Target)
-		}
-	}
-	for _, ref := range refs {
-		if err := s.require(ref); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // rank 是唯一的裁剪点，优先级依次为：

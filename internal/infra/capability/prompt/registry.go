@@ -178,25 +178,6 @@ func (r *Registry) Lint(ctx context.Context, digest string) ([]Diagnostic, error
 	return lintSources(worker, compiled.Sources), nil
 }
 
-func Lint(request CompileRequest) ([]Diagnostic, error) {
-	if _, err := Compile(request); err != nil {
-		return nil, err
-	}
-	sources := make([]Source, 0, len(request.Packs))
-	for _, pack := range request.Packs {
-		slots := make([]Slot, 0, len(pack.Manifest.PromptOverlays))
-		for slot := range pack.Manifest.PromptOverlays {
-			slots = append(slots, Slot(slot))
-		}
-		slices.Sort(slots)
-		sources = append(sources, Source{
-			Layer: "pack_defaults", ID: pack.Manifest.ID + "@" + pack.Manifest.Version,
-			Revision: pack.Revision, Kind: SourceInstruction, Slots: slots,
-		})
-	}
-	return lintSources(request.Worker, sources), nil
-}
-
 func lintSources(worker WorkerProfile, sources []Source) []Diagnostic {
 	activeSlots := make(map[string]struct{}, len(worker.PromptSlots))
 	for _, slot := range worker.PromptSlots {
@@ -210,11 +191,11 @@ func lintSources(worker WorkerProfile, sources []Source) []Diagnostic {
 		}
 		for _, promptSlot := range source.Slots {
 			slot := string(promptSlot)
-			// 一个 Pack 同时服务多个 Worker 是常态（官方包覆盖全部 Slot，D65）；
-			// 只有任何内置 Worker 都不用的 Slot（多半是拼错）才会静默失效。
-			if !validSlot(promptSlot) {
+			// 一个 Pack 同时服务多个 Worker 与主编是常态（官方包覆盖全部 Slot，D65）；
+			// 只有谁都不用的 Slot（多半是拼错）才会静默失效。
+			if !slices.Contains(Slots, promptSlot) {
 				diagnostics = append(diagnostics, Diagnostic{
-					Code: "unknown_pack_slot", Message: fmt.Sprintf("Pack %s 的 %s 不是任何内置 Worker 的 Slot，不会生效", source.ID, slot),
+					Code: "unknown_pack_slot", Message: fmt.Sprintf("Pack %s 的 %s 不是已知的 Slot，不会生效", source.ID, slot),
 					Sources: []string{source.ID},
 				})
 				continue

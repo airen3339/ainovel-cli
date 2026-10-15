@@ -23,7 +23,7 @@ func editCanonEvidence(t *testing.T, api *testApp, project projectdoc.Snapshot, 
 		ID: id, Target: model.AuthorityTarget{Kind: model.AuthorityProject, ID: project.ID}, BaseRevision: project.Revision,
 		Author: model.Author{Kind: model.AuthorUser, ID: "user-1"}, Reason: "核对事实",
 		Patches: patches, ApprovalState: model.ApprovalPending, CreatedAt: at,
-	}, at)
+	})
 	if err != nil {
 		t.Fatal(err)
 	}

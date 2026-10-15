@@ -36,6 +36,16 @@ func LoadState(dir string) (State, error) {
 	return state, nil
 }
 
+// UpdateState 读改写界面状态：读不出来就不回写——用空状态读改写会抹掉其他作品的偏好。
+func UpdateState(dir string, update func(*State)) error {
+	state, err := LoadState(dir)
+	if err != nil {
+		return err
+	}
+	update(&state)
+	return SaveState(dir, state)
+}
+
 func SaveState(dir string, state State) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create app state dir: %w", err)

@@ -123,14 +123,11 @@ func (e *Engine) RelocatePending(ctx context.Context, proposal model.Proposal, a
 
 // judgedDocuments 是没有任务的提案的语义影响报告判断过的文档：提案基线上的结构影响
 // 全集加语义范围，与分析时读的一致。没有报告时为空。
-func (e *Engine) judgedDocuments(ctx context.Context, proposal model.Proposal, direct bool) (map[string]bool, error) {
-	if !direct || len(proposal.Impact.Semantic) == 0 {
+func (e *Engine) judgedDocuments(ctx context.Context, proposal model.Proposal) (map[string]bool, error) {
+	if proposal.Impact.Semantic == nil {
 		return nil, nil
 	}
-	var impact StructuralImpact
-	if err := json.Unmarshal(proposal.Impact.Structural, &impact); err != nil {
-		return nil, fmt.Errorf("decode structural impact of %q: %w", proposal.ID, err)
-	}
+	impact := proposal.Impact.Structural
 	base, err := e.loadState(ctx, proposal.Target, proposal.BaseRevision)
 	if err != nil {
 		return nil, err
@@ -146,7 +143,8 @@ func (e *Engine) judgedDocuments(ctx context.Context, proposal model.Proposal, d
 	return judged, nil
 }
 
-func (e *Engine) relocate(ctx context.Context, proposal model.Proposal, basis model.EvidenceBasis, direct bool) (model.Proposal, bool, error) {
+// relocate 是 Relocate 的规则本体；taskless 标记没有任务的提案。
+func (e *Engine) relocate(ctx context.Context, proposal model.Proposal, basis model.EvidenceBasis, taskless bool) (model.Proposal, bool, error) {
 	current, err := e.currentRevision(ctx, proposal.Target)
 	if err != nil {
 		return model.Proposal{}, false, err
@@ -162,9 +160,11 @@ func (e *Engine) relocate(ctx context.Context, proposal model.Proposal, basis mo
 	for _, patch := range proposal.Patches {
 		own[patch.Document.Key()] = struct{}{}
 	}
-	judged, err := e.judgedDocuments(ctx, proposal, direct)
-	if err != nil {
-		return model.Proposal{}, false, err
+	var judged map[string]bool
+	if taskless {
+		if judged, err = e.judgedDocuments(ctx, proposal); err != nil {
+			return model.Proposal{}, false, err
+		}
 	}
 	for revision := proposal.BaseRevision + 1; revision <= current; revision++ {
 		changeSet, err := e.store.GetChangeSetByRevision(ctx, proposal.Target, revision)
@@ -178,7 +178,7 @@ func (e *Engine) relocate(ctx context.Context, proposal model.Proposal, basis mo
 			}
 			_, touched := own[patch.Document.Key()]
 			unrelated := spec.UserOnly
-			if direct {
+			if taskless {
 				unrelated = !judged[patch.Document.Key()]
 			}
 			if touched || !unrelated {
@@ -209,6 +209,6 @@ func (e *Engine) relocate(ctx context.Context, proposal model.Proposal, basis mo
 			}
 		}
 	}
-	relocated, err = withImpact(relocated, checked.impact)
-	return relocated, err == nil, err
+	relocated.Impact.Structural = &checked.impact
+	return relocated, true, nil
 }

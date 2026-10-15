@@ -23,7 +23,7 @@ func TestTaskContractHoldsOnEveryPath(t *testing.T) {
 	run, err := s.CreateCreationRun(ctx, model.CreationRun{
 		ID: "run:book-1", ProjectID: target.ID,
 		Goal:     model.NovelGoal{Premise: "凡人修仙", TargetChapters: 3}.Goal(),
-		Strategy: model.CreationRunStrategy{ReviewCadence: model.ReviewPerPlanWindow, AutoRepairBudget: 3},
+		Strategy: model.CreationRunStrategy{AutoRepairBudget: 3},
 		Preset:   model.CreationRunPreset{Source: "test", Digest: "test-preset", Approval: model.ApprovalAuto},
 		State:    model.RunRunning, CreatedAt: now, UpdatedAt: now,
 	})
@@ -31,7 +31,7 @@ func TestTaskContractHoldsOnEveryPath(t *testing.T) {
 		t.Fatalf("create run: %v", err)
 	}
 	const executor = "test.executor@1"
-	input := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1","chapter_number":1}`)
+	input := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1"}`)
 	if _, err := s.CreateOperation(ctx, model.Operation{
 		ID: "write-1", Kind: model.OperationWriteChapter, Target: target, State: model.OperationQueued, RunID: run.ID,
 		Snapshot: model.ExecutionSnapshot{

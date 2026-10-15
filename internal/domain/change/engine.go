@@ -1,7 +1,6 @@
 package change
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -19,12 +18,7 @@ type Engine struct {
 }
 
 type SemanticAnalyzer interface {
-	Analyze(context.Context, model.Proposal, StructuralImpact) (json.RawMessage, error)
-}
-
-type StructuralImpact struct {
-	Direct   []model.DocumentRef `json:"direct"`
-	Affected []model.DocumentRef `json:"affected"`
+	Analyze(context.Context, model.Proposal, model.StructuralImpact) (json.RawMessage, error)
 }
 
 func New(authorityStore Store) *Engine {
@@ -50,6 +44,15 @@ func (e *Engine) Validate(ctx context.Context, proposal model.Proposal) error {
 	return err
 }
 
+// PrepareExecution 校验并保存执行提案（attempt 围栏内）：基线落后时先按 D51 重定位，
+// 不能重定位返回 model.ErrRevisionConflict。
+func (e *Engine) PrepareExecution(ctx context.Context, proposal model.Proposal, attempt int) (model.Proposal, error) {
+	if attempt <= 0 {
+		return model.Proposal{}, fmt.Errorf("execution proposal requires an attempt: %w", model.ErrInvalid)
+	}
+	return e.prepare(ctx, proposal, false, attempt)
+}
+
 // SemanticScope 在提案基线上做全部确定性校验，给出修改可能与之矛盾的已写章节（创作
 // 领域判定，model.SemanticScope），不落库：非空时调用方先做语义影响分析（D77）。
 func (e *Engine) SemanticScope(ctx context.Context, proposal model.Proposal) ([]model.DocumentRef, error) {
@@ -63,22 +66,13 @@ func (e *Engine) SemanticScope(ctx context.Context, proposal model.Proposal) ([]
 	return model.SemanticScope(proposal.Patches, checked.base)
 }
 
-// PrepareExecution 校验并保存执行提案（attempt 围栏内）：基线落后时先按 D51 重定位，
-// 不能重定位返回 model.ErrRevisionConflict。
-func (e *Engine) PrepareExecution(ctx context.Context, proposal model.Proposal, attempt int) (model.Proposal, error) {
-	if attempt <= 0 {
-		return model.Proposal{}, fmt.Errorf("execution proposal requires an attempt: %w", model.ErrInvalid)
-	}
-	return e.prepare(ctx, proposal, false, attempt)
-}
-
 func (e *Engine) PrepareWithSemantic(ctx context.Context, proposal model.Proposal) (model.Proposal, error) {
 	return e.prepare(ctx, proposal, true, 0)
 }
 
 func (e *Engine) prepare(ctx context.Context, proposal model.Proposal, analyzeSemantic bool, attempt int) (model.Proposal, error) {
 	if proposal.ApprovalState != model.ApprovalPending || proposal.DecidedBy != nil || proposal.DecidedAt != nil {
-		return model.Proposal{}, fmt.Errorf("prepare requires a pending proposal: %w", ErrInvalidState)
+		return model.Proposal{}, fmt.Errorf("prepare requires a pending proposal: %w", model.ErrInvalid)
 	}
 	if err := proposal.Validate(); err != nil {
 		return model.Proposal{}, err
@@ -93,9 +87,7 @@ func (e *Engine) prepare(ctx context.Context, proposal model.Proposal, analyzeSe
 	if err != nil {
 		return model.Proposal{}, err
 	}
-	if proposal, err = withImpact(proposal, checked.impact); err != nil {
-		return model.Proposal{}, err
-	}
+	proposal.Impact.Structural = &checked.impact
 	if analyzeSemantic {
 		if e.semantic == nil {
 			return model.Proposal{}, ErrSemanticUnavailable
@@ -111,13 +103,9 @@ func (e *Engine) prepare(ctx context.Context, proposal model.Proposal, analyzeSe
 		if err != nil {
 			return model.Proposal{}, fmt.Errorf("analyze semantic impact: %w", err)
 		}
-		if len(semantic) == 0 || !json.Valid(semantic) {
-			return model.Proposal{}, fmt.Errorf("semantic analyzer returned invalid JSON: %w", model.ErrInvalid)
-		}
-		if _, err := model.DecodeSemanticImpact(semantic, checked.base); err != nil {
+		if proposal.Impact.Semantic, err = model.DecodeSemanticImpact(semantic, checked.base); err != nil {
 			return model.Proposal{}, err
 		}
-		proposal.Impact.Semantic = append(json.RawMessage(nil), semantic...)
 	}
 	if attempt > 0 {
 		return e.store.SaveExecutionProposal(ctx, proposal, attempt)
@@ -127,10 +115,10 @@ func (e *Engine) prepare(ctx context.Context, proposal model.Proposal, analyzeSe
 
 func Decide(proposal model.Proposal, state model.ApprovalState, decider model.Author, at time.Time) (model.Proposal, error) {
 	if proposal.ApprovalState != model.ApprovalPending || proposal.DecidedBy != nil || proposal.DecidedAt != nil {
-		return model.Proposal{}, fmt.Errorf("proposal is not pending: %w", ErrInvalidState)
+		return model.Proposal{}, fmt.Errorf("proposal is not pending: %w", model.ErrStateConflict)
 	}
 	if state != model.ApprovalApproved && state != model.ApprovalRejected {
-		return model.Proposal{}, fmt.Errorf("decision must approve or reject: %w", ErrInvalidState)
+		return model.Proposal{}, fmt.Errorf("decision must approve or reject: %w", model.ErrInvalid)
 	}
 	if at.IsZero() {
 		return model.Proposal{}, fmt.Errorf("decision time is required: %w", model.ErrInvalid)
@@ -138,9 +126,6 @@ func Decide(proposal model.Proposal, state model.ApprovalState, decider model.Au
 	proposal.ApprovalState = state
 	proposal.DecidedBy = &decider
 	proposal.DecidedAt = &at
-	if err := proposal.Validate(); err != nil {
-		return model.Proposal{}, err
-	}
 	return proposal, nil
 }
 
@@ -166,9 +151,6 @@ func (e *Engine) prepareCommit(ctx context.Context, approved model.Proposal) (mo
 	if approved.ApprovalState != model.ApprovalApproved {
 		return model.Proposal{}, model.ErrNotApproved
 	}
-	if err := approved.Validate(); err != nil {
-		return model.Proposal{}, err
-	}
 	checked, err := e.validateAndAnalyze(ctx, approved)
 	if err != nil {
 		return model.Proposal{}, err
@@ -186,12 +168,13 @@ func (e *Engine) prepareCommit(ctx context.Context, approved model.Proposal) (mo
 	if err := authorize(approved, checked.base, basis); err != nil {
 		return model.Proposal{}, err
 	}
-	return withImpact(approved, checked.impact)
+	approved.Impact.Structural = &checked.impact
+	return approved, nil
 }
 
 func (e *Engine) Reject(ctx context.Context, rejected model.Proposal) (model.Proposal, error) {
 	if rejected.ApprovalState != model.ApprovalRejected {
-		return model.Proposal{}, fmt.Errorf("reject requires a rejected proposal: %w", ErrInvalidState)
+		return model.Proposal{}, fmt.Errorf("reject requires a rejected proposal: %w", model.ErrInvalid)
 	}
 	return e.store.RejectProposal(ctx, rejected)
 }
@@ -223,47 +206,12 @@ func (e *Engine) PrepareRevert(
 		return model.Proposal{}, err
 	}
 
-	keys := make([]string, 0, len(currentState)+len(targetState))
-	seen := make(map[string]struct{}, len(currentState)+len(targetState))
-	for key := range currentState {
-		seen[key] = struct{}{}
-		keys = append(keys, key)
-	}
-	for key := range targetState {
-		if _, ok := seen[key]; !ok {
-			keys = append(keys, key)
-		}
-	}
-	slices.Sort(keys)
-	patches := make([]model.Patch, 0, len(keys))
-	for _, key := range keys {
-		currentDocument, inCurrent := currentState[key]
-		targetDocument, inTarget := targetState[key]
-		ref := currentDocument.Document
-		if !inCurrent {
-			ref = targetDocument.Document
-		}
-		// 只追加文档（裁决）不随回滚变化：历史记录不是可回退的内容。
-		if spec, _ := model.DocumentType(ref.Kind); spec.AppendOnly {
-			continue
-		}
-		switch {
-		case !inTarget:
-			patches = append(patches, model.Patch{Document: currentDocument.Document, Operation: model.PatchDelete})
-		case !inCurrent || !bytes.Equal(currentDocument.Content, targetDocument.Content):
-			content, err := model.RevertContent(ref, currentDocument.Content, targetDocument.Content)
-			if err != nil {
-				return model.Proposal{}, err
-			}
-			patches = append(patches, model.Patch{
-				Document:  targetDocument.Document,
-				Operation: model.PatchPut,
-				Content:   content,
-			})
-		}
+	patches, err := model.StatePatches(currentState, targetState)
+	if err != nil {
+		return model.Proposal{}, err
 	}
 	if len(patches) == 0 {
-		return model.Proposal{}, fmt.Errorf("revision %d already matches current state: %w", to, ErrInvalidState)
+		return model.Proposal{}, fmt.Errorf("revision %d already matches current state: %w", to, model.ErrInvalid)
 	}
 	return e.Prepare(ctx, model.Proposal{
 		ID:            id,
@@ -309,36 +257,31 @@ func (e *Engine) Undo(ctx context.Context, changeSetID string) ([]model.Patch, m
 			}
 		}
 	}
-	version := func(ref model.DocumentRef, at model.Revision) (json.RawMessage, error) {
+	collect := func(set model.DocumentSet, ref model.DocumentRef, at model.Revision) error {
 		if at == model.InitialRevision {
-			return nil, nil
+			return nil
 		}
 		document, err := e.store.GetDocument(ctx, target, ref, at)
 		if errors.Is(err, model.ErrNotFound) {
-			return nil, nil
+			return nil
 		}
-		return document.Content, err
+		if err == nil {
+			set[ref.Key()] = document
+		}
+		return err
 	}
-	var patches []model.Patch
+	before, now := make(model.DocumentSet), make(model.DocumentSet)
 	for _, ref := range refs {
-		before, err := version(ref, changeSet.NewRevision-1)
-		if err != nil {
+		if err := collect(before, ref, changeSet.NewRevision-1); err != nil {
 			return nil, 0, err
 		}
-		now, err := version(ref, current)
-		if err != nil {
+		if err := collect(now, ref, current); err != nil {
 			return nil, 0, err
 		}
-		switch {
-		case before == nil && now != nil:
-			patches = append(patches, model.Patch{Document: ref, Operation: model.PatchDelete})
-		case before != nil:
-			content, err := model.RevertContent(ref, now, before)
-			if err != nil {
-				return nil, 0, err
-			}
-			patches = append(patches, model.Patch{Document: ref, Operation: model.PatchPut, Content: content})
-		}
+	}
+	patches, err := model.StatePatches(now, before)
+	if err != nil {
+		return nil, 0, err
 	}
 	if len(patches) == 0 {
 		return nil, 0, fmt.Errorf("change set %q has nothing to undo: %w", changeSetID, model.ErrInvalid)
@@ -348,7 +291,7 @@ func (e *Engine) Undo(ctx context.Context, changeSetID string) ([]model.Patch, m
 
 // analysis 是一次确定性校验的结果：结构影响、基线状态与提案所属任务。
 type analysis struct {
-	impact StructuralImpact
+	impact model.StructuralImpact
 	base   model.DocumentSet
 	task   *model.Operation
 }
@@ -357,15 +300,6 @@ func unionRefs(left, right []model.DocumentRef) []model.DocumentRef {
 	refs := slices.Concat(left, right)
 	slices.SortFunc(refs, compareDocumentRef)
 	return slices.CompactFunc(refs, func(a, b model.DocumentRef) bool { return a.Key() == b.Key() })
-}
-
-func withImpact(proposal model.Proposal, impact StructuralImpact) (model.Proposal, error) {
-	payload, err := json.Marshal(impact)
-	if err != nil {
-		return model.Proposal{}, fmt.Errorf("marshal structural impact: %w", err)
-	}
-	proposal.Impact.Structural = payload
-	return proposal, nil
 }
 
 func (e *Engine) validateAndAnalyze(ctx context.Context, change model.Proposal) (analysis, error) {
@@ -461,10 +395,8 @@ func (e *Engine) loadState(ctx context.Context, target model.AuthorityTarget, at
 		if err != nil {
 			return nil, err
 		}
+		// 已存文档在提交时校验过，这里不再重验。
 		for _, document := range documents {
-			if err := model.ValidateDocumentContent(document.Document, document.Content); err != nil {
-				return nil, fmt.Errorf("stored document %q is invalid: %w", document.Document.Key(), err)
-			}
 			state[document.Document.Key()] = document
 		}
 	}

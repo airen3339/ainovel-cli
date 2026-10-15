@@ -76,7 +76,7 @@ func TestCreationRunSingleActivePerProject(t *testing.T) {
 		t.Fatalf("terminal run must not transition, got %v", err)
 	}
 	if _, err := s.UpdateCreationRunStrategy(ctx, first.ID, model.CreationRunStrategy{
-		ReviewCadence: model.ReviewPerPlanWindow, AutoRepairBudget: 3,
+		AutoRepairBudget: 3,
 	}, now.Add(4*time.Minute)); !errors.Is(err, model.ErrStateConflict) {
 		t.Fatalf("terminal run must not change strategy, got %v", err)
 	}
@@ -184,7 +184,7 @@ func TestCreateOperationBindsRunLineageTransactionally(t *testing.T) {
 
 func testRunStrategy() model.CreationRunStrategy {
 	return model.CreationRunStrategy{
-		ReviewCadence: model.ReviewPerPlanWindow, AutoRepairBudget: 3,
+		AutoRepairBudget: 3,
 	}
 }
 

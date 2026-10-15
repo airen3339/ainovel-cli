@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/voocel/ainovel-cli/internal/app/workbench"
 	domainmodel "github.com/voocel/ainovel-cli/internal/domain/model"
 )
 
@@ -152,7 +153,7 @@ func (m model) composerColumn(width int) homeColumn {
 
 	labels := make([]string, len(approvalOrder))
 	for i, policy := range approvalOrder {
-		labels[i] = approvalLabel(policy)
+		labels[i] = workbench.ApprovalLabel(policy)
 	}
 	c.options(home.focus == focusApproval, "推进", focusApproval, labels, slices.Index(approvalOrder, home.approval), approvalNote(home.approval))
 	c.add("")
@@ -336,7 +337,7 @@ func entryState(state domainmodel.CreationRunState) string {
 	case domainmodel.RunRunning:
 		return benchTheme.Accent.Render("◉ " + runStateLabel(state))
 	case domainmodel.RunCompleted:
-		return styleNotice.Render("✓ " + runStateLabel(state))
+		return benchTheme.Success.Render("✓ " + runStateLabel(state))
 	case domainmodel.RunFailed:
 		return benchTheme.Error.Render("! " + runStateLabel(state))
 	case domainmodel.RunPaused:

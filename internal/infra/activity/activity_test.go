@@ -2,10 +2,8 @@ package activity
 
 import (
 	"fmt"
-	"strings"
 	"testing"
 	"time"
-	"unicode/utf8"
 )
 
 func at() time.Time { return time.Date(2026, 8, 30, 12, 0, 0, 0, time.UTC) }
@@ -72,24 +70,17 @@ func TestPublishFoldsLifecycleAndMergesDeltas(t *testing.T) {
 	}
 
 	// 说明性文字折叠为辅助行尾部；构思只是状态位；重试是可见条目。
-	text := toolEvent(Text, "")
-	text.Text = "先梳理一下上一章的伏笔"
-	hub.Publish(text)
-	hub.Publish(toolEvent(Thinking, ""))
 	retry := toolEvent(Retry, "")
 	retry.Attempt = 2
 	hub.Publish(retry)
 	snapshot, _ = hub.Snapshot("book-1")
-	if snapshot.Note == "" || !snapshot.Thinking {
-		t.Fatalf("note=%q thinking=%v", snapshot.Note, snapshot.Thinking)
-	}
 	if last := snapshot.Entries[len(snapshot.Entries)-1]; last.Kind != Retry || last.Attempt != 2 {
 		t.Fatalf("retry entry = %#v", last)
 	}
 
 	// 条目有界：同名工具的多次调用按 CallID 各成一条，超出后丢最旧的。
 	for i := 0; i < maxEntries*2; i++ {
-		event := toolEvent(ToolStart, "workspace_list")
+		event := toolEvent(ToolStart, "workspace_read")
 		event.CallID = fmt.Sprintf("call-%d", i)
 		hub.Publish(event)
 	}
@@ -208,11 +199,11 @@ func TestNewRunResetsSnapshot(t *testing.T) {
 	hub := NewHub()
 	hub.Publish(toolEvent(ToolStart, "authority_read"))
 	previous, _ := hub.Snapshot("book-1")
-	next := toolEvent(ToolStart, "workspace_list")
+	next := toolEvent(ToolStart, "workspace_read")
 	next.RunID, next.OperationID = "run-2", "op-9"
 	hub.Publish(next)
 	snapshot, _ := hub.Snapshot("book-1")
-	if snapshot.RunID != "run-2" || len(snapshot.Entries) != 1 || snapshot.Entries[0].Tool != "workspace_list" {
+	if snapshot.RunID != "run-2" || len(snapshot.Entries) != 1 || snapshot.Entries[0].Tool != "workspace_read" {
 		t.Fatalf("snapshot after new run = %#v", snapshot)
 	}
 	if snapshot.Seq <= previous.Seq {
@@ -221,42 +212,8 @@ func TestNewRunResetsSnapshot(t *testing.T) {
 	// 快照是副本：改动返回值不影响 Hub 内部状态。
 	snapshot.Entries[0].Tool = "tampered"
 	fresh, _ := hub.Snapshot("book-1")
-	if fresh.Entries[0].Tool != "workspace_list" {
+	if fresh.Entries[0].Tool != "workspace_read" {
 		t.Fatal("snapshot must be a copy")
-	}
-}
-
-// 逐字预览折叠：Prose 按调用累计，换 CallID 或换任务即整体重置（重试与
-// 二次落笔不残留上一稿），越界裁剪对齐 rune 边界，快照副本与内部缓冲隔离。
-func TestPublishFoldsProseByCall(t *testing.T) {
-	hub := NewHub()
-	prose := func(callID, text string) Event {
-		event := toolEvent(Prose, "workspace_put_chapter")
-		event.CallID, event.Text = callID, text
-		return event
-	}
-	hub.Publish(prose("call-1", "第一稿"))
-	hub.Publish(prose("call-1", "，继续"))
-	snapshot, _ := hub.Snapshot("book-1")
-	if string(snapshot.Prose) != "第一稿，继续" || snapshot.ProseCallID != "call-1" {
-		t.Fatalf("prose = %q callID = %q", snapshot.Prose, snapshot.ProseCallID)
-	}
-	copied := snapshot.Prose
-	hub.Publish(prose("call-2", "重来"))
-	if string(copied) != "第一稿，继续" {
-		t.Fatal("snapshot prose must be an isolated copy")
-	}
-	snapshot, _ = hub.Snapshot("book-1")
-	if string(snapshot.Prose) != "重来" {
-		t.Fatalf("after call switch = %q", snapshot.Prose)
-	}
-	// 换任务清空（与 Note/Thinking 同步）。
-	next := prose("call-2", "x")
-	next.OperationID = "op-2"
-	hub.Publish(next)
-	snapshot, _ = hub.Snapshot("book-1")
-	if string(snapshot.Prose) != "x" {
-		t.Fatalf("after operation switch = %q", snapshot.Prose)
 	}
 }
 
@@ -272,62 +229,5 @@ func TestPublishProseStallAppendsWarningEntry(t *testing.T) {
 	entry := snapshot.Entries[0]
 	if entry.Kind != ProseStall || entry.CallID != "call-1" || !entry.Done {
 		t.Fatalf("stall entry = %+v", entry)
-	}
-}
-
-func TestAppendProseTrimsAtRuneBoundary(t *testing.T) {
-	var buf []byte
-	chunk := strings.Repeat("汉", 1024) // 3 KiB
-	for i := 0; i < 12; i++ {          // 36 KiB > max+slack
-		buf = appendProse(buf, chunk)
-	}
-	if len(buf) > maxProseBytes+proseSlack {
-		t.Fatalf("buffer exceeds bound: %d", len(buf))
-	}
-	if len(buf) < maxProseBytes-utf8.UTFMax {
-		t.Fatalf("trim cut too much: %d", len(buf))
-	}
-	if !utf8.Valid(buf) {
-		t.Fatal("trim must keep rune boundary")
-	}
-}
-
-func TestThinkingPreservesBoundedOriginalTailAndResetsBetweenTasks(t *testing.T) {
-	hub := NewHub()
-	think := toolEvent(Thinking, "")
-	// Preserve meaningful multiline text beyond the short auxiliary note limit.
-	think.Text = strings.Repeat("先检查人物动机。\n", 40)
-	hub.Publish(think)
-	snapshot, _ := hub.Snapshot("book-1")
-	if !snapshot.Thinking || snapshot.ThinkingNote != think.Text {
-		t.Fatal("thinking fragment was summarized or truncated to the auxiliary note limit")
-	}
-	boundary := strings.Repeat("思", maxThinkingSize-1) + "😀"
-	think.OperationID, think.Text = "op-2", boundary
-	hub.Publish(think)
-	snapshot, _ = hub.Snapshot("book-1")
-	if snapshot.ThinkingNote != boundary {
-		t.Fatal("exact rune boundary was not preserved")
-	}
-	think.Text = "\n收束伏笔"
-	hub.Publish(think)
-	snapshot, _ = hub.Snapshot("book-1")
-	combined := []rune(boundary + think.Text)
-	want := string(combined[len(combined)-maxThinkingSize:])
-	if !utf8.ValidString(snapshot.ThinkingNote) || snapshot.ThinkingNote != want {
-		t.Fatal("thinking buffer must retain the exact UTF-8 tail at its independent limit")
-	}
-	think.Text = "" // A status-only update does not erase already supplied text.
-	hub.Publish(think)
-	snapshot, _ = hub.Snapshot("book-1")
-	if snapshot.ThinkingNote != want {
-		t.Fatal("status-only thinking event erased the fragment")
-	}
-	next := toolEvent(ToolStart, "workspace_list")
-	next.OperationID = "op-3"
-	hub.Publish(next)
-	snapshot, _ = hub.Snapshot("book-1")
-	if snapshot.Thinking || snapshot.ThinkingNote != "" {
-		t.Fatal("new task retained the previous thinking fragment")
 	}
 }

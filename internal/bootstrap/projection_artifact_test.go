@@ -13,7 +13,7 @@ func TestProjectionPreservesAttachmentsAndRejectsMissingMediaBeforeImport(t *tes
 	ctx := context.Background()
 	api, _ := newRenderingApp(t, model.ApprovalAuto)
 	run := startRenderingRun(t, api, 1, testTime())
-	if _, err := api.Runs.Drive(ctx, run, renderingTasks(api), renderingCommand(testTime())); err != nil {
+	if _, err := api.Runs.Drive(ctx, run, renderingTasks(api), testTime()); err != nil {
 		t.Fatal(err)
 	}
 	projection, err := api.Projects.ExportProject(ctx, renderingProject, 0)
@@ -35,7 +35,7 @@ func TestProjectionPreservesAttachmentsAndRejectsMissingMediaBeforeImport(t *tes
 		t.Fatal(err)
 	}
 	other := newTestApp(openTestStore(t))
-	if _, err := other.Projects.ImportNewProject(ctx, "import", "user-1", "跨库导入", projection, testTime()); !errors.Is(err, model.ErrNotFound) {
+	if _, err := other.Projects.ImportProject(ctx, "import", "user-1", "跨库导入", projection, testTime()); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("missing media import was accepted: %v", err)
 	}
 	if _, err := other.Projects.Project(ctx, renderingProject, 0); !errors.Is(err, model.ErrNotFound) {

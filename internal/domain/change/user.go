@@ -11,11 +11,8 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain/model"
 )
 
-func (s *Engine) CommitUser(
-	ctx context.Context,
-	requested model.Proposal,
-	decidedAt time.Time,
-) (model.ChangeSet, error) {
+// CommitUser 由用户自己批准并提交一次改动：决定时间即提出时间。同一 ID 同一内容重试幂等。
+func (s *Engine) CommitUser(ctx context.Context, requested model.Proposal) (model.ChangeSet, error) {
 	if requested.Author.Kind != model.AuthorUser || requested.ApprovalState != model.ApprovalPending {
 		return model.ChangeSet{}, fmt.Errorf("direct user commit requires a pending user proposal: %w", model.ErrInvalid)
 	}
@@ -42,7 +39,7 @@ func (s *Engine) CommitUser(
 	case model.ApprovalRejected:
 		return model.ChangeSet{}, fmt.Errorf("proposal %q was rejected: %w", prepared.ID, model.ErrStateConflict)
 	case model.ApprovalPending:
-		approved, err := Decide(prepared, model.ApprovalApproved, requested.Author, decidedAt)
+		approved, err := Decide(prepared, model.ApprovalApproved, requested.Author, requested.CreatedAt)
 		if err != nil {
 			return model.ChangeSet{}, err
 		}

@@ -51,10 +51,18 @@ type liveUser struct {
 	retried uint64 // 已看过的实时活动条目
 	cue     *liveCue
 	watch   func(workbench.WorkbenchSnapshot) // 推进途中每次看现场时调用
+	steps   []liveStep                        // 推进途中按入稿章数依次做的事
 }
 
 // liveCue 是写作途中插的一句话：现场走到 phase 时说。
 type liveCue struct{ phase, words string }
+
+// liveStep 是推进途中的一件事：入稿到第 at 章后做。
+type liveStep struct {
+	at   int
+	name string
+	do   func()
+}
 
 func openLive(t *testing.T) *liveUser {
 	path := os.Getenv("AINOVEL_LIVE")
@@ -148,6 +156,120 @@ func used(turn []chief.Entry, tool string) bool {
 	return slices.ContainsFunc(turn, func(entry chief.Entry) bool { return entry.Tool == tool && entry.Done && !entry.Failed })
 }
 
+// chiefWrites 是改动作品或创作的主编工具：用户只是提问时一个都不该碰。
+var chiefWrites = []string{"note_requirement", "retire_requirement", "reject_draft", "set_length",
+	"pause_creation", "resume_creation", "propose_change", "revert_change"}
+
+// ask 问一句、不要求改什么：主编只读和答，要求与待确认的修改都不变。
+func (u *liveUser) ask(words string, chapter int) {
+	u.t.Helper()
+	before := u.snapshot()
+	for _, entry := range u.say(words, chapter) {
+		if slices.Contains(chiefWrites, entry.Tool) {
+			u.t.Errorf("只是提问，主编却动了手（%s）：%s", entry.Tool, words)
+		}
+	}
+	if after := u.snapshot(); len(after.Directives) != len(before.Directives) || after.Change != nil && before.Change == nil {
+		u.t.Errorf("只是提问，书的要求或修改变了：%s", words)
+	}
+}
+
+// pauseAndResume 让主编停下，停着时做 meanwhile（说的话不带着续写），再让它继续。
+func (u *liveUser) pauseAndResume(meanwhile func()) {
+	u.t.Helper()
+	if turn := u.say("先停一下，我想想后面怎么走。", 0); !used(turn, "pause_creation") || u.session.Production().Writing {
+		u.t.Errorf("主编没有停下创作")
+	}
+	meanwhile()
+	if u.session.Production().Writing {
+		u.t.Errorf("停着时说的话让创作接着写了")
+	}
+	if turn := u.say("想好了，继续写吧。", 0); !used(turn, "resume_creation") || !u.session.Production().Writing {
+		u.t.Errorf("主编没有接着写")
+	}
+}
+
+// retire 让主编退掉一条要求：之后生效的要求里没有它。
+func (u *liveUser) retire(words string, match func(model.Directive) bool) {
+	u.t.Helper()
+	if turn := u.say(words, 0); !used(turn, "retire_requirement") || liveDirective(u.snapshot(), match) != nil {
+		u.t.Errorf("主编没有退掉要求：%s", words)
+	}
+}
+
+// retitleAndUndo 让主编改第 number 章的标题，再让它撤销：标题回到原样。
+func (u *liveUser) retitleAndUndo(number int, title string) {
+	u.t.Helper()
+	original := titleAt(u.snapshot(), number)
+	u.say(fmt.Sprintf("把第 %d 章的标题改成《%s》。", number, title), 0)
+	u.settleChange()
+	if got := titleAt(u.snapshot(), number); got != title {
+		u.t.Errorf("第 %d 章的标题没改成《%s》：《%s》", number, title, got)
+	}
+	if turn := u.say("算了，刚才改标题那个撤销吧。", 0); !used(turn, "revert_change") {
+		u.t.Errorf("主编没有撤销修改")
+	}
+	u.settleChange()
+	if got := titleAt(u.snapshot(), number); got != original {
+		u.t.Errorf("撤销后第 %d 章的标题是《%s》，原来是《%s》", number, got, original)
+	}
+}
+
+// settleChange 像守着工作台的用户：有等确认的修改就按 y。改标题不该与已写的章有出入，
+// 真出了就记错、选第一种处置接着跑。
+func (u *liveUser) settleChange() {
+	u.t.Helper()
+	snap := u.snapshot()
+	switch change := snap.Change; {
+	case change == nil || change.Stale:
+	case len(change.Options) > 0:
+		u.t.Errorf("意外的确认卡：%v", change.Findings)
+		if err := u.session.Resolve(u.ctx, change.Proposal.ID, change.Options[0].Strategy); err != nil {
+			u.t.Fatal(err)
+		}
+	default:
+		u.confirm(snap)
+	}
+}
+
+// reworkOnly 在完本的书上点名返工第 number 章（D78）：记成那一章的返工要求，开新一轮，
+// 只重写那一章。
+func (u *liveUser) reworkOnly(number int, words string) workbench.WorkbenchSnapshot {
+	u.t.Helper()
+	snap := u.snapshot()
+	first := snap.Run.ID
+	before := make(map[int]string)
+	for _, chapter := range snap.Manuscript {
+		before[chapter.Number] = liveText(chapter)
+	}
+	u.say(words, number)
+	snap = u.snapshot()
+	u.directives(snap)
+	if rework := liveDirective(snap, func(d model.Directive) bool { return d.Rework }); rework == nil || rework.Scope != model.DirectiveScopeChapters(number, number) {
+		u.t.Errorf("D78：没有记成第 %d 章的返工要求：%+v", number, rework)
+	}
+	snap = u.advance(completed)
+	if snap.Run.ID == first {
+		u.t.Errorf("D78：完本后的返工没有开新一轮")
+	}
+	for _, chapter := range snap.Manuscript {
+		if changed := liveText(chapter) != before[chapter.Number]; changed != (chapter.Number == number) {
+			u.t.Errorf("D78：第 %d 章改过=%t，只该重写第 %d 章", chapter.Number, changed, number)
+		}
+	}
+	return snap
+}
+
+// titleAt 是第 number 章的规划标题。
+func titleAt(snap workbench.WorkbenchSnapshot, number int) string {
+	for _, entry := range snap.Outline {
+		if entry.Node.Kind == model.PlanChapter && entry.Number == number {
+			return entry.Node.Title
+		}
+	}
+	return ""
+}
+
 // idle 等推进与主编都停下；途中按 cue 插话。现场 90 分钟没有变化算卡住。
 func (u *liveUser) idle() {
 	u.t.Helper()
@@ -180,6 +302,12 @@ func (u *liveUser) idle() {
 			u.retries()
 			if u.watch != nil {
 				u.watch(snap)
+			}
+			if len(u.steps) > 0 && len(snap.Manuscript) >= u.steps[0].at {
+				step := u.steps[0]
+				u.steps = u.steps[1:]
+				u.log("—— 入稿 %d 章：%s", len(snap.Manuscript), step.name)
+				step.do()
 			}
 			if snap.Change != nil && !snap.Change.Stale && len(snap.Change.Options) == 0 {
 				u.confirm(snap) // 守着工作台的用户看到确认卡就按 y，不等创作停下
@@ -277,23 +405,23 @@ func (u *liveUser) approve(snap workbench.WorkbenchSnapshot) {
 	u.session.Write(chief.WriteParams{Chapters: novelapp.KeepChapters})
 }
 
-// accept 是修订预算用尽时按 y 接受现状：阻塞意见逐条入账为用户裁决（D43）。
+// accept 是修订预算用尽时按 y 接受现状：阻塞意见一次入账为用户裁决（D43）。
 func (u *liveUser) accept(snap workbench.WorkbenchSnapshot) {
 	u.t.Helper()
 	u.log("y 接受现状：%s", snap.Decision.Reason)
+	var held []string
+	for _, finding := range snap.Findings {
+		if finding.ChapterID == snap.Decision.Held && finding.Severity == model.FindingBlocking {
+			u.log("  接受的阻塞意见：%s", finding.Note)
+			held = append(held, finding.ID)
+		}
+	}
 	now := time.Now().UTC()
-	base := projectdoc.NewID("adjudication", now)
-	for i, finding := range snap.Findings {
-		if finding.ChapterID != snap.Decision.Held || finding.Severity != model.FindingBlocking {
-			continue
-		}
-		u.log("  接受的阻塞意见：%s", finding.Note)
-		if _, err := u.api.Reviews.AddAdjudication(u.ctx, novelapp.AddAdjudicationCommand{
-			ProjectID: u.project, ChangeID: fmt.Sprintf("%s:%d", base, i+1), UserID: liveUserID,
-			Finding: finding.ID, Reason: "接受当前版本", CreatedAt: now,
-		}); err != nil {
-			u.t.Fatal(err)
-		}
+	if _, err := u.api.Reviews.AddAdjudication(u.ctx, novelapp.AddAdjudicationCommand{
+		ProjectID: u.project, ChangeID: projectdoc.NewID("adjudication", now), UserID: liveUserID,
+		Findings: held, Reason: "接受当前版本", CreatedAt: now,
+	}); err != nil {
+		u.t.Fatal(err)
 	}
 	u.session.Write(chief.WriteParams{Chapters: novelapp.KeepChapters})
 }
@@ -317,8 +445,8 @@ func completed(snap workbench.WorkbenchSnapshot) bool {
 
 func liveDirective(snap workbench.WorkbenchSnapshot, match func(model.Directive) bool) *model.Directive {
 	for _, directive := range snap.Directives {
-		if match(directive) {
-			return &directive
+		if match(directive.Directive) {
+			return &directive.Directive
 		}
 	}
 	return nil
@@ -412,28 +540,93 @@ func TestLiveChiefAcceptance(t *testing.T) {
 	}
 
 	u.log("D78：完本后点名返工第 3 章")
-	first := snap.Run.ID
-	before := make(map[int]string)
-	for _, chapter := range snap.Manuscript {
-		before[chapter.Number] = liveText(chapter)
+	u.reworkOnly(3, "第 3 章太拖了，紧凑点重写。")
+}
+
+// 主编的对话面（短）：只提问时不动书；停下创作，停着时记一条要求又退掉，再继续；完本后
+// 改一章标题再撤销；最后把篇幅从 6 章改成 8 章接着写。短到可以连跑几遍看通过率。
+func TestLiveChiefConversation(t *testing.T) {
+	u := openLive(t)
+	hook := func(d model.Directive) bool { return strings.Contains(d.Text, "钩子") }
+	u.steps = []liveStep{
+		{1, "只提问", func() { u.ask("第 1 章写得怎么样？哪里还能更好？", 1) }},
+		{2, "停下、记一条要求又退掉、继续", func() {
+			u.pauseAndResume(func() {
+				if turn := u.say("以后每章结尾都留个钩子。", 0); !used(turn, "note_requirement") || liveDirective(u.snapshot(), hook) == nil {
+					t.Errorf("没有记下留钩子的要求")
+				}
+				u.retire("算了，留钩子那条要求不要了。", hook)
+			})
+		}},
 	}
-	u.say("第 3 章太拖了，紧凑点重写。", 3)
-	snap = u.snapshot()
-	u.directives(snap)
-	if rework := liveDirective(snap, func(d model.Directive) bool { return d.Rework }); rework == nil || rework.Scope != model.DirectiveScopeChapters(3, 3) {
-		t.Errorf("D78：没有记成第 3 章的返工要求：%+v", rework)
+	u.session.Write(chief.WriteParams{Premise: livePremise, Chapters: 6, Approval: model.ApprovalAuto})
+	u.advance(completed)
+	if len(u.steps) > 0 {
+		t.Fatalf("没赶上的步骤：%s", u.steps[0].name)
 	}
-	snap = u.advance(completed)
-	if snap.Run.ID == first {
-		t.Errorf("D78：完本后的返工没有开新一轮")
+
+	u.log("完本后改标题再撤销")
+	u.retitleAndUndo(2, "雨夜")
+	u.log("篇幅改成 8 章")
+	if turn := u.say("篇幅改成 8 章，接着写。", 0); !used(turn, "set_length") {
+		t.Errorf("主编没有调篇幅")
 	}
-	for _, chapter := range snap.Manuscript {
-		changed := liveText(chapter) != before[chapter.Number]
-		u.log("第 %d 章 %d 字 · 改过 %t", chapter.Number, chapter.Runes(), changed)
-		if changed != (chapter.Number == 3) {
-			t.Errorf("D78：第 %d 章改过=%t，只该重写第 3 章", chapter.Number, changed)
+	if snap := u.advance(completed); len(snap.Manuscript) != 8 {
+		t.Errorf("改成 8 章后写了 %d 章", len(snap.Manuscript))
+	}
+}
+
+// 主编的对话面（长篇）：40 章自动推进，沿途照常跟主编说话——问刚写的、问很早的、问后面
+// 怎么走都不动书；给后面的章节区间记要求、过了一阵再退掉；点名第 30 章要发生的事；改标题
+// 再撤销；停下再继续；完本后点名返工第 6 章。看书大了以后主编还找不找得准，对话越积越长时
+// 的成本与会话压缩（库里的对话记录）。
+func TestLiveChiefLongBook(t *testing.T) {
+	const chapters = 40
+	u := openLive(t)
+	slow := func(d model.Directive) bool { return strings.Contains(d.Text, "节奏放慢") }
+	crack := func(d model.Directive) bool { return strings.Contains(d.Text, "破绽") }
+	u.steps = []liveStep{
+		{3, "问刚写的", func() { u.ask("第 3 章写得怎么样？哪里还能更好？", 3) }},
+		{8, "给后面的区间记要求", func() {
+			u.say("第 20 到 25 章节奏放慢一点，多写写雨城的街巷。", 0)
+			if d := liveDirective(u.snapshot(), slow); d == nil || d.Scope != model.DirectiveScopeChapters(20, 25) {
+				t.Errorf("没有记成第 20–25 章的要求：%+v", d)
+			}
+		}},
+		{12, "点名第 30 章要发生的事", func() {
+			turn := u.say("第 30 章让局长第一次露出破绽。", 0)
+			if d := liveDirective(u.snapshot(), crack); !used(turn, "propose_change") && (d == nil || !d.Covers(model.DirectiveTarget{ChapterNumber: 30})) {
+				t.Errorf("第 30 章的事既没记成要求也没改进规划：%+v", d)
+			}
+		}},
+		{16, "问很早的", func() { u.ask("第 5 章里发生了什么？我有点记不清了。", 0) }},
+		{21, "退掉区间要求", func() { u.retire("第 20 到 25 章放慢节奏那条要求不要了。", slow) }},
+		{26, "改标题再撤销", func() { u.retitleAndUndo(12, "旧账") }},
+		{31, "问后面怎么走", func() { u.ask("到现在主线推进得怎么样？接下来打算怎么走？", 0) }},
+		{35, "停下再继续", func() { u.pauseAndResume(func() {}) }},
+	}
+	u.session.Write(chief.WriteParams{Premise: livePremise, Chapters: chapters, Approval: model.ApprovalAuto})
+	u.book(chapters, workbench.WorkbenchSnapshot{})
+	if len(u.steps) > 0 {
+		t.Fatalf("没赶上的步骤：%s", u.steps[0].name)
+	}
+	snap := u.snapshot()
+	if d := liveDirective(snap, crack); d != nil {
+		for _, r := range snap.Briefs[30].Requirements {
+			if r.ID == novelapp.DirectiveRequirementID(d.ID) {
+				u.log("第 30 章的要求「%s」：%s", r.Text, r.Status)
+				if r.Status != model.CheckSatisfied {
+					t.Errorf("第 30 章的要求没有兑现：%s", r.Status)
+				}
+			}
 		}
 	}
+
+	u.log("D78：完本后点名返工第 6 章")
+	snap = u.reworkOnly(6, "第 6 章太拖了，紧凑点重写。")
+	chiefUsage := snap.Usage.Roles[model.ChiefRole]
+	u.log("主编：输入 %dK（缓存 %dK）输出 %dK · 用时 %s", chiefUsage.Usage.Input/1000, chiefUsage.Usage.CacheRead/1000,
+		chiefUsage.Usage.Output/1000, chiefUsage.Worked.Round(time.Second))
 }
 
 func outlineTitle(snap workbench.WorkbenchSnapshot, planID string) string {

@@ -139,7 +139,7 @@ func (m model) chapterState(node workbench.OutlineNode) string {
 	switch {
 	case node.State == workbench.ChapterConfirmed:
 		chapter, _ := chapterByNumber(m.bench.snap.Manuscript, node.Number)
-		return styleNotice.Render(fmt.Sprintf("✓ %s 字", groupDigits(chapterWords(chapter))))
+		return benchTheme.Success.Render(fmt.Sprintf("✓ %s 字", groupDigits(chapter.Runes())))
 	case node.State == workbench.ChapterPending || node.Proposed:
 		return benchTheme.Warning.Render("◇ 待确认")
 	case node.State == workbench.ChapterInProgress && m.bench.writing:
@@ -155,7 +155,7 @@ func (m model) chapterState(node workbench.OutlineNode) string {
 func checkMark(status string) string {
 	switch status {
 	case domainmodel.CheckSatisfied:
-		return styleNotice.Render("✓")
+		return benchTheme.Success.Render("✓")
 	case domainmodel.CheckViolated:
 		return benchTheme.Error.Render("!")
 	case domainmodel.CheckPending:
@@ -197,7 +197,7 @@ var factKinds = map[domainmodel.CanonFactKind]string{
 
 // factLine 一条设定的整行写法（/view、/review）：种类标签、主体、内容。
 func factLine(fact workbench.Fact) string {
-	return styleHint.Render(factKinds[fact.Kind]+" ") + fact.Subject + "：" + fact.Text
+	return benchTheme.Muted.Render(factKinds[fact.Kind]+" ") + fact.Subject + "：" + fact.Text
 }
 
 // sectionBrief 卷/弧：进度、概要，以及挂在这一部分上的要求（输入框此时的作用域就是它）。
@@ -262,7 +262,7 @@ func (m model) bookBrief(r *railText) {
 	for _, directive := range snap.Directives {
 		text := directive.Text
 		if directive.Scope != domainmodel.DirectiveScopeProject {
-			text += " · " + m.directiveScopeLabel(directive.Scope)
+			text += " · " + directive.Where
 		}
 		r.item(mark, text, benchTheme.Text)
 	}
@@ -303,12 +303,12 @@ func (m model) crewLines(role string, width int) []string {
 	switch {
 	case role == domainmodel.ChiefRole:
 		// 主编不经任务执行：亮不亮看它是否正在回话，没有用时。
-		mark, worked = styleNotice.Render("✓"), ""
+		mark, worked = benchTheme.Success.Render("✓"), ""
 		if m.bench.thread.Busy {
-			mark, name = benchTheme.Accent.Render("◉"), styleFocus.Render(roleNames[role])
+			mark, name = benchTheme.Accent.Render("◉"), benchTheme.Focus.Render(roleNames[role])
 		}
 	case stats.State == domainmodel.OperationRunning && m.bench.writing:
-		name = styleFocus.Render(roleNames[role])
+		name = benchTheme.Focus.Render(roleNames[role])
 	}
 	price := ""
 	if stats.Usage.Cost > 0 {
@@ -334,7 +334,7 @@ func (m model) stateMark(state domainmodel.OperationState) string {
 	case domainmodel.OperationCancelled, domainmodel.OperationPaused:
 		return benchTheme.Muted.Render("◦")
 	default:
-		return styleNotice.Render("✓")
+		return benchTheme.Success.Render("✓")
 	}
 }
 

@@ -12,8 +12,9 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain/model"
 )
 
-// 审批（§5.4、D23、D14）：执行收尾只问 Admit——这份提案能否由系统按策略放行、是否
-// 需要独立合规分析；授权时的 guided 检查与这里共用同一个 complianceGap。
+// 审批（§5.4、D23、D14）：调用方只问 Admit——这份提案能否由系统按策略放行、是否需要
+// 独立合规分析；能放行就以 Admission.Approve 批准后提交。提交时的授权检查与这里是
+// 同一个 authorize，所以 Admit 放行的提交不会再被权限挡下。
 
 // Admission 是执行提案的放行结论。
 type Admission struct {
@@ -45,21 +46,43 @@ func (e *Engine) Admit(ctx context.Context, proposal model.Proposal) (Admission,
 	if err != nil {
 		return Admission{}, err
 	}
-	switch {
-	case policy == model.ApprovalCustom:
-		return Admission{}, fmt.Errorf("custom approval policy requires an explicit policy contract: %w", model.ErrInvalid)
-	case policy == model.ApprovalManual || policy == model.ApprovalMilestone && model.IsMilestone(proposal):
+	if policy == model.ApprovalManual || policy == model.ApprovalMilestone && model.IsMilestone(proposal) {
 		return Admission{Policy: policy, Hold: "proposal awaits user approval"}, nil
 	}
 	admission := Admission{Policy: policy}
-	if admission.Constraints, err = e.constraints(ctx, task, proposal); err != nil || len(admission.Constraints) == 0 {
-		return admission, err
-	}
-	if admission.Basis, err = complianceBasis(proposal, admission.Constraints); err != nil {
+	if admission.Constraints, err = e.constraints(ctx, task, proposal); err != nil {
 		return Admission{}, err
 	}
-	admission.Hold, admission.Analyze, err = complianceGap(proposal, admission.Basis)
-	return admission, err
+	if len(admission.Constraints) > 0 {
+		if admission.Basis, err = complianceBasis(proposal, admission.Constraints); err != nil {
+			return Admission{}, err
+		}
+		if admission.Hold, admission.Analyze, err = complianceGap(proposal, admission.Basis); err != nil || admission.Hold != "" || admission.Analyze {
+			return admission, err
+		}
+	}
+	// 策略放行之外还有授权边界：用户专属文档、锁定、须用户裁决的 AI 变更（D25、D34）。
+	base, err := e.loadState(ctx, proposal.Target, proposal.BaseRevision)
+	if err != nil {
+		return Admission{}, err
+	}
+	decider := admission.decider()
+	proposal.DecidedBy = &decider
+	if err := authorize(proposal, base, admission.Basis); errors.Is(err, ErrUnauthorized) {
+		admission.Hold = err.Error()
+	} else if err != nil {
+		return Admission{}, err
+	}
+	return admission, nil
+}
+
+// Approve 以策略的名义批准提案；只在 Admit 没有给出等待时调用。
+func (a Admission) Approve(proposal model.Proposal, at time.Time) (model.Proposal, error) {
+	return Decide(proposal, model.ApprovalApproved, a.decider(), at)
+}
+
+func (a Admission) decider() model.Author {
+	return model.Author{Kind: model.AuthorSystem, ID: "approval-policy:" + string(a.Policy)}
 }
 
 // effectivePolicy：收紧立即生效来自提案基线上的权威设置，放松不追溯来自快照下限（D23）。
@@ -199,15 +222,9 @@ func complianceBasis(proposal model.Proposal, constraints []model.OwnershipRule)
 // complianceGap 兑现 D14：只有绑定 basis 且结论为 pass 的独立合规证据才能自动放行。
 // 返回等待用户的原因（空串为放行）；uncovered 表示证据缺失或不覆盖当前候选。
 func complianceGap(proposal model.Proposal, basis string) (reason string, uncovered bool, err error) {
-	if len(proposal.Impact.Compliance) == 0 {
+	report := proposal.Impact.Compliance
+	if report == nil {
 		return "semantic compliance evidence is required for locked or guided story constraints", true, nil
-	}
-	var report model.SemanticComplianceReport
-	if err := json.Unmarshal(proposal.Impact.Compliance, &report); err != nil {
-		return "", false, fmt.Errorf("decode semantic compliance report: %w", err)
-	}
-	if err := report.Validate(); err != nil {
-		return "", false, err
 	}
 	if basis == "" || report.BasisDigest != basis {
 		return "semantic compliance evidence does not cover the candidate and current constraints", true, nil
@@ -233,11 +250,7 @@ func (e *Engine) RecordCompliance(
 	if report.BasisDigest == "" {
 		return model.Proposal{}, fmt.Errorf("semantic compliance report must bind its basis: %w", model.ErrInvalid)
 	}
-	payload, err := json.Marshal(report)
-	if err != nil {
-		return model.Proposal{}, fmt.Errorf("encode semantic compliance report: %w", err)
-	}
-	proposal.Impact.Compliance = payload
+	proposal.Impact.Compliance = &report
 	if err := e.store.UpdatePendingProposal(ctx, proposal, attempt, now); err != nil {
 		return model.Proposal{}, err
 	}

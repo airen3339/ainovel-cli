@@ -57,12 +57,7 @@ func chapterBriefs(project projectdoc.Snapshot, final int, current map[string]*n
 		written[chapter.PlanNodeID], numbers[chapter.ID] = chapter, chapter.Number
 	}
 	briefs := make(map[int]ChapterBrief, len(plans))
-	reworks := make(map[string]model.Revision) // 返工要求的核验项 id → 要求入账的 revision
-	for _, directive := range model.ActiveDirectives(project.Directives) {
-		if directive.Rework {
-			reworks[novel.DirectiveRequirementID(directive.ID)] = project.Index[(model.DocumentRef{Kind: model.DocumentDirective, ID: directive.ID}).Key()].Revision
-		}
-	}
+	reworks := novel.ReworksDue(project)
 	effective := make(map[string]model.ReviewVerdict)
 	for number, requirements := range novel.RequirementsByChapter(project, final) {
 		var verdict model.ReviewVerdict
@@ -73,10 +68,8 @@ func chapterBriefs(project projectdoc.Snapshot, final int, current map[string]*n
 			verdict = effective[stored.Key]
 		}
 		brief := briefs[number]
-		chapter, isWritten := written[plans[number-1].ID]
-		revision := project.Index[(model.DocumentRef{Kind: model.DocumentManuscript, ID: chapter.ID}).Key()].Revision
+		due := reworks[written[plans[number-1].ID].ID].Directives
 		for _, requirement := range requirements {
-			noted, rework := reworks[requirement.ID]
 			status := verdict.CheckStatus(requirement.ID)
 			if status == model.CheckPending && satisfied[requirement.ID] {
 				status = model.CheckSatisfied
@@ -84,7 +77,9 @@ func chapterBriefs(project projectdoc.Snapshot, final int, current map[string]*n
 			brief.Requirements = append(brief.Requirements, BriefRequirement{
 				ID: requirement.ID, Text: requirement.Text, Scope: requirement.Scope,
 				Forbidden: requirement.Forbidden, Status: status,
-				Rework: rework && isWritten && revision < noted,
+				Rework: slices.ContainsFunc(due, func(directive model.Directive) bool {
+					return novel.DirectiveRequirementID(directive.ID) == requirement.ID
+				}),
 			})
 		}
 		briefs[number] = brief

@@ -61,16 +61,10 @@ func outcomeDetail(result operationengine.RunResult) string {
 		if json.Unmarshal(result.Verdict, &verdict) != nil {
 			return ""
 		}
-		if verdict.Status == model.ReviewPass {
-			return "：通过"
+		if blocking := verdict.Blocking(); blocking > 0 {
+			return fmt.Sprintf("：未通过 · 阻塞 %d 处", blocking)
 		}
-		blocking := 0
-		for _, finding := range verdict.Findings {
-			if finding.Severity == model.FindingBlocking {
-				blocking++
-			}
-		}
-		return fmt.Sprintf("：未通过 · 阻塞 %d 处", blocking)
+		return "：通过"
 	}
 	if result.ChangeSet == nil {
 		return ""

@@ -68,7 +68,7 @@ func TestRelocateTasklessProposal(t *testing.T) {
 	s := openStore(t)
 	target := model.AuthorityTarget{Kind: model.AuthorityProject, ID: "book-1"}
 	seedProject(t, ctx, s, target, false)
-	analyzer := semanticAnalyzerFunc(func(context.Context, model.Proposal, StructuralImpact) (json.RawMessage, error) {
+	analyzer := semanticAnalyzerFunc(func(context.Context, model.Proposal, model.StructuralImpact) (json.RawMessage, error) {
 		return json.Marshal(model.SemanticImpactReport{Status: model.SemanticImpactConsistent, Findings: []model.SemanticImpactFinding{}, Options: []model.ResolutionOption{}})
 	})
 	engine := NewWithSemanticAnalyzer(s, analyzer)

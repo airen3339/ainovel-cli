@@ -66,23 +66,8 @@ func TestReloadPersistsImmutableExecutionProfiles(t *testing.T) {
 	}
 }
 
-// 同 Slot 多 Pack 追加与拼错的 Slot 要提示；服务其他 Worker 的 Slot 不是问题。
-func TestLintReportsDeterministicPackOverlayConflict(t *testing.T) {
-	request := testCompileRequest(t)
-	request.Packs[1].Manifest.PromptOverlays = map[string]string{
-		"writer.chapter_draft": "增加悬念",
-		"editor.story_review":  "其他 Worker 的审阅规则",
-		"writer.chapter_drfat": "拼错的 Slot",
-	}
-	diagnostics, err := Lint(request)
-	if err != nil {
-		t.Fatalf("lint: %v", err)
-	}
-	if len(diagnostics) != 2 || diagnostics[0].Code != "multiple_pack_overlays" || diagnostics[1].Code != "unknown_pack_slot" {
-		t.Fatalf("diagnostics = %#v", diagnostics)
-	}
-}
-
+// 按冻结的执行配置来源检查：同 Slot 多 Pack 追加与拼错的 Slot 要提示；服务其他 Worker 或主编的
+// Slot 不是问题。
 func TestRegistryLintUsesFrozenExecutionProfileSources(t *testing.T) {
 	ctx := context.Background()
 	authorityStore, err := store.Open(ctx, filepath.Join(t.TempDir(), "ainovel.db"))
@@ -94,6 +79,7 @@ func TestRegistryLintUsesFrozenExecutionProfileSources(t *testing.T) {
 	request.Packs[1].Manifest.PromptOverlays = map[string]string{
 		"writer.chapter_draft": "增加悬念",
 		"editor.story_review":  "其他 Worker 的审阅规则",
+		"chief.converse":       "主编的对话方法",
 		"writer.chapter_drfat": "拼错的 Slot",
 	}
 	registry := NewRegistry(authorityStore)

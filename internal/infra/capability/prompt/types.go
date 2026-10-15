@@ -3,7 +3,6 @@ package prompt
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain/model"
@@ -35,15 +34,15 @@ type ToolSchema struct {
 	InputSchema json.RawMessage `json:"input_schema"`
 }
 
+// WorkerProfile 是一个固定职责的 Worker：用哪些 Prompt 槽位、哪些工具、哪个模型角色，
+// 以及何时算完成（StopCondition，随稳定前缀交给模型）。
 type WorkerProfile struct {
-	ID             string          `json:"id"`
-	Version        string          `json:"version"`
-	PromptSlots    []Slot          `json:"prompt_slots"`
-	Tools          []ToolSchema    `json:"ordered_tool_schemas"`
-	ModelRole      string          `json:"model_role"`
-	InputContract  json.RawMessage `json:"input_contract"`
-	OutputContract json.RawMessage `json:"output_contract"`
-	StopCondition  string          `json:"stop_condition"`
+	ID            string
+	Version       string
+	PromptSlots   []Slot
+	Tools         []ToolSchema
+	ModelRole     string
+	StopCondition string
 }
 
 // ModelRoles 是可单独绑定模型的角色：Worker Profile 声明前三个，主编用 ChiefRole；配置的
@@ -62,43 +61,6 @@ func KnownModelRole(role string) bool {
 	return false
 }
 
-func (p WorkerProfile) Validate() error {
-	if strings.TrimSpace(p.ID) == "" || strings.TrimSpace(p.Version) == "" || strings.TrimSpace(p.StopCondition) == "" {
-		return fmt.Errorf("worker profile identity and stop condition are required: %w", model.ErrInvalid)
-	}
-	if !KnownModelRole(p.ModelRole) {
-		return fmt.Errorf("unknown model role %q: %w", p.ModelRole, model.ErrInvalid)
-	}
-	if len(p.PromptSlots) == 0 || len(p.Tools) == 0 {
-		return fmt.Errorf("worker profile requires prompt slots and tools: %w", model.ErrInvalid)
-	}
-	if len(p.InputContract) == 0 || !json.Valid(p.InputContract) || len(p.OutputContract) == 0 || !json.Valid(p.OutputContract) {
-		return fmt.Errorf("worker profile contracts must be valid JSON: %w", model.ErrInvalid)
-	}
-	seenSlots := make(map[Slot]struct{}, len(p.PromptSlots))
-	for _, slot := range p.PromptSlots {
-		if !validSlot(slot) {
-			return fmt.Errorf("unknown prompt slot %q: %w", slot, model.ErrInvalid)
-		}
-		if _, ok := seenSlots[slot]; ok {
-			return fmt.Errorf("duplicate prompt slot %q: %w", slot, model.ErrInvalid)
-		}
-		seenSlots[slot] = struct{}{}
-	}
-	seenTools := make(map[string]struct{}, len(p.Tools))
-	for _, tool := range p.Tools {
-		if strings.TrimSpace(tool.Name) == "" || strings.TrimSpace(tool.Description) == "" ||
-			len(tool.InputSchema) == 0 || !json.Valid(tool.InputSchema) {
-			return fmt.Errorf("tool schema is invalid: %w", model.ErrInvalid)
-		}
-		if _, ok := seenTools[tool.Name]; ok {
-			return fmt.Errorf("duplicate tool %q: %w", tool.Name, model.ErrInvalid)
-		}
-		seenTools[tool.Name] = struct{}{}
-	}
-	return nil
-}
-
 type VersionedPack struct {
 	Revision model.Revision     `json:"revision"`
 	Manifest model.PackManifest `json:"manifest"`
@@ -110,12 +72,11 @@ type VersionedCreatorProfile struct {
 }
 
 type CompileRequest struct {
-	ProjectID           string
-	CoreProtocolVersion string
-	Worker              WorkerProfile
-	Packs               []VersionedPack
-	CreatorProfiles     []VersionedCreatorProfile
-	Intent              model.Intent
+	ProjectID       string
+	Worker          WorkerProfile
+	Packs           []VersionedPack
+	CreatorProfiles []VersionedCreatorProfile
+	Intent          model.Intent
 	// Ownership、StoryContext、Task 是已渲染成故事语言的模型视图（D66），编译器只做规范化。
 	Ownership              json.RawMessage
 	OverlayRules           []string
@@ -181,13 +142,3 @@ func (c Compiled) record(createdAt time.Time) (model.ExecutionProfileRecord, err
 // ExecutorIdentity 是 LLM 执行族的身份（D45）：agent 循环的族与版本。模型不在
 // 身份里——它是运行时绑定（D57），每次尝试在尝试摘要里记下实际使用的模型。
 const ExecutorIdentity = "llm.agent@1"
-
-func validSlot(slot Slot) bool {
-	switch slot {
-	case SlotArchitectStoryDesign, SlotArchitectArcExpand, SlotWriterChapterPlan,
-		SlotWriterChapterDraft, SlotWriterRewrite, SlotEditorStoryReview, SlotEditorStyleReview:
-		return true
-	default:
-		return false
-	}
-}

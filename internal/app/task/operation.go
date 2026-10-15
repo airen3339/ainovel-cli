@@ -25,11 +25,9 @@ type StartOperationCommand struct {
 	Priority    int
 	DependsOn   []string
 	Input       json.RawMessage
-	// LLM 执行族的编译输入：Worker、资产引用与协议版本；模型是运行时绑定，不进快照（D57）。
-	WorkerProfileID     string
-	Packs               []resource.PackRef
-	CreatorProfiles     []resource.CreatorProfileRef
-	CoreProtocolVersion string
+	// LLM 执行族的编译输入：资产引用（Worker 由任务种类决定）；模型是运行时绑定，不进快照（D57）。
+	Packs           []resource.PackRef
+	CreatorProfiles []resource.CreatorProfileRef
 	// ConfigDigest 是外部执行族的自身配置摘要，冻结进快照（D45）。
 	ConfigDigest   string
 	ApprovalPolicy model.ApprovalPolicy
@@ -40,15 +38,13 @@ type StartOperationCommand struct {
 }
 
 type RestartOperationCommand struct {
-	FromOperationID     string
-	ConfigDigest        string
-	OperationID         string
-	WorkerProfileID     string
-	Packs               []resource.PackRef
-	CreatorProfiles     []resource.CreatorProfileRef
-	CoreProtocolVersion string
-	ApprovalPolicy      model.ApprovalPolicy
-	RunID               string
+	FromOperationID string
+	ConfigDigest    string
+	OperationID     string
+	Packs           []resource.PackRef
+	CreatorProfiles []resource.CreatorProfileRef
+	ApprovalPolicy  model.ApprovalPolicy
+	RunID           string
 	// Input 非空时替代前任输入：后继按当前快照重算的任务输入（含新命中的要求）。
 	Input     json.RawMessage
 	CreatedAt time.Time
@@ -84,9 +80,8 @@ func (s *Manager) prepareOperation(ctx context.Context, command StartOperationCo
 	switch spec.Executor {
 	case model.ExecutorLLM:
 		compiled, err := s.profiles.Compile(ctx, profile.CompileCommand{
-			ProjectID: command.ProjectID, Revision: revision, Kind: command.Kind, WorkerProfileID: command.WorkerProfileID,
-			Input: command.Input, Packs: command.Packs, CreatorProfiles: command.CreatorProfiles,
-			CoreProtocolVersion: command.CoreProtocolVersion, CreatedAt: command.CreatedAt,
+			ProjectID: command.ProjectID, Revision: revision, Kind: command.Kind,
+			Input: command.Input, Packs: command.Packs, CreatorProfiles: command.CreatorProfiles, CreatedAt: command.CreatedAt,
 		})
 		if err != nil {
 			return model.Operation{}, err
@@ -128,9 +123,6 @@ func (s *Manager) resolveApprovalPolicy(
 			}
 		}
 	}
-	if policy == model.ApprovalCustom {
-		return "", fmt.Errorf("custom approval policy requires a policy contract, which this command did not provide: %w", model.ErrInvalid)
-	}
 	return policy, nil
 }
 
@@ -155,7 +147,7 @@ func (s *Manager) RestartOperation(ctx context.Context, command RestartOperation
 	if runID == "" {
 		runID = previous.RunID
 	}
-	if previous.RunID != "" && runID != previous.RunID {
+	if runID != previous.RunID {
 		return model.Operation{}, fmt.Errorf(
 			"restart cannot move operation %q to another creation run: %w",
 			previous.ID, model.ErrInvalid,
@@ -186,8 +178,6 @@ func (s *Manager) RestartOperation(ctx context.Context, command RestartOperation
 		if err != nil {
 			return model.Operation{}, err
 		}
-		successor.WorkerProfileID = prompt.WorkerID(compiled.WorkerProfile)
-		successor.CoreProtocolVersion = compiled.CoreProtocolVersion
 		successor.Packs, err = packRefsFromSources(compiled.Sources)
 		if err != nil {
 			return model.Operation{}, err
@@ -195,12 +185,6 @@ func (s *Manager) RestartOperation(ctx context.Context, command RestartOperation
 		successor.CreatorProfiles, err = creatorProfileRefsFromSources(compiled.Sources)
 		if err != nil {
 			return model.Operation{}, err
-		}
-		if command.WorkerProfileID != "" {
-			successor.WorkerProfileID = command.WorkerProfileID
-		}
-		if command.CoreProtocolVersion != "" {
-			successor.CoreProtocolVersion = command.CoreProtocolVersion
 		}
 		if command.Packs != nil {
 			successor.Packs = command.Packs
@@ -254,9 +238,8 @@ func (s *Manager) validateRestartTarget(
 	// retry checks all execution inputs without adopting newer story content.
 	compiled, err := s.profiles.Compile(ctx, profile.CompileCommand{
 		ProjectID: existing.Target.ID, Revision: existing.Snapshot.BaseRevision,
-		Kind: successor.Kind, WorkerProfileID: successor.WorkerProfileID,
-		Input: successor.Input, Packs: successor.Packs, CreatorProfiles: successor.CreatorProfiles,
-		CoreProtocolVersion: successor.CoreProtocolVersion, CreatedAt: existing.CreatedAt,
+		Kind: successor.Kind, Input: successor.Input, Packs: successor.Packs, CreatorProfiles: successor.CreatorProfiles,
+		CreatedAt: existing.CreatedAt,
 	})
 	if err != nil {
 		return err
@@ -305,7 +288,7 @@ func (s *Manager) RunNextOperation(
 	leaseDuration time.Duration,
 	now time.Time,
 ) (operationengine.RunResult, error) {
-	return s.operations.RunNextWithExecutors(ctx, s.executors.all(), workerID, leaseDuration, now)
+	return s.operations.RunNext(ctx, s.executors.all(), workerID, leaseDuration, now)
 }
 
 func (s *Manager) RunOperation(
@@ -314,16 +297,7 @@ func (s *Manager) RunOperation(
 	leaseDuration time.Duration,
 	now time.Time,
 ) (operationengine.RunResult, error) {
-	operation, err := s.store.GetOperation(ctx, operationID)
-	if err != nil {
-		return operationengine.RunResult{}, err
-	}
-	for _, executor := range s.executors.all() {
-		if executor.Identity() == operation.Snapshot.Executor {
-			return s.operations.Run(ctx, executor, operationID, workerID, leaseDuration, now)
-		}
-	}
-	return operationengine.RunResult{}, fmt.Errorf("executor %q is not configured: %w", operation.Snapshot.Executor, model.ErrInvalid)
+	return s.operations.Run(ctx, s.executors.all(), operationID, workerID, leaseDuration, now)
 }
 
 func (s *Manager) PauseOperation(ctx context.Context, id string, at time.Time) (model.Operation, error) {

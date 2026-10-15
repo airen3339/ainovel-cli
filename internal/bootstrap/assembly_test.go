@@ -17,12 +17,9 @@ func TestEveryOperationKindIsAssembled(t *testing.T) {
 		model.OperationDevelopPlan:  model.DevelopPlanInput{Intent: "凡人修仙", FixedChapters: 3},
 		model.OperationRevisePlan:   model.RevisePlanInput{Intent: "凡人修仙", FixedChapters: 6, ExistingChapters: 3},
 		model.OperationReviseCanon:  model.ReviseCanonInput{ChapterID: "chapter-1", Reason: "修订设定"},
-		model.OperationWriteChapter: model.WriteChapterInput{ChapterPlanID: "chapter-plan-1", ChapterNumber: 1},
+		model.OperationWriteChapter: model.WriteChapterInput{ChapterPlanID: "chapter-plan-1"},
 		model.OperationRewriteChapter: model.RewriteChapterInput{
-			ChapterID: "chapter-1", ChapterPlanID: "chapter-plan-1", ChapterNumber: 1, Findings: []string{"结尾仓促"},
-		},
-		model.OperationRewriteAffected: model.RewriteAffectedInput{
-			ChapterIDs: []string{"chapter-1"}, BaseRevision: 1, ResolutionProposalID: "resolution-1", Reason: "同步设定",
+			ChapterID: "chapter-1", ChapterPlanID: "chapter-plan-1", Findings: []string{"结尾仓促"},
 		},
 		model.OperationReviewRange:   model.ReviewRangeInput{ChapterIDs: []string{"chapter-1"}, Basis: basis},
 		model.OperationGenerateAsset: model.GenerateAssetInput{Target: model.DocumentRef{Kind: model.DocumentManuscript, ID: "chapter-1"}, Role: "cover", Basis: basis},

@@ -24,12 +24,9 @@ type DocumentBasis struct {
 
 // ScopeBasis 钉住一个作用域的成员集合：命中 Target 的 active 要求及其版本的摘要。
 type ScopeBasis struct {
-	Kind   string          `json:"kind"`
 	Target DirectiveTarget `json:"target"`
 	Digest string          `json:"digest"`
 }
-
-const ScopeDirective = "directive"
 
 func (b EvidenceBasis) Validate() error {
 	seen := make(map[string]struct{}, len(b.Documents)+len(b.Scopes)+len(b.Artifacts))
@@ -52,11 +49,6 @@ func (b EvidenceBasis) Validate() error {
 		}
 	}
 	for _, scope := range b.Scopes {
-		switch scope.Kind {
-		case ScopeDirective:
-		default:
-			return fmt.Errorf("unknown scope kind %q: %w", scope.Kind, ErrInvalid)
-		}
 		if strings.TrimSpace(scope.Digest) == "" {
 			return fmt.Errorf("scope basis requires a digest: %w", ErrInvalid)
 		}
@@ -128,7 +120,7 @@ func (b EvidenceBasis) Covers(required EvidenceBasis) bool {
 }
 
 func (s ScopeBasis) targetKey() string {
-	return s.Kind + "\x00" + strconv.Itoa(s.Target.ChapterNumber) + "\x00" + strings.Join(s.Target.PlanNodeIDs, ",")
+	return strconv.Itoa(s.Target.ChapterNumber) + "\x00" + strings.Join(s.Target.PlanNodeIDs, ",")
 }
 
 func scopeEqual(left, right ScopeBasis) bool {

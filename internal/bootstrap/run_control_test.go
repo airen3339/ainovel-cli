@@ -152,7 +152,7 @@ func TestCancelDuringDriveWinsOverWaitingSettle(t *testing.T) {
 	}
 }
 
-func TestImportNewProjectCreatesBookFromProjection(t *testing.T) {
+func TestImportProjectCreatesBookFromProjection(t *testing.T) {
 	ctx := context.Background()
 	api := newTestApp(openTestStore(t))
 	now := testTime()
@@ -169,7 +169,7 @@ func TestImportNewProjectCreatesBookFromProjection(t *testing.T) {
 	}
 	projection.ProjectID = "copied-book"
 
-	proposal, err := api.Projects.ImportNewProject(ctx, "import-copy", "user-1", "导入作品文件", projection, now.Add(time.Minute))
+	proposal, err := api.Projects.ImportProject(ctx, "import-copy", "user-1", "导入作品文件", projection, now.Add(time.Minute))
 	if err != nil || proposal.ApprovalState != model.ApprovalPending {
 		t.Fatalf("import proposal = %#v, %v", proposal, err)
 	}
@@ -199,7 +199,7 @@ func TestDeleteProjectRemovesAllDataAndAllowsRecreate(t *testing.T) {
 	if err := api.Projects.DeleteProject(ctx, "delete-book"); err != nil {
 		t.Fatalf("delete project: %v", err)
 	}
-	projects, err := api.Projects.ListProjects(ctx)
+	projects, err := api.Workbench.Library(ctx)
 	if err != nil || len(projects) != 1 || projects[0].ID != "keep-book" {
 		t.Fatalf("projects after delete = %#v, %v", projects, err)
 	}
@@ -257,7 +257,7 @@ func TestRunOperationsListsCreationOrder(t *testing.T) {
 	if err != nil || result.RunState != model.RunCompleted {
 		t.Fatalf("quick write = %#v, %v", result, err)
 	}
-	operations, err := api.Runs.RunOperations(ctx, result.RunID)
+	operations, err := runOperations(ctx, api.App, result.RunID)
 	if err != nil || len(operations) < 2 {
 		t.Fatalf("run operations = %d, %v", len(operations), err)
 	}

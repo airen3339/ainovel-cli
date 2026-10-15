@@ -75,7 +75,7 @@ func planID(i int) string    { return fmt.Sprintf("plan-%03d", i) }
 func chapterID(i int) string { return fmt.Sprintf("ch-%03d", i) }
 
 func writeTask(i int) json.RawMessage {
-	return json.RawMessage(fmt.Sprintf(`{"chapter_plan_id":%q,"chapter_number":%d}`, planID(i), i))
+	return json.RawMessage(fmt.Sprintf(`{"chapter_plan_id":%q}`, planID(i)))
 }
 
 func keySet(context selection) map[string]bool {
@@ -216,13 +216,13 @@ func TestRankTrimsIrrelevantFactsFirstAndExposesRequiredOverflow(t *testing.T) {
 	content.Canon = append(content.Canon,
 		model.CanonFact{ID: "villain-lair", Kind: model.CanonState, SubjectID: "villain", Predicate: "state.lair", Value: json.RawMessage(`"` + strings.Repeat("远", 400) + `"`)},
 	)
-	full, err := selectContext(content, model.OperationWriteChapter, json.RawMessage(`{"chapter_plan_id":"chapter-plan-3","chapter_number":3}`))
+	full, err := selectContext(content, model.OperationWriteChapter, json.RawMessage(`{"chapter_plan_id":"chapter-plan-3"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	fixed := full.Budget.Used - 500 // 留出小于巨型无关事实的余量
-	tight, err := buildStoryContext(content, model.OperationWriteChapter, json.RawMessage(`{"chapter_plan_id":"chapter-plan-3","chapter_number":3}`),
-		contextPolicy{Window: 5, Lookahead: 3, Budget: fixed + utf8.RuneCount([]byte(`{"chapter_plan_id":"chapter-plan-3","chapter_number":3}`))})
+	tight, err := buildStoryContext(content, model.OperationWriteChapter, json.RawMessage(`{"chapter_plan_id":"chapter-plan-3"}`),
+		contextPolicy{Window: 5, Lookahead: 3, Budget: fixed + utf8.RuneCount([]byte(`{"chapter_plan_id":"chapter-plan-3"}`))})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -230,7 +230,7 @@ func TestRankTrimsIrrelevantFactsFirstAndExposesRequiredOverflow(t *testing.T) {
 	if keys["canon:villain-lair"] || !keys["canon:hero-bottom-line"] || tight.Budget.Omitted[model.DocumentCanon] == 0 {
 		t.Fatalf("trim order wrong: %v omitted %v", documentKeys(tight), tight.Budget.Omitted)
 	}
-	starved, err := buildStoryContext(content, model.OperationWriteChapter, json.RawMessage(`{"chapter_plan_id":"chapter-plan-3","chapter_number":3}`),
+	starved, err := buildStoryContext(content, model.OperationWriteChapter, json.RawMessage(`{"chapter_plan_id":"chapter-plan-3"}`),
 		contextPolicy{Window: 5, Lookahead: 3, Budget: 10})
 	if err != nil {
 		t.Fatal(err)
@@ -244,13 +244,12 @@ func TestRankTrimsIrrelevantFactsFirstAndExposesRequiredOverflow(t *testing.T) {
 // 伏笔（hook-ch-006 于第 12 章回收）平时不装配，这里也必须出现。
 func TestRewriteContextsCarrySourcedFacts(t *testing.T) {
 	content := longBook(30, 30)
-	rewrite := json.RawMessage(fmt.Sprintf(`{"chapter_id":%q,"chapter_plan_id":%q,"chapter_number":12,"findings":["节奏"]}`, chapterID(12), planID(12)))
+	rewrite := json.RawMessage(fmt.Sprintf(`{"chapter_id":%q,"chapter_plan_id":%q,"findings":["节奏"]}`, chapterID(12), planID(12)))
 	for _, tc := range []struct {
 		kind model.OperationKind
 		task json.RawMessage
 	}{
 		{model.OperationRewriteChapter, rewrite},
-		{model.OperationRewriteAffected, json.RawMessage(fmt.Sprintf(`{"chapter_ids":[%q],"base_revision":3,"resolution_proposal_id":"p","reason":"改"}`, chapterID(12)))},
 		{model.OperationReviseCanon, json.RawMessage(fmt.Sprintf(`{"chapter_id":%q,"reason":"核验"}`, chapterID(12)))},
 	} {
 		context, err := buildStoryContext(content, tc.kind, tc.task, contextPolicy{Window: 5, Lookahead: 3, Budget: 10})

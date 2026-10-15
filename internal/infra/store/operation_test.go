@@ -489,7 +489,7 @@ func TestClaimReportsDependenciesThatCannotSucceed(t *testing.T) {
 const testExecutor = "llm.agent@1"
 
 func testOperation(id string, priority int, createdAt time.Time) model.Operation {
-	input := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1","chapter_number":1}`)
+	input := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1"}`)
 	return model.Operation{
 		ID: id, Kind: model.OperationWriteChapter, RunID: "run:book-1",
 		Target:   model.AuthorityTarget{Kind: model.AuthorityProject, ID: "book-1"},
@@ -510,7 +510,7 @@ func openOperationStore(t *testing.T) *Store {
 	if _, err := s.CreateCreationRun(context.Background(), model.CreationRun{
 		ID: "run:book-1", ProjectID: "book-1",
 		Goal:     model.NovelGoal{Premise: "测试创作", TargetChapters: 3}.Goal(),
-		Strategy: model.CreationRunStrategy{ReviewCadence: model.ReviewPerPlanWindow, AutoRepairBudget: 3},
+		Strategy: model.CreationRunStrategy{AutoRepairBudget: 3},
 		Preset:   model.CreationRunPreset{Source: "test", Digest: "test-preset", Approval: model.ApprovalAuto},
 		State:    model.RunRunning, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {

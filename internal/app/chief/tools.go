@@ -65,15 +65,7 @@ const empty = `{"type":"object","properties":{},"additionalProperties":false}`
 func (s *Session) tools() []tool {
 	return []tool{
 		define(toolOutline, "看全书的梗概、篇幅与卷→故事弧→章的大纲（每章是否已入稿）", empty, s.outline),
-		define(toolRead, "读这本书：chapter 给该章大纲、正文与来源于它的事实；arc、volume 给故事弧或卷；entity 给人物、地点、物品、组织的设定与事实。四选一", `{
-			"type":"object",
-			"properties":{
-				"chapter":{"type":"integer","minimum":1},
-				"arc":{"type":"integer","minimum":1},
-				"volume":{"type":"integer","minimum":1},
-				"entity":{"type":"string","minLength":1,"description":"名称或别名"}
-			},
-			"additionalProperties":false}`, s.read),
+		define(toolRead, "读这本书：chapter 给该章大纲、正文与来源于它的事实；arc、volume 给故事弧或卷；entity 给人物、地点、物品、组织的设定与事实。四选一", prompt.StoryReadSchema, s.read),
 		define(toolRequirements, "看生效中的要求：编号、作用域、原话与量化约束", empty, s.requirements),
 		define(toolReviews, "看某章当前的审阅意见（阻塞的要改，参考的仅供参考）", `{
 			"type":"object","properties":{"chapter":{"type":"integer","minimum":1}},
@@ -428,6 +420,10 @@ func (s *Session) reject(ctx context.Context, args struct {
 	}); err != nil {
 		return "", err
 	}
+	// 用户自己的草案（导入、回滚）没有写作者可以重做：退回即作罢。
+	if snap.Decision.Proposal.OperationID == "" {
+		return "退回草案 ·「" + reason + "」", nil
+	}
 	s.Write(WriteParams{Chapters: novel.KeepChapters})
 	return "退回稿件 ·「" + reason + "」· 按这条意见重写", nil
 }
@@ -472,8 +468,9 @@ func (s *Session) resume(ctx context.Context, _ none) (string, error) {
 		return "", errors.New("全书已经完成；要续写就调整篇幅")
 	}
 	held := snap.Decision != nil && snap.Decision.Held != ""
+	// 已经在写就是用户要的状态：照实回执，不算失败。
 	if !s.Write(WriteParams{Chapters: novel.KeepChapters, Renew: held}) {
-		return "", errors.New("已经在写了")
+		return "已经在写了", nil
 	}
 	if held {
 		return "让卡住的那一章再改一次 · 继续创作", nil

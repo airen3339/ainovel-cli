@@ -141,8 +141,8 @@ func TestImportProjectDiffsAgainstCurrentState(t *testing.T) {
 func TestImportProjectRejectsUnchangedProjection(t *testing.T) {
 	f := newProjectionFixture(t)
 	_, err := f.repo.ImportProject(f.ctx, "import-same", fixtureUser, "重导", f.export(t), f.now)
-	if !errors.Is(err, change.ErrInvalidState) {
-		t.Fatalf("error = %v, want ErrInvalidState", err)
+	if !errors.Is(err, model.ErrInvalid) {
+		t.Fatalf("error = %v, want ErrInvalid", err)
 	}
 }
 
@@ -163,27 +163,17 @@ func TestImportProjectRejectsInvalidIdentity(t *testing.T) {
 	}
 }
 
-// 未知作品的导入按基线读取失败，不能静默建出一本新书。
-func TestImportProjectRejectsUnknownProject(t *testing.T) {
-	f := newProjectionFixture(t)
-	projection := f.export(t)
-	projection.ProjectID = "ghost"
-	if _, err := f.repo.ImportProject(f.ctx, "import-ghost", fixtureUser, "导入", projection, f.now); err == nil {
-		t.Fatal("未知作品的导入必须失败")
-	}
-}
-
-// ImportNewProject 建新书：先建权威流，再把其余内容作为一份草案导入。
-func TestImportNewProjectCreatesEveryDocument(t *testing.T) {
+// 库里还没有的作品，导入即建新书：先建权威流，再把其余内容作为一份草案导入。
+func TestImportProjectCreatesEveryDocument(t *testing.T) {
 	f := newProjectionFixture(t)
 	projection := f.export(t)
 	projection.ProjectID = "book-2"
 	projection.Approval = model.ApprovalAuto // 投影不带审批策略时，建库写入的默认值会被差异删掉
-	proposal, err := f.repo.ImportNewProject(f.ctx, "import-new", fixtureUser, "导入新书", projection, f.now)
+	proposal, err := f.repo.ImportProject(f.ctx, "import-new", fixtureUser, "导入新书", projection, f.now)
 	if err != nil {
 		t.Fatalf("import new project: %v", err)
 	}
-	// ImportNewProject 先用 Intent/Approval 建流，再把其余内容作为一份待批准草案导入，
+	// ImportProject 先用 Intent/Approval 建流，再把其余内容作为一份待批准草案导入，
 	// 因此基线是刚建出的那一版，补丁只增不删。
 	if proposal.BaseRevision <= model.InitialRevision {
 		t.Errorf("新书基线 = %d，应是刚建出的版本", proposal.BaseRevision)

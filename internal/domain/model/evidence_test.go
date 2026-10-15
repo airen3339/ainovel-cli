@@ -9,7 +9,7 @@ import (
 func TestEvidenceBasisNormalizeAndValidate(t *testing.T) {
 	chapter := DocumentRef{Kind: DocumentManuscript, ID: "chapter-1"}
 	plan := DocumentRef{Kind: DocumentPlan, ID: "chapter-plan-1"}
-	scope := ScopeBasis{Kind: ScopeDirective, Target: DirectiveTarget{ChapterNumber: 1, PlanNodeIDs: []string{"chapter-plan-1"}}, Digest: "s"}
+	scope := ScopeBasis{Target: DirectiveTarget{ChapterNumber: 1, PlanNodeIDs: []string{"chapter-plan-1"}}, Digest: "s"}
 	basis := EvidenceBasis{
 		Documents: []DocumentBasis{{Ref: chapter, Revision: 3}, {Ref: plan, Revision: 2}, {Ref: chapter, Revision: 3}},
 		Scopes:    []ScopeBasis{scope, scope},
@@ -34,11 +34,11 @@ func TestEvidenceBasisNormalizeAndValidate(t *testing.T) {
 	if err := (EvidenceBasis{Documents: []DocumentBasis{{Ref: chapter}}}).Validate(); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("zero revision err = %v", err)
 	}
-	if err := (EvidenceBasis{Scopes: []ScopeBasis{{Kind: "other", Digest: "s"}}}).Validate(); !errors.Is(err, ErrInvalid) {
-		t.Fatalf("unknown scope kind err = %v", err)
+	if err := (EvidenceBasis{Scopes: []ScopeBasis{{Target: scope.Target}}}).Validate(); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("missing scope digest err = %v", err)
 	}
 	changed := normalized
-	changed.Scopes = []ScopeBasis{{Kind: ScopeDirective, Target: scope.Target, Digest: "t"}}
+	changed.Scopes = []ScopeBasis{{Target: scope.Target, Digest: "t"}}
 	if changed.Equal(normalized) {
 		t.Fatalf("scope digest change must break equality")
 	}

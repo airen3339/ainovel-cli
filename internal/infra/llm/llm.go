@@ -83,5 +83,10 @@ func stream(ctx context.Context, client *litellm.Client, request litellm.Request
 		return nil, err
 	}
 	defer events.Close()
-	return litellm.Handle(events, observe)
+	response, err := litellm.Handle(events, observe)
+	if err == nil && response.FinishReason == litellm.FinishReasonError {
+		// 厂商以错误结束的响应多是一过性的（服务过载、模型写坏了输出），同 agentcore 一样当暂时性失败重发。
+		return nil, &litellm.Error{Type: litellm.ErrorTypeProvider, Provider: response.Provider, Message: "the model ended its response with " + response.FinishReasonRaw, Temporary: true}
+	}
+	return response, err
 }

@@ -2,7 +2,6 @@ package bootstrap_test
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strconv"
 	"strings"
@@ -22,6 +21,7 @@ type testApp struct {
 	store      *store.Store
 	changes    *change.Engine
 	operations *operation.Engine
+	Evidence   *evidenceReader
 	now        func() time.Time
 }
 
@@ -36,6 +36,7 @@ func newTestApp(s *store.Store, options ...bootstrap.Options) *testApp {
 	}
 	changes := change.New(s)
 	fixture := &testApp{store: s, changes: changes, operations: operation.NewEngine(s, changes, opts.Contracts...), now: now}
+	fixture.Evidence = newEvidenceReader(s, changes, fixture.operations)
 	opts.Now = func() time.Time { return fixture.now() }
 	fixture.App = bootstrap.New(s, opts)
 	return fixture
@@ -45,6 +46,21 @@ func newTestAppWithExecutor(s *store.Store, e operation.Executor) *testApp {
 }
 func newTestAppWithExecutors(s *store.Store, e task.ExecutorSet, contracts ...operation.VerdictContract) *testApp {
 	return newTestApp(s, bootstrap.Options{Executors: e, Contracts: contracts})
+}
+
+// runOperations 按创建序取一轮创作的全部 Operation。
+func runOperations(ctx context.Context, api *bootstrap.App, runID string) ([]model.Operation, error) {
+	ids, err := api.Runs.RunOperationIDs(ctx, runID)
+	if err != nil {
+		return nil, err
+	}
+	operations := make([]model.Operation, len(ids))
+	for i, id := range ids {
+		if operations[i], err = api.Tasks.Operation(ctx, id); err != nil {
+			return nil, err
+		}
+	}
+	return operations, nil
 }
 
 // Slot IDs are asserted by integration tests because recovery preserves them.
@@ -71,13 +87,17 @@ func findReview(t *testing.T, s *store.Store, runID string, revision model.Revis
 		t.Fatalf("list run events: %v", err)
 	}
 	for _, event := range events {
-		var payload struct {
-			OperationID string `json:"operation_id"`
-		}
-		if event.Kind != model.RunEventOperationCreated || json.Unmarshal(event.Payload, &payload) != nil || !reviewAt(payload.OperationID, runID, revision) {
+		if event.Kind != model.RunEventOperationCreated {
 			continue
 		}
-		operation, err := s.GetOperation(ctx, payload.OperationID)
+		created, err := event.OperationCreated()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !reviewAt(created.OperationID, runID, revision) {
+			continue
+		}
+		operation, err := s.GetOperation(ctx, created.OperationID)
 		if err != nil {
 			t.Fatalf("read review operation: %v", err)
 		}

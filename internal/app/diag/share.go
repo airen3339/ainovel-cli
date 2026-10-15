@@ -109,7 +109,7 @@ func safeState(value string) string {
 	return allowed(value, "queued", "running", "paused", "awaiting_approval", "succeeded", "failed", "cancelled", "stale", "waiting_user", "completed", "no_run", "environment")
 }
 func safeKind(value string) string {
-	return allowed(value, "develop_plan", "write_chapter", "revise_plan", "revise_canon", "rewrite_chapter", "rewrite_affected", "review_range", "generate_asset", "inspect_asset")
+	return allowed(value, "develop_plan", "write_chapter", "revise_plan", "revise_canon", "rewrite_chapter", "review_range", "generate_asset", "inspect_asset")
 }
 
 // Share reconstructs every string from a fixed vocabulary or a report-local alias.

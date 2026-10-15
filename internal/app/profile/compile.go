@@ -15,15 +15,13 @@ import (
 )
 
 type CompileCommand struct {
-	ProjectID           string
-	Revision            model.Revision
-	Kind                model.OperationKind
-	WorkerProfileID     string
-	Input               json.RawMessage
-	Packs               []resource.PackRef
-	CreatorProfiles     []resource.CreatorProfileRef
-	CoreProtocolVersion string
-	CreatedAt           time.Time
+	ProjectID       string
+	Revision        model.Revision
+	Kind            model.OperationKind
+	Input           json.RawMessage
+	Packs           []resource.PackRef
+	CreatorProfiles []resource.CreatorProfileRef
+	CreatedAt       time.Time
 }
 
 func (s *Compiler) Compile(ctx context.Context, command CompileCommand) (prompt.Compiled, error) {
@@ -83,17 +81,6 @@ func (s *Compiler) Compile(ctx context.Context, command CompileCommand) (prompt.
 	if err != nil {
 		return prompt.Compiled{}, err
 	}
-	workerProfileID := command.WorkerProfileID
-	if workerProfileID == "" {
-		workerProfileID = capability.Worker.ID
-	}
-	if workerProfileID != capability.Worker.ID {
-		return prompt.Compiled{}, fmt.Errorf(
-			"operation %s requires worker profile %s, got %s: %w",
-			command.Kind, capability.Worker.ID, workerProfileID, model.ErrInvalid,
-		)
-	}
-	worker := capability.Worker
 	// 资产自动装配（D31）：命令未显式指定时，按 Project 的固定引用加载已启用的
 	// Pack 与 Creator Profile——给这本书固定一套风格与方法，此后自动沿用。
 	var overlayRules []string
@@ -129,8 +116,8 @@ func (s *Compiler) Compile(ctx context.Context, command CompileCommand) (prompt.
 		return prompt.Compiled{}, fmt.Errorf("encode story context: %w", err)
 	}
 	return s.prompts.Reload(ctx, prompt.CompileRequest{
-		ProjectID: command.ProjectID, CoreProtocolVersion: command.CoreProtocolVersion,
-		Worker: worker, Packs: packs, CreatorProfiles: creatorProfiles,
+		ProjectID: command.ProjectID,
+		Worker:    capability.Worker, Packs: packs, CreatorProfiles: creatorProfiles,
 		Intent: intent, Ownership: ownership, OverlayRules: overlayRules,
 		StoryContext: storyContext, Task: view.Task,
 		BaseRevision: revision, ProjectOverlayRevision: revision,

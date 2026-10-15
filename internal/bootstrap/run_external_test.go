@@ -178,7 +178,7 @@ func newExternalTestService(t *testing.T) (*testApp, *externalGenerationExecutor
 	}); err != nil {
 		t.Fatalf("create project: %v", err)
 	}
-	strategy := model.CreationRunStrategy{ReviewCadence: model.ReviewPerPlanWindow, AutoRepairBudget: 1}
+	strategy := model.CreationRunStrategy{AutoRepairBudget: 1}
 	preset, err := model.NewCreationRunPreset("test", model.ApprovalAuto, strategy)
 	if err != nil {
 		t.Fatalf("preset: %v", err)
@@ -310,7 +310,7 @@ func TestExternalRestartResubmitsInheritedUnknownRequest(t *testing.T) {
 	}
 	// 重提 = Restart：后继继承请求记录，恢复一次仍未知就换新 ID 重提（用户已明确决定）。
 	successor, err := api.Tasks.RestartOperation(ctx, tasks.RestartOperationCommand{
-		FromOperationID: operation.ID, OperationID: operation.ID + ":r2", CreatedAt: testTime().Add(4 * time.Minute),
+		FromOperationID: operation.ID, OperationID: operation.ID + ":redo2", CreatedAt: testTime().Add(4 * time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("restart: %v", err)
@@ -367,7 +367,7 @@ func TestExternalRestartBindsResultToFrozenInputs(t *testing.T) {
 					Author: model.Author{Kind: model.AuthorUser, ID: "user-1"}, Reason: "修改来源",
 					Patches:       []model.Patch{{Document: model.DocumentRef{Kind: model.DocumentPlan, ID: changed.ID}, Operation: model.PatchPut, Content: content}},
 					ApprovalState: model.ApprovalPending, CreatedAt: at,
-				}, at); err != nil {
+				}); err != nil {
 					t.Fatal(err)
 				}
 				input := assetTestInput()

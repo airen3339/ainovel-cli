@@ -88,7 +88,7 @@ func (r *Runtime) AnalyzePreference(ctx context.Context, input model.PreferenceL
 func (r *Runtime) Analyze(
 	ctx context.Context,
 	proposal model.Proposal,
-	structural change.StructuralImpact,
+	structural model.StructuralImpact,
 ) (json.RawMessage, error) {
 	story, err := r.storyAt(ctx, proposal.Target, proposal.BaseRevision)
 	if err != nil {
@@ -146,9 +146,6 @@ func (r *Runtime) Analyze(
 	if err != nil {
 		return nil, err
 	}
-	if err := converted.Validate(); err != nil {
-		return nil, err
-	}
 	return json.Marshal(converted)
 }
 
@@ -158,9 +155,6 @@ func (r *Runtime) AnalyzeSemanticCompliance(
 	proposal model.Proposal,
 	constraints []model.OwnershipRule,
 ) (model.SemanticComplianceReport, error) {
-	if operation.State != model.OperationRunning || operation.Snapshot.Executor != r.Identity() {
-		return model.SemanticComplianceReport{}, fmt.Errorf("semantic compliance operation context is invalid: %w", model.ErrStateConflict)
-	}
 	// 合规检查由 Operation Engine 在执行结束后单独调用，用调用时刻的默认绑定（D57）。
 	binding, ok := r.bindingFor("")
 	if !ok {

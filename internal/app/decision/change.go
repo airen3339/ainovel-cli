@@ -2,7 +2,6 @@ package decision
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -38,28 +37,18 @@ func (s *Review) Submit(ctx context.Context, proposal model.Proposal) (Submissio
 	if err != nil {
 		return Submission{}, err
 	}
-	if semantic {
-		var report model.SemanticImpactReport
-		if err := json.Unmarshal(prepared.Impact.Semantic, &report); err != nil {
-			return Submission{}, fmt.Errorf("decode semantic impact: %w", err)
-		}
-		if report.Status != model.SemanticImpactConsistent {
-			return Submission{Proposal: prepared, Conflicted: true}, nil
-		}
+	if semantic && prepared.Impact.Semantic.Status != model.SemanticImpactConsistent {
+		return Submission{Proposal: prepared, Conflicted: true}, nil
 	}
 	admission, err := s.changes.Admit(ctx, prepared)
 	if err != nil || admission.Hold != "" {
 		return Submission{Proposal: prepared}, err
 	}
-	approved, err := change.Decide(prepared, model.ApprovalApproved,
-		model.Author{Kind: model.AuthorSystem, ID: "approval-policy:" + string(admission.Policy)}, prepared.CreatedAt)
+	approved, err := admission.Approve(prepared, prepared.CreatedAt)
 	if err != nil {
 		return Submission{}, err
 	}
 	committed, err := s.changes.Commit(ctx, approved)
-	if errors.Is(err, change.ErrUnauthorized) {
-		return Submission{Proposal: prepared}, nil
-	}
 	if err != nil {
 		return Submission{}, err
 	}
@@ -102,6 +91,21 @@ func (s *Review) PendingChange(ctx context.Context, projectID string) (model.Pro
 	}
 	for _, proposal := range pending {
 		if proposal.Author == model.ChiefAuthor {
+			return proposal, true, nil
+		}
+	}
+	return model.Proposal{}, false, nil
+}
+
+// PendingDraft 是用户自己提交、等他批准的那份修改（导入作品文件、回滚）：不属于任何任务，
+// 也不是主编提的；没有时 ok=false。
+func (s *Review) PendingDraft(ctx context.Context, projectID string) (model.Proposal, bool, error) {
+	pending, err := s.store.PendingProposals(ctx, model.AuthorityTarget{Kind: model.AuthorityProject, ID: projectID})
+	if err != nil {
+		return model.Proposal{}, false, err
+	}
+	for _, proposal := range pending {
+		if proposal.OperationID == "" && proposal.Author.Kind == model.AuthorUser {
 			return proposal, true, nil
 		}
 	}

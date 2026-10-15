@@ -113,18 +113,14 @@ func TestUnconfirmedPreferenceCandidateDoesNotEnterPrompt(t *testing.T) {
 }
 
 func TestBuiltinCapabilitiesAreValidAndComplete(t *testing.T) {
-	definitions, err := BuiltinCapabilities()
-	if err != nil {
-		t.Fatalf("built-in capabilities: %v", err)
-	}
+	definitions := BuiltinCapabilities()
 	wantKinds := map[model.OperationKind]string{
-		model.OperationDevelopPlan:     "architect.design",
-		model.OperationRevisePlan:      "architect.design",
-		model.OperationReviseCanon:     "architect.design",
-		model.OperationWriteChapter:    "writer.compose",
-		model.OperationRewriteChapter:  "writer.revise",
-		model.OperationRewriteAffected: "writer.revise_affected",
-		model.OperationReviewRange:     "editor.review",
+		model.OperationDevelopPlan:    "architect.design",
+		model.OperationRevisePlan:     "architect.design",
+		model.OperationReviseCanon:    "architect.design",
+		model.OperationWriteChapter:   "writer.compose",
+		model.OperationRewriteChapter: "writer.revise",
+		model.OperationReviewRange:    "editor.review",
 	}
 	for kind, workerID := range wantKinds {
 		definition, err := BuiltinCapability(kind)
@@ -135,8 +131,36 @@ func TestBuiltinCapabilitiesAreValidAndComplete(t *testing.T) {
 			t.Fatalf("capability %s uses %q, want %q", kind, definition.Worker.ID, workerID)
 		}
 	}
-	if len(definitions) != 5 {
-		t.Fatalf("built-in capability definitions = %d, want 5", len(definitions))
+	if len(definitions) != 4 {
+		t.Fatalf("built-in capability definitions = %d, want 4", len(definitions))
+	}
+	// 静态定义的结构：每种任务只归一个 Worker，槽位都已登记，工具不重名且 Schema 合法。
+	owners, workers := map[model.OperationKind]string{}, map[string]bool{}
+	for _, definition := range definitions {
+		worker := definition.Worker
+		if worker.ID == "" || worker.Version == "" || worker.StopCondition == "" || !KnownModelRole(worker.ModelRole) ||
+			len(worker.PromptSlots) == 0 || len(worker.Tools) == 0 || workers[worker.ID] {
+			t.Fatalf("worker profile %+v is malformed or duplicated", worker)
+		}
+		workers[worker.ID] = true
+		for _, kind := range definition.OperationKinds {
+			if owner, ok := owners[kind]; ok {
+				t.Fatalf("operation %s registered by both %s and %s", kind, owner, worker.ID)
+			}
+			owners[kind] = worker.ID
+		}
+		for _, slot := range worker.PromptSlots {
+			if !slices.Contains(Slots, slot) {
+				t.Fatalf("worker %s uses unknown slot %q", worker.ID, slot)
+			}
+		}
+		tools := map[string]bool{}
+		for _, tool := range worker.Tools {
+			if tool.Name == "" || tool.Description == "" || !json.Valid(tool.InputSchema) || tools[tool.Name] {
+				t.Fatalf("worker %s tool %q is malformed or duplicated", worker.ID, tool.Name)
+			}
+			tools[tool.Name] = true
+		}
 	}
 }
 
@@ -147,7 +171,7 @@ func testCompileRequest(t *testing.T) CompileRequest {
 		t.Fatalf("load writer capability: %v", err)
 	}
 	return CompileRequest{
-		ProjectID: "book-1", CoreProtocolVersion: "core-v1", Worker: worker,
+		ProjectID: "book-1", Worker: worker,
 		Packs: []VersionedPack{
 			{Revision: 2, Manifest: model.PackManifest{ID: "xianxia", Version: "1", Name: "仙侠", Rules: []string{"克制升级速度"}, PromptOverlays: map[string]string{"writer.chapter_draft": "重视场景感"}}},
 			{Revision: 1, Manifest: model.PackManifest{ID: "mystery", Version: "1", Name: "悬疑", Rules: []string{"线索必须可回溯"}}},

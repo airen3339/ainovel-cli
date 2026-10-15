@@ -22,12 +22,6 @@ func (r *Runtime) Execute(ctx context.Context, operation model.Operation) (model
 	if !r.Bound() {
 		return model.OperationOutcome{}, fmt.Errorf("capability model is not bound: %w", model.ErrInvalid)
 	}
-	if operation.State != model.OperationRunning {
-		return model.OperationOutcome{}, fmt.Errorf("operation %q is %s: %w", operation.ID, operation.State, model.ErrStateConflict)
-	}
-	if operation.Snapshot.Executor != r.Identity() {
-		return model.OperationOutcome{}, fmt.Errorf("operation executor %q does not match runtime %q: %w", operation.Snapshot.Executor, r.Identity(), model.ErrStateConflict)
-	}
 	task, err := model.DecodeTaskInput(operation.Kind, operation.Input)
 	if err != nil {
 		return model.OperationOutcome{}, err
@@ -115,7 +109,7 @@ func (r *Runtime) Execute(ctx context.Context, operation model.Operation) (model
 	promptText := compiled.DynamicTail
 	if len(recoveredMessages) > 0 || len(workspaceArtifacts) > 0 || lastFailure != "" {
 		promptText = fmt.Sprintf(
-			"%s\n\n继续已有 Operation 工作区：当前是第 %d 次尝试，已恢复 %d 条消息和 %d 个工件。先用 workspace_list 核对版本，从已有工件继续，不要从头重写。",
+			"%s\n\n继续已有 Operation 工作区：当前是第 %d 次尝试，已恢复 %d 条消息和 %d 个工件。从已有工件继续，不要从头重写。",
 			compiled.DynamicTail, operation.Attempt, len(recoveredMessages), len(workspaceArtifacts),
 		)
 	}
@@ -267,12 +261,10 @@ func toolErrors(message agentcore.Message) int {
 func taskActivityScope(task model.TaskInput) activity.Scope {
 	switch input := task.(type) {
 	case *model.WriteChapterInput:
-		return activity.Scope{ChapterNumber: input.ChapterNumber, PlanNodeID: input.ChapterPlanID}
+		return activity.Scope{PlanNodeID: input.ChapterPlanID}
 	case *model.RewriteChapterInput:
-		return activity.Scope{ChapterNumber: input.ChapterNumber, PlanNodeID: input.ChapterPlanID, ChapterIDs: []string{input.ChapterID}}
+		return activity.Scope{PlanNodeID: input.ChapterPlanID, ChapterIDs: []string{input.ChapterID}}
 	case *model.ReviewRangeInput:
-		return activity.Scope{ChapterIDs: input.ChapterIDs}
-	case *model.RewriteAffectedInput:
 		return activity.Scope{ChapterIDs: input.ChapterIDs}
 	case *model.ReviseCanonInput:
 		return activity.Scope{ChapterIDs: []string{input.ChapterID}}

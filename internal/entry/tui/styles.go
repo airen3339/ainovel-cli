@@ -4,23 +4,6 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/lipgloss"
-)
-
-// Shared widgets use the same semantic palette as the workbench.
-var (
-	colorAccent  = benchColors.Accent
-	colorMuted   = benchColors.Muted
-	colorWarn    = benchColors.Warning
-	colorDanger  = benchColors.Error
-	colorSuccess = benchColors.Success
-
-	styleTitle  = benchTheme.Title
-	styleHint   = lipgloss.NewStyle().Foreground(colorMuted)
-	styleFocus  = lipgloss.NewStyle().Bold(true).Foreground(colorAccent)
-	styleErr    = lipgloss.NewStyle().Foreground(colorDanger)
-	styleNotice = lipgloss.NewStyle().Foreground(colorSuccess)
-	styleWarn   = lipgloss.NewStyle().Bold(true).Foreground(colorWarn)
 )
 
 // spinnerFrames 是进行中步骤与顶栏的转圈，随创作动画的节拍换帧（pulse.go）。
@@ -31,8 +14,8 @@ func newInput(placeholder string) textinput.Model {
 	input := textinput.New()
 	input.Placeholder = placeholder
 	input.Prompt = "❯ "
-	input.PromptStyle = styleFocus
-	input.PlaceholderStyle = styleHint
+	input.PromptStyle = benchTheme.Focus
+	input.PlaceholderStyle = benchTheme.Muted
 	return input
 }
 
@@ -47,7 +30,7 @@ func progressBar(done, total, width int) string {
 	width = max(0, width)
 	done = max(0, done)
 	filled := done * width / total
-	bar := styleFocus.Render(strings.Repeat("▰", filled)) +
-		styleHint.Render(strings.Repeat("▱", width-filled))
+	bar := benchTheme.Focus.Render(strings.Repeat("▰", filled)) +
+		benchTheme.Muted.Render(strings.Repeat("▱", width-filled))
 	return bar
 }

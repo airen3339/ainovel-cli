@@ -60,7 +60,7 @@ func (s *Store) CreateSuccessorOperation(ctx context.Context, previousID string,
 		return model.Operation{}, fmt.Errorf("restart source is %s: %w", previous.State, model.ErrStateConflict)
 	}
 	if operation.Target != previous.Target || operation.Kind != previous.Kind ||
-		(previous.RunID != "" && operation.RunID != previous.RunID) {
+		operation.RunID != previous.RunID {
 		return model.Operation{}, fmt.Errorf("restart source identity differs: %w", model.ErrInvalid)
 	}
 	created, err := createOperationTx(ctx, tx, operation)
@@ -92,9 +92,7 @@ func createOperationTx(ctx context.Context, tx *sql.Tx, operation model.Operatio
 	if operation.State != model.OperationQueued {
 		return model.Operation{}, fmt.Errorf("new operation must be queued: %w", model.ErrInvalid)
 	}
-	if spec, err := model.KindSpec(operation.Kind); err != nil {
-		return model.Operation{}, err
-	} else if spec.RequiresRun && strings.TrimSpace(operation.RunID) == "" {
+	if strings.TrimSpace(operation.RunID) == "" {
 		return model.Operation{}, fmt.Errorf("%s operation requires a creation run: %w", operation.Kind, model.ErrInvalid)
 	}
 	if operation.RunPolicyVersion != 0 {
@@ -123,34 +121,32 @@ func createOperationTx(ctx context.Context, tx *sql.Tx, operation model.Operatio
 	// Run 归属与策略版本在同一事务内校验并落行（§6.3）：策略版本 = 创建时刻
 	// 最近一次非 Operation 事件的序号。
 	// 策略版本不参与幂等 digest——重入时事件日志可能已推进，身份以调用方输入为准。
-	if operation.RunID != "" {
-		var runProjectID string
-		var runState model.CreationRunState
-		if err := tx.QueryRowContext(ctx, `
-			SELECT project_id, state FROM creation_runs WHERE id = ?`, operation.RunID,
-		).Scan(&runProjectID, &runState); errors.Is(err, sql.ErrNoRows) {
-			return model.Operation{}, fmt.Errorf("creation run %q: %w", operation.RunID, model.ErrNotFound)
-		} else if err != nil {
-			return model.Operation{}, fmt.Errorf("read creation run ownership: %w", err)
-		}
-		if operation.Target.Kind != model.AuthorityProject || operation.Target.ID != runProjectID {
-			return model.Operation{}, fmt.Errorf(
-				"operation target does not match creation run project %q: %w", runProjectID, model.ErrInvalid,
-			)
-		}
-		switch runState {
-		case model.RunRunning, model.RunWaitingUser, model.RunPaused:
-		default:
-			return model.Operation{}, fmt.Errorf(
-				"creation run %q is %s: %w", operation.RunID, runState, model.ErrStateConflict,
-			)
-		}
-		if err := tx.QueryRowContext(ctx, `
-			SELECT COALESCE(MAX(sequence), 0) FROM creation_run_events
-			WHERE run_id = ? AND kind != ?`,
-			operation.RunID, model.RunEventOperationCreated).Scan(&operation.RunPolicyVersion); err != nil {
-			return model.Operation{}, fmt.Errorf("read run policy version: %w", err)
-		}
+	var runProjectID string
+	var runState model.CreationRunState
+	if err := tx.QueryRowContext(ctx, `
+		SELECT project_id, state FROM creation_runs WHERE id = ?`, operation.RunID,
+	).Scan(&runProjectID, &runState); errors.Is(err, sql.ErrNoRows) {
+		return model.Operation{}, fmt.Errorf("creation run %q: %w", operation.RunID, model.ErrNotFound)
+	} else if err != nil {
+		return model.Operation{}, fmt.Errorf("read creation run ownership: %w", err)
+	}
+	if operation.Target.Kind != model.AuthorityProject || operation.Target.ID != runProjectID {
+		return model.Operation{}, fmt.Errorf(
+			"operation target does not match creation run project %q: %w", runProjectID, model.ErrInvalid,
+		)
+	}
+	switch runState {
+	case model.RunRunning, model.RunWaitingUser, model.RunPaused:
+	default:
+		return model.Operation{}, fmt.Errorf(
+			"creation run %q is %s: %w", operation.RunID, runState, model.ErrStateConflict,
+		)
+	}
+	if err := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(MAX(sequence), 0) FROM creation_run_events
+		WHERE run_id = ? AND kind != ?`,
+		operation.RunID, model.RunEventOperationCreated).Scan(&operation.RunPolicyVersion); err != nil {
+		return model.Operation{}, fmt.Errorf("read run policy version: %w", err)
 	}
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO operations (
@@ -187,13 +183,9 @@ func createOperationTx(ctx context.Context, tx *sql.Tx, operation model.Operatio
 			return model.Operation{}, fmt.Errorf("link operation dependency %q: %w", dependency, err)
 		}
 	}
-	if operation.RunID != "" {
-		if err := appendRunEventTx(ctx, tx, operation.RunID, model.RunEventOperationCreated, struct {
-			OperationID   string `json:"operation_id"`
-			PolicyVersion int64  `json:"policy_version"`
-		}{operation.ID, operation.RunPolicyVersion}, operation.CreatedAt); err != nil {
-			return model.Operation{}, err
-		}
+	if err := appendRunEventTx(ctx, tx, operation.RunID, model.RunEventOperationCreated,
+		model.OperationCreated{OperationID: operation.ID, PolicyVersion: operation.RunPolicyVersion}, operation.CreatedAt); err != nil {
+		return model.Operation{}, err
 	}
 	return operation, nil
 }

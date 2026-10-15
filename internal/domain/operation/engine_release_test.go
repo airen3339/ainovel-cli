@@ -33,7 +33,7 @@ func TestCancelledExecutionReleasesOperationForResume(t *testing.T) {
 	}
 	defer authorityStore.Close()
 	now := time.Now().UTC()
-	input := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1","chapter_number":1}`)
+	input := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1"}`)
 	operation := model.Operation{
 		ID: "interrupted", Kind: model.OperationWriteChapter,
 		Target:   model.AuthorityTarget{Kind: model.AuthorityProject, ID: "book-1"},

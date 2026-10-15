@@ -62,9 +62,9 @@ func (s *Store) GetChangeSet(ctx context.Context, id string) (model.ChangeSet, e
 	}
 	changeSet.ID = id
 	changeSet.OperationID = operationID.String
-	changeSet.Impact.Structural = append(json.RawMessage(nil), structural...)
-	changeSet.Impact.Semantic = append(json.RawMessage(nil), semantic...)
-	changeSet.Impact.Compliance = append(json.RawMessage(nil), compliance...)
+	if changeSet.Impact, err = impactOf(structural, semantic, compliance); err != nil {
+		return model.ChangeSet{}, err
+	}
 	changeSet.CreatedAt = time.UnixMilli(createdAt).UTC()
 	if decidedByKind.Valid && decidedByID.Valid {
 		changeSet.DecidedBy = &model.Author{Kind: model.AuthorKind(decidedByKind.String), ID: decidedByID.String}

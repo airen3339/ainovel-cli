@@ -395,8 +395,9 @@ pack:<pack_id>
 
 - `auto`：满足权限和风险条件时自动接受；
 - `milestone`：卷、弧、重大 Canon 变化时确认；
-- `manual`：所有内容 ChangeSet 都需确认；
-- `custom`：按内容类型、作用域和风险配置。
+- `manual`：所有内容 ChangeSet 都需确认。
+
+按内容类型、作用域和风险配置的自定义策略要等有了策略契约与严格序再加入枚举，不预留占位值。
 
 milestone 的判定对象是变化的重大性。例行推进——每章正文与随章提交的 Canon Delta——不构成 milestone；若把例行 Canon Delta 一律判为重大变化，milestone 将塌缩为 manual，中间档随之消失。milestone 只能由三类来源触发：显式卷/弧边界、用户标记的节点、或版本化且可审计的影响分类结果；Writer 不得自行宣称其 Proposal 是否重大，分类不确定时进入用户确认。分类必须是版本化领域契约，Host 内不得散落硬编码的文学语义判断。
 
@@ -414,7 +415,7 @@ milestone 的判定对象是变化的重大性。例行推进——每章正文�
 
 “同一内核的两种预设”成立的前提，是预设之间可以在一本书写作中途连续调节。控制强度变更（增删 locked/guided、调整审批策略）本身是正式的事实变更，走统一变更协议；其生效语义是不对称的：
 
-1. **收紧立即生效**：提交裁决取“Operation 启动快照与最新已批准 Revision 中更严格的一方”。严格序是确定性的：审批 `auto < milestone < manual`，控制 `open < guided < locked`；`custom` 在没有比较契约前继续显式拒绝。“立即生效”指对下一次 Authority 提交生效，不承诺中断已经发出的模型请求。严格序只比较控制级别；同级 guidance 内容变化（如叙事人称从第一人称改为第三人称）不参与大小比较——在途任务同时接受新旧约束校验，二者不兼容或无法判定时进入等待用户裁决，新 Operation 只使用最新规则。Execution Profile 冻结只覆盖 Prompt、工具与模型配置，从不覆盖权限与审批。
+1. **收紧立即生效**：提交裁决取“Operation 启动快照与最新已批准 Revision 中更严格的一方”。严格序是确定性的：审批 `auto < milestone < manual`，控制 `open < guided < locked`。“立即生效”指对下一次 Authority 提交生效，不承诺中断已经发出的模型请求。严格序只比较控制级别；同级 guidance 内容变化（如叙事人称从第一人称改为第三人称）不参与大小比较——在途任务同时接受新旧约束校验，二者不兼容或无法判定时进入等待用户裁决，新 Operation 只使用最新规则。Execution Profile 冻结只覆盖 Prompt、工具与模型配置，从不覆盖权限与审批。
 2. **放松不追溯**：解锁与调松只作用于新 Operation 或显式 restart，在途任务继续按更严格的一方裁决。
 3. **受阻即暂停，不作废**：在途任务因收紧而无法自动继续时转入可恢复的等待态，工作区与已写内容保留；“取消并重启”只能是用户的显式选择，不是系统的默认出路。
 4. **等待不惩罚用户**：等待用户裁决的提案不因裁决速度而作废。提案重定位规则（D51，已实现）：提案基线落后于当前 Revision 时，仅当从 base revision 到当前 revision 的每个 ChangeSet 只改过用户专属文档（登记表 `UserOnly`：ownership / approval / overlay / assets / directive / adjudication）、没有碰本提案自己要改的文档，且任务基线（§6.4 D48：章节任务为本章要求作用域摘要，扩窗任务为所依据的窗口裁定基线）在当前 Revision 仍成立时，才确定性把基线搬到当前、重算结构影响并重新裁决（候选内容保留，合规证据须覆盖当前约束）；任何正文、Plan、Entity、Canon 或附件的变化，或相干要求的变化，都不得自动重定位——此时旧 Operation 标记 stale 但保留 Workspace，由 CreationRun 创建继承该工作区的后继 Operation，整本创作不中止。Overlay 与 Assets 是执行配置，按 D20/D48 只作用于新任务，不使在途任务失效。同一条规则用于执行收尾、用户批准、工作台的过期判定与续跑时等待审批的任务（D79）；裁定任务不提交内容，只要其基线在当前仍成立即收尾。Directive 的新增与退役按 §4.9 第 5 条：作用域与在途任务目标不相交时不构成过期，相交时同此处理。没有任务的提案（主编的修改，D77）不是照着任务上下文写的：中间各 Revision 没碰它的文档就能搬；带语义影响报告的，报告判断过的文档其间都不能变，搬过去后也不能波及报告之外的文档。
@@ -423,7 +424,7 @@ milestone 的判定对象是变化的重大性。例行推进——每章正文�
 
 长期操作本身必须持久化，使用户可以查看、暂停、取消、重排和恢复任务。下一步可以由 Coordinator 根据当前事实确定性推导（§6.3），但推导结果必须先持久化为 Operation 才能执行；禁止只存在于内存中的隐式调度循环。
 
-首批 Operation 类型（`domain/model` 内一张种类登记表 `OperationKindSpec`：执行族、是否归属 CreationRun、是否消耗修订预算、进行中的文案、类型化任务输入；各层按类型解码，不各写一份匿名结构，D50）：
+首批 Operation 类型（`domain/model` 内一张种类登记表 `OperationKindSpec`：执行族、进行中的文案、类型化任务输入；各层按类型解码，不各写一份匿名结构，D50。每个 Operation 都归属一次 CreationRun；自动修订按任务输入计数，D85）：
 
 ```text
 DevelopPlan         llm
@@ -431,7 +432,6 @@ WriteChapter        llm
 RevisePlan          llm
 ReviseCanon         llm
 RewriteChapter      llm
-RewriteAffected     llm
 ReviewRange         llm
 GenerateAsset       external   为某文档生成一份衍生工件并以附件挂回权威
 InspectAsset        external   核验不可变工件，产出领域检查证据（受控验收实例）
@@ -451,9 +451,9 @@ Operation 的产出统一表达为 Outcome：`proposal`、`verdict`、`artifacts
 
 ### 6.1 Operation Workspace
 
-模型工具层读取工件时，将 JSON 内容直接返回为 JSON 对象／数组；`workspace_list` 仅返回 key、version 等元数据，正文通过 `workspace_read` 获取。存储层仍使用字节内容，不改变持久化格式。
+模型工具层读取工件时，将 JSON 内容直接返回为 JSON 对象／数组。写章任务只有一份章节工作稿，`workspace_read` 不带参数，读回它的段落编号与正文（D86）。存储层仍使用字节内容，不改变持久化格式。
 
-正文只经工作稿提交：单章必传 `workspace_key` 与 `workspace_version`，批量重写必传 `workspace_versions`（key 到版本的映射）。Host 校验版本后从工作稿逐字装配正文 patch，`patches` 从不携带正文（补丁种类不含 manuscript，出现即拒），模型只提交 Canon Delta、实体等附带变更；版本冲突明确拒绝，不静默使用最新稿。生成的 Proposal 继续经过原有章节范围、字数、Canon 和结构校验，不直接写入权威状态。
+正文只经工作稿提交：一次写章任务只写一章、只有一份章节工作稿，键由 Host 定（`chapter`），`workspace_put_chapter` 与 `workspace_replace_block` 都不带键；`proposal_submit` 不带工作稿键与版本，Host 取本章工作稿的当前版本逐字装配正文 patch（D86）。`patches` 从不携带正文（补丁种类不含 manuscript，出现即拒），模型只提交 Canon Delta、实体等附带变更。生成的 Proposal 继续经过原有章节范围、字数、Canon 和结构校验，不直接写入权威状态。
 
 Operation 必须拥有可持久化但非权威的工作区，用来保存：
 
@@ -525,7 +525,7 @@ Creation Coordinator 位于独立的 `creation` 包，通过公开 Goal 契约�
 
 `work` 驱动一个 Operation（槽位 ID、种类、类型化输入与等待/失败/卡死文案），`wait` 转 `waiting_user`，`done` 绑定所检查的 Revision 完成，`fail` 是确定性失败；同一槽位成功后再次出现即卡死判定，绝不无限重试。小说适配器负责读取审阅裁定和预算，小说 `Policy.Next` 是纯函数；完成契约、先审后扩和重写目标都在小说包内。驱动不加载小说快照、审阅或媒体证据，新目标实现通过公开构造接口注册，测试不访问注册表私有字段。
 
-小说的推导方式是**缺口对账**而不是固定流程（D36）：小说规则从当前 Revision 与 Run 证据中枚举缺口——尚无已批准正文的章节、缺失或已失效的审阅裁定、未满足的 Directive、受影响待重写的章节、用户点名返工的章节（D78）、用户显式发起的任务——按确定性优先级填补；缺口清零且完成契约（§6.4）满足即 completed。用户发起的 Operation（点名重写某章、影响修复 `RewriteAffected`）是缺口的一种来源，必须进入同一推导链并由同一驱动循环执行，不得成为无人驱动的孤儿任务（D77 起 S4 的处置任务经 `Evidence.Requested` 排在审阅与续写之前；D78 的返工紧随其后，也在审阅之前）。主编（D74）不创建 Operation：它改的是作品与运行目标，下一步仍由缺口对账推出。新增一种用户控制形式不得为 Coordinator 增加分支：控制通过权威文档改变“缺口是什么”与“Story Context 里有什么”，Coordinator 只对缺口做对账。
+小说的推导方式是**缺口对账**而不是固定流程（D36）：小说规则从当前 Revision 与 Run 证据中枚举缺口——尚无已批准正文的章节、缺失或已失效的审阅裁定、未满足的 Directive、用户点名返工的章节（D78，含语义影响处置里选的重写受影响的章，D86）——按确定性优先级填补；缺口清零且完成契约（§6.4）满足即 completed。用户要重写已写的内容，记成权威文档（返工要求），缺口由它推出，不预先建 Operation；返工排在审阅之前。主编（D74）不创建 Operation：它改的是作品与运行目标，下一步仍由缺口对账推出。新增一种用户控制形式不得为 Coordinator 增加分支：控制通过权威文档改变“缺口是什么”与“Story Context 里有什么”，Coordinator 只对缺口做对账。
 
 任务的创作指导语（“如何设计卷弧”“如何按审阅意见重写”）属于 Prompt Slot（§7.2）。Coordinator 与 Operation Task 只提供事实：目标节点、窗口、命中的 Directive、审阅意见与基线 Revision；不得在 Coordinator 里硬编码创作方法文本，否则 Overlay / Profile / Pack 的分层覆盖对它无效。
 
@@ -644,8 +644,7 @@ Capability Runtime 不在同一 Agent 会话里按状态动态增删工具。它
 ```text
 architect.design         设计 Intent / Plan 候选
 writer.compose           从计划创作新章节工作稿
-writer.revise            从已批准版本生成修订工作稿
-writer.revise_affected   按影响报告重写受波及章节
+writer.revise            从已批准版本生成修订工作稿（审阅意见或返工要求）
 editor.review            审阅范围并生成 Review / Proposal
 ```
 
@@ -656,10 +655,10 @@ id + version
 prompt_slots
 ordered_tool_schemas
 model_role
-input_contract
-output_contract
 stop_condition
 ```
+
+稳定前缀里的 Worker 契约只写 stop_condition：工具 Schema 随请求的 tools 发送，不在提示词里再写一遍；任务输入的形状由任务种类的类型决定（`model.TaskInput`），不另设契约。Worker Profile 是代码里的静态定义，结构由测试守护；每种任务只归一个 Worker，启动任务不传 Profile；核心协议版本由编译器持有。
 
 工具 Schema 纪律：参数直接使用有类型的对象和数组，禁止把第二层 JSON 塞进字符串字段让模型手工转义；Host 永远执行本地 Schema 与领域校验，不能把 provider 的 strict tool calling 当作可信边界。一次工具调用只表达一个可验证动作，失败保留原始错误、参数摘要和 Operation 步骤，不吞错、不伪造成功。
 
@@ -842,7 +841,6 @@ internal/
 │   ├── task/               # 任务启动、重启、执行器路由与用户控制
 │   ├── decision/           # 候选审批、拒绝、回退与受影响内容重写
 │   ├── chief/              # 主编：对话会话、工具、书况、引用校验与这本书的创作推进（D74）
-│   ├── evidence/           # 有效工件与检查证据查询
 │   └── workbench/          # 工作台只读模型、展示数据与活动订阅
 ├── infra/                  # 技术适配与持久化实现
 │   ├── store/              # SQLite 权威版本、任务、运行、派生数据、对话记录与事务
@@ -930,7 +928,7 @@ README 只负责启动和使用入口，不维护另一份架构或完成度清�
 | D03 | Plan 最小节点 | **已决定** | volume/arc/chapter/beat，全部使用稳定 ID |
 | D04 | Canon 权威来源 | **已决定** | 最新批准 Revision 唯一权威；AI 正文与 Canon Delta 同 ChangeSet 原子提交 |
 | D05 | Ownership 粒度 | **已决定** | DocumentRef/结构节点级，不做字段级权限树 |
-| D06 | Approval Policy | **已决定** | 首版提供 auto/milestone/manual；custom 仅保留枚举，没有策略契约时显式拒绝 |
+| D06 | Approval Policy | **已决定** | 首版提供 auto/milestone/manual；自定义策略等有策略契约时再加入枚举（D85 删去占位的 custom） |
 | D07 | 存储方案 | **已决定并验证** | SQLite 权威 + 显式 JSONC 导入导出投影；投影不是第二事实源 |
 | D08 | Operation 调度模型 | **已决定** | 持久化优先级队列 + 显式依赖，不建设通用 DAG 平台 |
 | D09 | Prompt Overlay 语义 | **已决定** | 首版 Slot 级确定性追加；Core/Worker Contract 不可替换 |
@@ -1067,7 +1065,7 @@ Runtime 直接运行单次 `agentcore.Run`：串行工具执行，每条消息�
 - 正文段落说明写明中文引号与禁用内部 ID：10 次 JSON 损坏中 6 次是正文里未转义的英文双引号，整章白写；已入账正文里的英文引号、"比ch-3时" 同源。
 其余（多写括号、字段错层、猜 ID、审阅自拟 checks 等）是模型能力，报错已足以自纠，不改。
 
-仍未清的（同一标准，待动手）：工作稿 `key` 由模型自由命名（`ch-001-draft`、`chapter-4-draft`、`ch-010` 并存），回读时只能猜自己起的名字，单轮 10 次读不存在的 key；而 `workspace_put_chapter` 的 payload 已有 `chapter.id`，key 与之冗余。改它会连带 `proposal_submit` 的 `workspace_key(s)`，动的是提交路径，单独排期。另有一类不同根因：`proposal_submit` 的 `patches[].content` 是自由 object，entity/canon/plan 的形状与取值域全部写在一段约 800 字的散文描述里，约 14% 的报错出自这里。
+仍未清的（同一标准，待动手）：~~工作稿 `key` 由模型自由命名（`ch-001-draft`、`chapter-4-draft`、`ch-010` 并存），回读时只能猜自己起的名字，单轮 10 次读不存在的 key；而 `workspace_put_chapter` 的 payload 已有 `chapter.id`，key 与之冗余。改它会连带 `proposal_submit` 的 `workspace_key(s)`，动的是提交路径，单独排期。~~ D86 已解决：章节工作稿的键由宿主定，写章工具与提交都不带键和版本。另有一类不同根因：`proposal_submit` 的 `patches[].content` 是自由 object，entity/canon/plan 的形状与取值域全部写在一段约 800 字的散文描述里，约 14% 的报错出自这里。
 
 ### D61：Canon 概念身份与有界创作上下文（2026-09-24）
 
@@ -1225,7 +1223,7 @@ v0 由 AI 定篇幅：指南针加滚动续卷，模型宣布完结，确定性�
    - 通用结构：种类、内容、只追加、工件、依赖图；每份文档的依赖只算一次。然后调用 `model.ValidateChange`。
    - 提案带 `OperationID` 时载入任务，取不到即报错。工具边界 `Validate`、执行收尾 `PrepareExecution`、用户批准 `Commit` 因此执行同一份契约。
    - 授权：用户专属、Ownership 控制、`model.RequiresUser`。guided 的系统放行与执行收尾共用 `complianceGap`：证据须绑定当前候选与约束的摘要，且结论为 pass。
-   - `Admit` 给出执行提案的放行结论 `{Policy, Constraints, Basis, Analyze, Hold}`。
+   - `Admit` 给出执行提案的放行结论 `{Policy, Constraints, Basis, Analyze, Hold}`；授权边界（用户专属、锁定、须用户裁决的 AI 变更）与提交时是同一个 `authorize`，挡下的也记为 Hold，调用方不再靠提交报权限错误来判断等待。
    - 重定位分三个入口：
      - `Relocate`：纯计算，按所属任务取基线；
      - `RelocatePending`：搬迁并落库；
@@ -1233,7 +1231,7 @@ v0 由 AI 定篇幅：指南针加滚动续卷，模型宣布完结，确定性�
      
      后两者都经 store `UpdatePendingProposal`，由它断言同一份提交（`model.SameSubmission`）、仍为 pending、基线不回退。`PrepareExecution` 内部先重定位。
 3. **Operation Engine 只编排**：
-   - 收尾顺序：`PrepareExecution` → `RelocatePending` → `Admit` → 按需独立分析 → `RecordCompliance` → 再 `Admit` → Hold 则 awaiting，否则系统裁决并 `CommitExecution`。
+   - 收尾顺序：`PrepareExecution` → `RelocatePending` → `Admit` → 按需独立分析 → `RecordCompliance` → 再 `Admit` → Hold 则 awaiting，否则 `Admission.Approve` 以策略名义批准并 `CommitExecution`。
    - 基线冲突统一转 stale，工件在一处附加。
    - 收尾写入被围栏拒绝时回读持久化状态，协调器按真实状态单点分派；执行后仍 queued/running 是基础设施错误，Run 保持可续跑。
    - 审阅证据契约迁到 `app/novel.ReviewEvidence`，与扩展契约一样由组合根装配。
@@ -1273,7 +1271,7 @@ v0 由 AI 定篇幅：指南针加滚动续卷，模型宣布完结，确定性�
 3. **保留 ID**：`official` 不允许用户安装。想定制，就导出后改 id，作为自己的包安装。
 4. **默认启用**：`project.CreateProject` 在创建提交里写入 `assets`，固定官方包的当前版本；`project` 通过 `OfficialPack` 端口取得引用，不反向依赖 `resource`。已有作品保持固定版本（D31）；`project assets --pack official` 解析浮动引用时先同步，再固定到最新内置版本。
 5. **内容纪律**：只写创作方法，不写协议、不引用字段名、不带题材色彩；每个 Worker 的包文本约 650–900 字。暂不使用 references：编译器会把全部 references 注入给每个 Worker，不按角色裁剪。方法直接写进各角色的 Slot。
-6. **Slot 归属**：重写 Worker（`writer.revise`、`writer.revise_affected`）同时挂 `writer.chapter_draft`，重写与新写共用同一份写作标准。
+6. **Slot 归属**：重写 Worker（`writer.revise`）同时挂 `writer.chapter_draft`，重写与新写共用同一份写作标准。
 7. **lint**：一个包同时服务多个 Worker 是常态。`prompt lint` 不再对"属于其他 Worker 的 Slot"报诊断（原 `inactive_pack_overlay`），只报任何内置 Worker 都不用的 Slot（`unknown_pack_slot`，多半是拼错，会静默失效）。
 8. **守护**：
    - `assets` 测试：内置 Worker 用到的每个 Slot 都有官方文本，官方包不声明无人使用的 Slot。
@@ -1657,7 +1655,7 @@ v0 由 AI 定篇幅：指南针加滚动续卷，模型宣布完结，确定性�
    - 作品方向里新写的文字与锁定时给的指导，同样要逐字出自用户（D74 第 3 条）。
 3. **放行规则与任务提案相同**。
    - 没有任务快照，审批下限取项目当前设置。
-   - 能放行的，由系统以 `approval-policy:<策略>` 的名义批准并提交。提交被权限拒绝（D25 无条件确认清单、锁定）就留作待确认。
+   - 能放行的，由系统以 `approval-policy:<策略>` 的名义批准并提交。`Admit` 判为等待（含 D25 无条件确认清单、锁定）的就留作待确认。
    - 同一时刻只有一份待确认的主编修改：新的提出成功后，撤回旧的。
 4. **语义影响按需分析（S4）**。
    - 只有修改可能与已写章节矛盾时才做语义分析。范围是 `model.SemanticScope`：
@@ -1669,7 +1667,7 @@ v0 由 AI 定篇幅：指南针加滚动续卷，模型宣布完结，确定性�
 5. **创作等主编的修改**。
    - 有待确认的主编修改时，推导返回等待（“主编提出的修改等你确认”）：它可能改了接下来要写的东西。用户确认或主编撤回后接着对账。
    - 主编撤回修改或修改直接生效后，停下等用户的创作重新对账。
-6. **用户发起的处置进入推导链**。S4 的“重写受影响的章”建出的任务归属进行中的创作。推导把它排在审阅与续写之前（`Evidence.Requested`）：按处置提案分组，取最新一次未成功的那条链的首个任务。§6.3“用户发起的 Operation 是缺口的一种来源”由此落地。
+6. ~~**用户发起的处置进入推导链**。S4 的“重写受影响的章”建出的任务归属进行中的创作。推导把它排在审阅与续写之前（`Evidence.Requested`）：按处置提案分组，取最新一次未成功的那条链的首个任务。§6.3“用户发起的 Operation 是缺口的一种来源”由此落地。~~ D86 起改为逐章记返工要求，由返工缺口推出，不再预建任务。
 7. **没有任务的提案怎么重定位**（补 D51）：
    - 中间各 Revision 没碰提案自己的文档，就能搬到当前。
    - 带语义影响报告的，报告判断过的文档（提案基线上的结构影响全集与语义范围）其间都不能变。
@@ -1747,8 +1745,8 @@ v0 由 AI 定篇幅：指南针加滚动续卷，模型宣布完结，确定性�
    - 回执写“已写的 N 章按它重写”。
    - 记下后创作接着对账：进行中的创作接着写，用户暂停的不动；完本或停止的书开新一轮（D29）。
 5. **完本的书也能处置 S4**。
-   - `novel.EnsureRun` 取进行中的那一轮；没有就按上一轮的篇幅开新一轮，但不推进。
-   - `chief.Session.Resolve` 在选“重写受影响的章”时，先用它定下归属的运行。
+   - ~~`novel.EnsureRun` 取进行中的那一轮；没有就按上一轮的篇幅开新一轮，但不推进。~~
+   - ~~`chief.Session.Resolve` 在选“重写受影响的章”时，先用它定下归属的运行。~~ D86 起选它就是记返工要求，与第 4 条同一条路：完本或停止的书开新一轮。
    - 确认与处置都经会话（`Session.Confirm` / `Resolve`），之后创作接着对账。界面只负责转交。
 6. **接着对账的范围变宽**。主编修改生效、撤回或用户确认之后，不再只唤醒等用户的创作：所有没被用户暂停的进行中创作都接着推进，已经在写的不重复启动。改动可能在等待之外带来新的事要做。
 7. **界面**：
@@ -2128,3 +2126,94 @@ v0 由 AI 定篇幅：指南针加滚动续卷，模型宣布完结，确定性�
 - 本仓不加兜底：litellm 发版后升级依赖即可。
 
 **验证手段**：`live_test.go` 的现场轮询把实时活动里的重试记进日志（调用级“重试第 N 次：原因”与任务重开），重试不落库，以前日志里看不到。合盖睡眠后的恢复是靠流式静默超时重发还是连接本身存活，下次长跑可从这里分辨。
+
+### D85：流程架构梳理后的整体收敛（2026-10-15）
+
+**起因**：10-14 对照代码把整条流程梳理了一遍（入口 → 主编 → 推导 → 任务 → 执行 → 变更协议 → 存储）。骨架是清楚的：写路径唯一（`store.commitProposal`），内核不认识小说，包依赖无环。不够简洁的地方集中成四种：同一规则写两份、内部重复校验、遗留未删的字段和包、少数业务规则留在 TUI；另有两处结构性的重复机制。这次全部收掉，外部执行族与渲染目标按 §0.5、D52 保留。
+
+**行为修正**：
+1. **Goal 的错误不再把运行判成失败**。`Goal.Next` 返回错误即“这一步没有结论”，运行保持可续；只有不带错误的 `Step.Fail` 才落 failed。读审阅结果时的存储错误以前会直接终结整轮创作。
+2. **“接受现状”一次提交**。`AddAdjudication` 收多条发现，一次决定一次提交，每条发现各记一条裁决（基线来自各自的裁定，不能合成一条）；TUI 只调一次，中途失败不会只接受一半。
+3. **导入的待批草案进工作台快照**。快照把非运行的待批提案纳入 Decision，离开工作台再回来卡片还在；新书与已有书的分支下沉到 project。主编退回用户自己的草案即作罢，不启动写作。
+4. Slot 清单只留一份（主编方法不再被 `prompt lint` 误报）；稳定前缀的能力契约块只留 stop_condition 等真正有读者的字段，删掉 `InputContract / OutputContract` 与核心协议版本参数（编译器内常量）。
+
+**同一规则收成一处**：
+- **放行只有一个结论**：`Admit` 吸收用户专属与锁定的判断，给出 `Hold` 或可批准；`Admission.Approve` 是唯一的放行出口。两处调用方的“碰到 ErrUnauthorized 当等待”分支删除。
+- 完成判断、“这一章要不要返工”（`novel.ReworksDue`）只留一份规则，工作台调用它；TUI 改用 `Directive.DescribeScope`、`Runes()` 与快照字段，审批用词收成一处。
+- 作品⇄文档映射只留 `projectionDocuments` 一份，建书与导入共用；回滚、撤销与导入的状态差合成 `model.StatePatches`。
+- 否决与批准一样在 store 的同一事务里转任务状态。
+- 执行器路由只在 `operation.Engine.Run / RunNext`；审批默认值只在建书时写入一次，快照总有确定的策略；Pack 资源只存 `Manifest.*Data` 一份；Worker 与主编的回查参数共用 `prompt.StoryReadSchema`。
+
+**内部重复校验删到只在边界一次**：
+- 已存文档是提交时验过的，`loadState` 不再整本重验；store 写方法不再重做引擎的检查。
+- derive 不再对已提交数据重复 Marshal 与校验；TUI 与入口去掉对组合根注入物的 nil 守卫。
+- `ImpactReport` 三项改为类型化字段：语义报告在分析器边界由 `model.DecodeSemanticImpact` 严格解码一次（内核仍不点名创作类型，D64），合规报告在 `RecordCompliance` 校验一次，下游直接读结构体。
+- `ReviewVerdict` 不再存 `Status`：结论由发现推出（`Blocking()`，D81），不会与发现矛盾。
+
+**遗留直接删**：
+- `app/evidence` 包；活动记录里已被输出块取代的字段。
+- `ReviewCadence`、占位的 `ApprovalCustom`（D06）、`RequiresRun`（每个 Operation 都归属一次 CreationRun）、与 `RepairChapters` 重复的 `Repair`、单值的 `ScopeBasis.Kind`、`ExternalConfigDigest`。
+- 只有测试在用的 `Review.Propose`、`ProposeWithSemantic`、`Coordinator.RunOperations`、`ListProjects` 整条链、`ActivityFeed` 接口（只有 Hub 一个实现）。
+- 活动 Hub 不再塞进 Runtime 再取回。
+
+**结构收敛**：
+- **章号只有一个来源**：章号就是计划位置（D66）。变更规则校验正文 `Number` 等于计划位置；写章、重写任务输入不再带 `ChapterNumber`，界面按大纲换算。
+- **推导直接构造带类型输入的工作项**：删掉 20 个字段的 `novelItem` 与 `workKind`，各分支按 `chapterSlot` 构造。
+- **运行内核只管编排**：worker 身份与租约在 `task.ForCreation` 绑定，`DriveCommand` 删除，`Drive` 只收时间；运行事件的载荷是类型化的 `model.OperationCreated`。
+- 后继链后缀改为 `:redo<n>`，不再与槽位里的修订号 `:r<rev>` 同形。
+- `CommitUser(ctx, proposal)` 的决定时间就是提案时间，不另传。
+- 配置：地址校验并入 `config.Connection`（向导按 `ErrBaseURL` 定位到地址栏）；界面偏好的读改写收成 `config.UpdateState`。
+- 官方包因主编文字调整升到 v7。
+
+**考虑过、不做**：
+- `SemanticScope` 并入 `PrepareWithSemantic`：导入没有 DependsOn 的章节会跳过语义分析，改变导入语义。
+- 绑定用例不再自存当前绑定、改问执行器：那是用例向执行器询问自己的决定，归属倒置。
+- 主编工具的名称、说明与界面文案并成一张表：前者给模型、后者给用户，两种读者各一处。
+- `narrative.Findings` 的章号范围检查：它用故事语言给模型报错，`AdmitsFinding` 是各执行器共用的规则，分属两个边界。
+- **严格逐字引用**：本轮一度去掉 D79 #5 的标点全半角容忍，长篇实跑（v4.1 flash）随即看到 4 次记要求里有 2 次把“，”写成“,”。容忍只用于比对，入账的始终是用户的写法，D74 的保证一点不少；严格只会让约一半的记要求多一轮失败重摘、对话里留一个 ✗。保留 D79 #5。
+
+**实跑附带的修正**：长篇里主编记完返工要求（已自动开工）又调 `resume_creation`，得到“✗ 已经在写了”。继续创作的目标状态已经成立，改为照实回执、不算失败。
+
+**守护**：
+- `TestStatePatchesFollowCanonContinuity`：恢复已删除的事实是新建、不带旧 old_value（以前回滚、撤销这类事实会被续写规则拒绝）；只差 old_value 不算变化。
+- `TestReviewStatusFollowsFindings`：结论只由阻塞发现推出。
+- `TestDriverSupersedesOnlyReplacedAwaitingWork`：后继链按 `:redo<n>` 识别。
+- `TestMechanismPackagesStayDomainAgnostic`：类型化影响报告后内核仍不点名创作类型。
+- 全量 `go vet`、`go test` 通过；`deadcode` 只剩外部执行族与测试辅助。
+
+**实跑**（v4.1 flash、low）：
+- `TestLiveChiefConversation` 通过（8 章、45 分钟）。
+- `TestLiveChiefLongBook` 通过（40 章 10.7 万字、3h55m，第 30 章点名的要求 satisfied；主编 13 回合累计输入 500K、缓存 464K、输出 5K，没有触发压缩）。
+- S4 见 D86。
+
+**以错误结束的回复**：服务端以 `finish_reason=error` 结束的回复（DeepSeek 的 `insufficient_system_resource` 等，litellm 统一归为 `FinishReasonError`、原值留在 `FinishReasonRaw`）在 agentcore v1.8.5 里不算临时错误，一次都不重试，主编那一回合直接报错。S4 实跑第一回合就撞上了一次（思考到一半被服务端结束）。
+- agentcore v1.8.7 已把它当暂时性失败按 `Retry` 重发，错误里带厂商原因；依赖升到 agentcore v1.8.7、litellm v1.9.5。litellm 不再区分哪些结束原因可重试：写坏的工具调用这类确定性原因换一次采样也常能过，重发次数由 `Retry` 封顶。
+- `llm.Structured` 是本仓自己的单次调用循环，原先不看结束原因：空回复解码失败、按非暂时性错误直接报“不可用”。改成与 agentcore 同一判断，`TestStructuredRetriesAVendorEndedError` 守护。
+
+### D86：S4 的重写受影响的章并入返工，一次写章只有一份工作稿（2026-10-15）
+
+**实证**（10-14 架构梳理）：
+- 已写章节的重写有两套机制。S4 选“重写受影响的章”走 D77：预先建 `RewriteAffected` 任务，牵出 `ResolveProposal` 里的任务创建与幂等核对、`Evidence.Requested` 与按处置提案归并后继链、`affectedItem`、`workAffected`、`novel.EnsureRun`，还有一个专门的多章 Worker（`writer.revise_affected`）。D78 的返工是推导出的缺口，正文 Revision 早于返工要求即重写。两者做的是同一件事：用户要重写已写的章。
+- 多章 Worker 是 `proposal_submit` 必须带 `workspace_key / workspace_version(s)` 的唯一理由。D60 早已记下工作稿 key 由模型自由命名、回读靠猜，待动手。
+
+**决定**：
+1. **选“重写受影响的章”就是逐章记返工要求**。
+   - `ResolveProposal` 先批准修改，再用一次用户提交为每个受影响的章记一条 `rework` 要求：作用域是该章的计划节点，文字是分析给出的处置说明，ID 为 `<提案>:rework:<序号>`（`project.ReworkChapters`）。同一处置重试幂等。
+   - 之后照 D78 走：返工缺口逐章重写，审阅按同一条要求核验，退役要求即取消。写作依据里显示为待按它重写的要求。
+   - 不再需要归属运行：`Session.Resolve` 与主编记返工一样调 `proceed(newRound)`，完本或停止的书开新一轮。
+   - 删除 `OperationRewriteAffected`、`RewriteAffectedInput`、`writer.revise_affected`、`Evidence.Requested`、`affectedItem`、`EnsureRun`；`decision` 不再依赖 `task`；headless `proposal resolve` 去掉 `--run --pack --creator-profile`。
+2. **一次写章任务只有一份章节工作稿，键由宿主定**（D60 的同一标准）。
+   - 键固定为 `chapter`（`workspace.ChapterKey`）。`workspace_put_chapter` 只收 `chapter.blocks`，`workspace_replace_block` 只收 `block_id / text`，都不带键。
+   - `proposal_submit` 不带工作稿键与版本，宿主取本章工作稿的当前版本装配正文。只有本任务自己写这份稿，版本前提守不住任何东西（D81 去掉按段改稿版本前提是同一理由）。
+   - `workspace_read` 也不带键，直接读回本章工作稿；写手不再需要 `workspace_list`。实跑里写手猜过 `chapter:5`、`chapter:6` 这类键（两本书 16 次写章尝试里 2 次），改后无从猜错。中断续跑的恢复提示不再点名工具：规划者与审阅者本来就没有 `workspace_list`。
+   - 多章专用的 `number`（工作稿）与事实的必填 `chapter` 一并删除；主编改书的事实引用仍可带来源章。
+3. **与 D77 的出入**：受影响的章不再在一次提交里一起改，而是逐章重写、逐章入账；重写稿按作品的审批策略放行，不再强制等用户过目。修改本身先于重写生效，旧做法里同样有这段不一致的窗口；返工排在审阅之前，审阅看到的是全部重写后的正文。
+
+**守护**：
+- `TestResolveProposalRewriteAffectedNotesReworks`：批准后逐章记返工要求，入账晚于正文；重试不出新 Revision。
+- `TestSemanticConflictResolutionNotesAffectedChaptersForRework`：`ReworksDue` 推出受影响的那一章。
+- `TestRewritingAffectedChaptersOfAFinishedBookStartsANewRound`：完本的书选它，开新一轮、只重写那一章、重审后完成。
+- `TestSubmissionSchemaExposesOnlyUsableParameters`、`TestToolSchemaFieldsAreDecodable`：写章提交不再公开工作稿键与版本。
+- `TestReplaceChapterBlockUsesStableID`、运行时工具测试：工作稿键由宿主定，回执与回读一致。
+
+**实跑**（`TestLiveSettingChange`，v4.1 flash、low）：流程完整走通。主编把“铜钥匙”改成“旧邮票”，确认卡列出两章出入与三种处置；选重写后第 1、2 章逐章按返工重写，复审后完成，两章都改用邮票。测试判 FAIL 只因第一回合撞上服务端以错误结束回复（见 D85 以错误结束的回复），与本决策无关。写章任务在新工具形状下没有出现工作稿键相关的失败。

@@ -24,7 +24,7 @@ func TestReplaceChapterBlockUsesStableID(t *testing.T) {
 		ID: "run:book-1", ProjectID: "book-1",
 		Goal: model.NovelGoal{Premise: "测试创作", TargetChapters: 1}.Goal(),
 		Strategy: model.CreationRunStrategy{
-			ReviewCadence: model.ReviewPerPlanWindow, AutoRepairBudget: 1,
+			AutoRepairBudget: 1,
 		},
 		Preset: model.CreationRunPreset{Source: "test", Digest: "test-preset", Approval: model.ApprovalAuto},
 		State:  model.RunRunning, CreatedAt: now, UpdatedAt: now,
@@ -32,7 +32,7 @@ func TestReplaceChapterBlockUsesStableID(t *testing.T) {
 	if _, err := authorityStore.CreateCreationRun(ctx, run); err != nil {
 		t.Fatalf("create run: %v", err)
 	}
-	input := json.RawMessage(`{"chapter_id":"chapter-1","chapter_plan_id":"chapter-plan-1","chapter_number":1,"findings":["结尾仓促"]}`)
+	input := json.RawMessage(`{"chapter_id":"chapter-1","chapter_plan_id":"chapter-plan-1","findings":["结尾仓促"]}`)
 	operation := model.Operation{
 		ID: "rewrite-1", Kind: model.OperationRewriteChapter,
 		Target: model.AuthorityTarget{Kind: model.AuthorityProject, ID: "book-1"},
@@ -56,14 +56,14 @@ func TestReplaceChapterBlockUsesStableID(t *testing.T) {
 		ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1, Author: model.AuthorAI,
 		Blocks: []model.ManuscriptBlock{{ID: "p-1", Text: "旧段落"}, {ID: "p-2", Text: "保持不变"}},
 	}
-	artifact, err := workspace.PutChapter(ctx, operation.ID, "chapter/chapter-1", chapter, nil, claimed.Attempt, now.Add(2*time.Second))
+	artifact, err := workspace.PutChapter(ctx, operation.ID, chapter, claimed.Attempt, now.Add(2*time.Second))
 	if err != nil {
 		t.Fatalf("put chapter: %v", err)
 	}
 	// 同一轮并行改两段：两次都基于同一次读取，都落下，互不覆盖。
 	for i, edit := range []struct{ block, text string }{{"p-1", "新段落"}, {"p-2", "也改了"}} {
 		if artifact, err = workspace.ReplaceChapterBlock(
-			ctx, operation.ID, artifact.Key, edit.block, edit.text, claimed.Attempt, now.Add(time.Duration(3+i)*time.Second),
+			ctx, operation.ID, edit.block, edit.text, claimed.Attempt, now.Add(time.Duration(3+i)*time.Second),
 		); err != nil {
 			t.Fatalf("replace block %s: %v", edit.block, err)
 		}
@@ -79,12 +79,12 @@ func TestReplaceChapterBlockUsesStableID(t *testing.T) {
 		t.Fatalf("updated blocks = %#v", updated.Blocks)
 	}
 	if _, err := workspace.ReplaceChapterBlock(
-		ctx, operation.ID, artifact.Key, "p-1", "过期实例", claimed.Attempt+1, now.Add(5*time.Second),
+		ctx, operation.ID, "p-1", "过期实例", claimed.Attempt+1, now.Add(5*time.Second),
 	); !errors.Is(err, model.ErrStateConflict) {
 		t.Fatalf("stale attempt error = %v, want ErrStateConflict", err)
 	}
 	if _, err := workspace.ReplaceChapterBlock(
-		ctx, operation.ID, artifact.Key, "missing", "内容", claimed.Attempt, now.Add(6*time.Second),
+		ctx, operation.ID, "missing", "内容", claimed.Attempt, now.Add(6*time.Second),
 	); !errors.Is(err, ErrBlockNotFound) {
 		t.Fatalf("missing block error = %v, want ErrBlockNotFound", err)
 	}

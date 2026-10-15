@@ -15,14 +15,17 @@ import (
 const DefaultLease = time.Minute
 
 // ForCreation binds application execution settings without exposing their shape
-// to the goal coordinator. A new binding is made for each drive invocation.
-func (s *Manager) ForCreation(base StartOperationCommand) creation.Tasks {
-	return creationTasks{manager: s, base: base}
+// to the goal coordinator: the task template, and the worker identity and lease
+// that run them. A new binding is made for each drive invocation.
+func (s *Manager) ForCreation(base StartOperationCommand, workerID string, lease time.Duration) creation.Tasks {
+	return creationTasks{manager: s, base: base, workerID: workerID, lease: lease}
 }
 
 type creationTasks struct {
-	manager *Manager
-	base    StartOperationCommand
+	manager  *Manager
+	base     StartOperationCommand
+	workerID string
+	lease    time.Duration
 }
 
 func WorkCommand(base StartOperationCommand, work creation.WorkItem, at time.Time) (StartOperationCommand, error) {
@@ -50,9 +53,7 @@ func (t creationTasks) Restart(ctx context.Context, previousID, runID string, wo
 	}
 	return t.manager.RestartOperation(ctx, RestartOperationCommand{
 		FromOperationID: previousID, OperationID: work.ID, Input: command.Input,
-		Packs: command.Packs, CreatorProfiles: command.CreatorProfiles,
-		WorkerProfileID: command.WorkerProfileID, CoreProtocolVersion: command.CoreProtocolVersion,
-		ConfigDigest: command.ConfigDigest, ApprovalPolicy: command.ApprovalPolicy,
+		Packs: command.Packs, CreatorProfiles: command.CreatorProfiles, ConfigDigest: command.ConfigDigest, ApprovalPolicy: command.ApprovalPolicy,
 		RunID: runID, CreatedAt: at,
 	})
 }
@@ -62,9 +63,9 @@ func (t creationTasks) Resume(ctx context.Context, id string, at time.Time) (mod
 }
 
 // Run 执行前后各向现场转述一句：开工做什么、收尾落下了什么（narrate.go）。
-func (t creationTasks) Run(ctx context.Context, work creation.WorkItem, operation model.Operation, workerID string, lease time.Duration, at time.Time) (model.Operation, error) {
+func (t creationTasks) Run(ctx context.Context, work creation.WorkItem, operation model.Operation, at time.Time) (model.Operation, error) {
 	t.manager.announce(operation, work)
-	result, err := t.manager.RunOperation(ctx, operation.ID, workerID, lease, at)
+	result, err := t.manager.RunOperation(ctx, operation.ID, t.workerID, t.lease, at)
 	t.manager.settle(work, result)
 	return result.Operation, err
 }

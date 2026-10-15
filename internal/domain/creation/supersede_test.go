@@ -23,7 +23,7 @@ func (awaitingTasks) Revalidate(_ context.Context, operation model.Operation, _ 
 }
 
 // TestDriverSupersedesOnlyReplacedAwaitingWork 钉住 D64 的取代口径：待审批的是槽位 write:ch4
-// 后继链上的 r2。推导给出同种类的另一项工作时旧稿转 stale；推导仍指向它的槽位、暂时去做
+// 后继链上的 redo2。推导给出同种类的另一项工作时旧稿转 stale；推导仍指向它的槽位、暂时去做
 // 别的种类或停下等待时旧稿保留，仍可批准。
 func TestDriverSupersedesOnlyReplacedAwaitingWork(t *testing.T) {
 	cases := []struct {
@@ -42,9 +42,9 @@ func TestDriverSupersedesOnlyReplacedAwaitingWork(t *testing.T) {
 			ctx := context.Background()
 			st, run := fixture(t)
 			now := run.CreatedAt
-			input := json.RawMessage(`{"chapter_plan_id":"chapter-plan-4","chapter_number":4}`)
+			input := json.RawMessage(`{"chapter_plan_id":"chapter-plan-4"}`)
 			if _, err := st.CreateOperation(ctx, model.Operation{
-				ID: "write:ch4:r2", Kind: model.OperationWriteChapter, RunID: run.ID, State: model.OperationQueued,
+				ID: "write:ch4:redo2", Kind: model.OperationWriteChapter, RunID: run.ID, State: model.OperationQueued,
 				Target: model.AuthorityTarget{Kind: model.AuthorityProject, ID: run.ProjectID},
 				Snapshot: model.ExecutionSnapshot{
 					Executor: "fixture@1", BaseRevision: 1, InputDigest: model.Digest(input),
@@ -65,10 +65,10 @@ func TestDriverSupersedesOnlyReplacedAwaitingWork(t *testing.T) {
 				return creation.Decision{Revision: 1, Step: tc.step}, nil
 			})
 			driver := creation.New(st, map[model.GoalKind]creation.Goal{run.Goal.Kind: goal}, func() time.Time { return now.Add(time.Minute) })
-			if _, err := driver.Drive(ctx, run, awaitingTasks{}, creation.DriveCommand{WorkerID: "worker", LeaseDuration: time.Minute, CreatedAt: now}); err != nil {
+			if _, err := driver.Drive(ctx, run, awaitingTasks{}, now); err != nil {
 				t.Fatal(err)
 			}
-			if operation, err := st.GetOperation(ctx, "write:ch4:r2"); err != nil || operation.State != tc.want {
+			if operation, err := st.GetOperation(ctx, "write:ch4:redo2"); err != nil || operation.State != tc.want {
 				t.Fatalf("awaiting write = %s, %v; want %s", operation.State, err, tc.want)
 			}
 		})

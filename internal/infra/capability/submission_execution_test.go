@@ -27,18 +27,18 @@ func TestRuntimePersistsSubmissionFailureAndRetainsDraft(t *testing.T) {
 	var replies []litellmtest.Reply
 	for i := 1; i <= 3; i++ {
 		replies = append(replies, callReply(fmt.Sprintf("submit-%d", i), prompt.ToolProposalSubmit,
-			json.RawMessage(`{"reason":"提交","workspace_key":"draft","workspace_version":99,"facts":[{"subject":"主角","predicate":"event.arrival","value":"抵达"}]}`)))
+			json.RawMessage(`{"reason":"提交","facts":[{"subject":"路人","predicate":"event.arrival","value":"抵达"}]}`)))
 	}
 	llm := litellmtest.New(replies...)
 	r := boundRuntime(s, testChat(llm))
 	_, err := r.Execute(ctx, op)
-	if !errors.Is(err, model.ErrSubmissionBlocked) || model.FailureCodeFor(err) != model.FailureSubmissionBlocked || !strings.Contains(err.Error(), "连续 3 次") || !strings.Contains(err.Error(), "version mismatch") || len(llm.Requests()) != 3 {
+	if !errors.Is(err, model.ErrSubmissionBlocked) || model.FailureCodeFor(err) != model.FailureSubmissionBlocked || !strings.Contains(err.Error(), "连续 3 次") || !strings.Contains(err.Error(), "实体「路人」不存在") || len(llm.Requests()) != 3 {
 		t.Fatalf("failure was hidden or loop continued: calls=%d err=%v", len(llm.Requests()), err)
 	}
 	if ctx.Err() != nil {
 		t.Fatal("submission guard cancelled its caller")
 	}
-	artifact, err := s.GetWorkspaceArtifact(ctx, op.ID, "draft")
+	artifact, err := s.GetWorkspaceArtifact(ctx, op.ID, workspace.ChapterKey)
 	if err != nil || artifact.Version != 1 {
 		t.Fatalf("draft lost: %+v %v", artifact, err)
 	}
@@ -57,7 +57,7 @@ func TestRuntimeRemindsToSubmitBeforeStopping(t *testing.T) {
 	stop := litellmtest.Text("草稿写好了。")
 	stop.Usage = litellm.Usage{InputTokens: 10, OutputTokens: 3}
 	submit := callReply("submit-existing", prompt.ToolProposalSubmit,
-		json.RawMessage(`{"reason":"完成","workspace_key":"draft","workspace_version":1,"facts":[{"subject":"主角","predicate":"event.arrival","value":"抵达山门"}]}`))
+		json.RawMessage(`{"reason":"完成","facts":[{"subject":"主角","predicate":"event.arrival","value":"抵达山门"}]}`))
 	submit.Usage = litellm.Usage{InputTokens: 20, OutputTokens: 5}
 	llm := litellmtest.New(stop, submit)
 	outcome, err := boundRuntime(s, testChat(llm)).Execute(ctx, op)
@@ -86,7 +86,7 @@ func TestRuntimeRemindsATruncatedThoughtToContinue(t *testing.T) {
 	s, op := runningWriterWithDraft(t, ctx)
 	thought := litellmtest.Respond(litellm.ReasoningBlock{Text: "先核对第一章的大纲，再看草稿里"})
 	submit := callReply("submit-existing", prompt.ToolProposalSubmit,
-		json.RawMessage(`{"reason":"完成","workspace_key":"draft","workspace_version":1,"facts":[{"subject":"主角","predicate":"event.arrival","value":"抵达山门"}]}`))
+		json.RawMessage(`{"reason":"完成","facts":[{"subject":"主角","predicate":"event.arrival","value":"抵达山门"}]}`))
 	llm := litellmtest.New(thought, submit)
 	if outcome, err := boundRuntime(s, testChat(llm)).Execute(ctx, op); err != nil || outcome.Proposal == nil {
 		t.Fatalf("outcome = %+v, %v", outcome, err)
@@ -114,7 +114,7 @@ func runningWriterWithDraft(t *testing.T, ctx context.Context) (*store.Store, mo
 	if err != nil {
 		t.Fatal(err)
 	}
-	input := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1","chapter_number":1}`)
+	input := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1"}`)
 	op := model.Operation{ID: "write", Kind: model.OperationWriteChapter, Target: target, State: model.OperationQueued,
 		RunID: createRuntimeTestRun(t, ctx, s, target.ID, now), Input: input, CreatedAt: now, UpdatedAt: now,
 		Snapshot: runtimeSnapshot(input, 1, model.ApprovalAuto, seedRuntimeProfile(t, ctx, s, target.ID, worker, input, 1))}
@@ -126,7 +126,7 @@ func runningWriterWithDraft(t *testing.T, ctx context.Context) (*store.Store, mo
 		t.Fatal(err)
 	}
 	chapter := model.ManuscriptChapter{ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1, Author: model.AuthorAI, Blocks: []model.ManuscriptBlock{{ID: "p1", Text: "保留这个草稿。"}}}
-	if _, err := workspace.New(s).PutChapter(ctx, op.ID, "draft", chapter, nil, op.Attempt, now); err != nil {
+	if _, err := workspace.New(s).PutChapter(ctx, op.ID, chapter, op.Attempt, now); err != nil {
 		t.Fatal(err)
 	}
 	return s, op
@@ -154,7 +154,7 @@ func TestRuntimeSubmissionStopsOnlyAfterResultIsPersisted(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 			defer cancel()
 			s, op := runningWriterWithDraft(t, ctx)
-			llm := recoveryScript(json.RawMessage(`{"reason":"完成","workspace_key":"draft","workspace_version":1,"facts":[{"subject":"主角","predicate":"event.arrival","value":"抵达山门"}]}`))
+			llm := recoveryScript(json.RawMessage(`{"reason":"完成","facts":[{"subject":"主角","predicate":"event.arrival","value":"抵达山门"}]}`))
 			r := boundRuntime(s, testChat(llm))
 			cause := errors.New("result persistence failed")
 			if failCommit {

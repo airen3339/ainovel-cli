@@ -37,7 +37,7 @@ func TestRuntimeToolsRespectAuthoritySnapshotAndWorkspaceBoundary(t *testing.T) 
 	target := domainmodel.AuthorityTarget{Kind: domainmodel.AuthorityProject, ID: "book-1"}
 	seedRuntimeProject(t, ctx, authorityStore, target, now)
 
-	task := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1","chapter_number":1}`)
+	task := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1"}`)
 	operation := domainmodel.Operation{
 		ID: "write-1", Kind: domainmodel.OperationWriteChapter, Target: target,
 		State: domainmodel.OperationQueued, RunID: createRuntimeTestRun(t, ctx, authorityStore, target.ID, now),
@@ -73,13 +73,13 @@ func TestRuntimeToolsRespectAuthoritySnapshotAndWorkspaceBoundary(t *testing.T) 
 		}
 	}
 
-	// 章的身份由宿主按任务确定：模型只写段落，回执只有键与版本。
+	// 章的身份与工作稿键由宿主按任务确定：模型只写段落，回执只有键与版本。
 	putChapter := testTool(t, runtime, operation, "writer.compose@1", prompt.ToolWorkspacePutChapter, nil)
-	receipt, err := putChapter(ctx, json.RawMessage(`{"key":"draft","chapter":{"blocks":[{"id":"p-1","text":"他抵达山门……"}]}}`))
-	if err != nil || string(receipt) != `{"key":"draft","version":1}` {
+	receipt, err := putChapter(ctx, json.RawMessage(`{"chapter":{"blocks":[{"id":"p-1","text":"他抵达山门……"}]}}`))
+	if err != nil || string(receipt) != `{"key":"chapter","version":1}` {
 		t.Fatalf("put chapter = %s, %v", receipt, err)
 	}
-	stored, err := authorityStore.GetWorkspaceArtifact(ctx, operation.ID, "draft")
+	stored, err := authorityStore.GetWorkspaceArtifact(ctx, operation.ID, workspace.ChapterKey)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -94,16 +94,16 @@ func TestRuntimeToolsRespectAuthoritySnapshotAndWorkspaceBoundary(t *testing.T) 
 		submitted = proposal
 		return proposal, nil
 	})
-	submit := func(version int, facts ...map[string]any) (json.RawMessage, error) {
+	submit := func(facts ...map[string]any) (json.RawMessage, error) {
 		submitted = domainmodel.Proposal{}
-		raw, err := json.Marshal(map[string]any{"reason": "提交本章", "workspace_key": "draft", "workspace_version": version, "facts": facts})
+		raw, err := json.Marshal(map[string]any{"reason": "提交本章", "facts": facts})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return submitTool(ctx, raw)
 	}
 	// 同一主体+谓词就是同一事实（D61）：宿主按自然键并入已有节点并从冻结基线补 old_value。
-	if _, err := submit(1, map[string]any{"subject": "主角", "predicate": "state.origin", "value": "孤儿"}); err != nil {
+	if _, err := submit(map[string]any{"subject": "主角", "predicate": "state.origin", "value": "孤儿"}); err != nil {
 		t.Fatalf("keyed fact must merge into the existing node: %v", err)
 	}
 	var merged domainmodel.CanonFact
@@ -111,7 +111,7 @@ func TestRuntimeToolsRespectAuthoritySnapshotAndWorkspaceBoundary(t *testing.T) 
 		string(merged.PreviousValue) != `"农家子"` || merged.SourceChapterID != "chapter-plan-1" {
 		t.Fatalf("merged patch = %+v (%v)", submitted.Patches[1], err)
 	}
-	result, err := submit(1, map[string]any{"subject": "主角", "predicate": "event.chapter_outcome", "value": "抵达山门"})
+	result, err := submit(map[string]any{"subject": "主角", "predicate": "event.chapter_outcome", "value": "抵达山门"})
 	if err != nil || string(result) != `{"status":"submitted"}` {
 		t.Fatalf("submit = %s, %v", result, err)
 	}
@@ -127,18 +127,15 @@ func TestRuntimeToolsRespectAuthoritySnapshotAndWorkspaceBoundary(t *testing.T) 
 		t.Fatalf("capability wrote authority proposal directly: %v", err)
 	}
 	for _, tc := range []struct {
-		name    string
-		version int
-		facts   []map[string]any
-		want    string
+		name  string
+		facts []map[string]any
+		want  string
 	}{
-		{"stale version", 2, []map[string]any{{"subject": "主角", "predicate": "event.x", "value": "x"}}, "version mismatch"},
-		{"invalid version", 0, []map[string]any{{"subject": "主角", "predicate": "event.x", "value": "x"}}, "positive version"},
-		{"unknown subject", 1, []map[string]any{{"subject": "路人", "predicate": "event.x", "value": "x"}}, "实体「路人」不存在"},
-		{"canon still required", 1, nil, "Canon Delta"},
+		{"unknown subject", []map[string]any{{"subject": "路人", "predicate": "event.x", "value": "x"}}, "实体「路人」不存在"},
+		{"canon still required", nil, "Canon Delta"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := submit(tc.version, tc.facts...)
+			_, err := submit(tc.facts...)
 			if err == nil || !strings.Contains(err.Error(), tc.want) || submitted.ID != "" {
 				t.Fatalf("error=%v submitted=%s", err, submitted.ID)
 			}
@@ -148,26 +145,22 @@ func TestRuntimeToolsRespectAuthoritySnapshotAndWorkspaceBoundary(t *testing.T) 
 			}
 		})
 	}
-	legacy, _ := json.Marshal(map[string]any{"reason": "旧协议", "workspace_key": "draft", "workspace_version": 1, "patches": []any{}})
+	legacy, _ := json.Marshal(map[string]any{"reason": "旧协议", "patches": []any{}})
 	if _, err := submitTool(ctx, legacy); err == nil {
 		t.Fatal("document patches accepted from the model")
 	}
 
 	workspaceRead := testTool(t, runtime, operation, "writer.compose@1", prompt.ToolWorkspaceRead, nil)
-	readBack, err := workspaceRead(ctx, json.RawMessage(`{"key":"draft"}`))
+	readBack, err := workspaceRead(ctx, json.RawMessage(`{}`))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var readable struct {
-		Content narrative.ChapterDraft `json:"content"`
-		Version int64                  `json:"version"`
-	}
-	if err := json.Unmarshal(readBack, &readable); err != nil || len(readable.Content.Blocks) != 1 ||
-		readable.Version != 1 || strings.Contains(string(readBack), "plan_node_id") {
+	var readable narrative.ChapterDraft
+	if err := json.Unmarshal(readBack, &readable); err != nil || len(readable.Blocks) != 1 || strings.Contains(string(readBack), "plan_node_id") {
 		t.Fatalf("workspace must read back the draft shape: %s, %v", readBack, err)
 	}
-	if _, err := workspaceRead(ctx, json.RawMessage(`{"key":"ch-1"}`)); !errors.Is(err, domainmodel.ErrNotFound) || !strings.Contains(err.Error(), `"ch-1"`) {
-		t.Fatalf("missing workspace err = %v, want the key", err)
+	if _, err := workspaceRead(ctx, json.RawMessage(`{"key":"chapter"}`)); err == nil {
+		t.Fatal("the chapter draft key is the host's, not a parameter")
 	}
 }
 
@@ -182,10 +175,7 @@ func testTool(t *testing.T, runtime *Runtime, operation domainmodel.Operation, w
 }
 
 func TestBuiltinCapabilityToolsHaveRuntimeImplementations(t *testing.T) {
-	definitions, err := prompt.BuiltinCapabilities()
-	if err != nil {
-		t.Fatalf("built-in capabilities: %v", err)
-	}
+	definitions := prompt.BuiltinCapabilities()
 	runtime := &Runtime{}
 	for _, definition := range definitions {
 		operation := domainmodel.Operation{Kind: definition.OperationKinds[0]}
@@ -212,7 +202,7 @@ func TestRuntimeRestoresCommittedConversationAndWorkspace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load writer capability: %v", err)
 	}
-	task := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1","chapter_number":1}`)
+	task := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1"}`)
 	target := domainmodel.AuthorityTarget{Kind: domainmodel.AuthorityProject, ID: "book-recovery"}
 	seedRuntimeProject(t, ctx, authorityStore, target, now)
 	operation := domainmodel.Operation{
@@ -234,10 +224,7 @@ func TestRuntimeRestoresCommittedConversationAndWorkspace(t *testing.T) {
 		ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1, Author: domainmodel.AuthorAI,
 		Blocks: []domainmodel.ManuscriptBlock{{ID: "block-1", Text: "已经写入工作区的半成品。"}},
 	}
-	artifact, err := workspace.New(authorityStore).PutChapter(
-		ctx, first.ID, "chapter/chapter-1", chapter, nil, first.Attempt, now.Add(2*time.Second),
-	)
-	if err != nil {
+	if _, err := workspace.New(authorityStore).PutChapter(ctx, first.ID, chapter, first.Attempt, now.Add(2*time.Second)); err != nil {
 		t.Fatalf("write recoverable draft: %v", err)
 	}
 	previous := agentcore.UserText("这是崩溃前已经提交到会话日志的原始任务")
@@ -273,8 +260,8 @@ func TestRuntimeRestoresCommittedConversationAndWorkspace(t *testing.T) {
 		t.Fatalf("claim second attempt: %v", err)
 	}
 	proposalArgs, _ := json.Marshal(map[string]any{
-		"reason": "继续并提交已有工作稿", "workspace_key": artifact.Key, "workspace_version": artifact.Version,
-		"facts": []map[string]any{{"subject": "主角", "predicate": "event.chapter_outcome", "value": "完成已有工作稿"}},
+		"reason": "继续并提交已有工作稿",
+		"facts":  []map[string]any{{"subject": "主角", "predicate": "event.chapter_outcome", "value": "完成已有工作稿"}},
 	})
 	model := recoveryScript(proposalArgs)
 	runtime := boundRuntime(authorityStore, testChat(model))
@@ -294,7 +281,7 @@ func TestRuntimeRestoresCommittedConversationAndWorkspace(t *testing.T) {
 	for _, message := range firstRequest {
 		text := requestText(message)
 		foundPrevious = foundPrevious || text == previous.Text()
-		foundRecovery = foundRecovery || strings.Contains(text, "先用 workspace_list")
+		foundRecovery = foundRecovery || strings.Contains(text, "从已有工件继续")
 		foundFailure = foundFailure || strings.Contains(text, "上一次尝试失败原因：simulated process failure")
 	}
 	if !foundPrevious || !foundRecovery || !foundFailure {
@@ -425,7 +412,7 @@ func TestRuntimeReviewSubmitsVerdictWithoutProposal(t *testing.T) {
 	if err := json.Unmarshal(outcome.Verdict, &verdict); err != nil {
 		t.Fatalf("decode verdict: %v", err)
 	}
-	if verdict.Status != domainmodel.ReviewPass || verdict.Revision != 1 ||
+	if verdict.Blocking() != 0 || verdict.Revision != 1 ||
 		len(verdict.ChapterIDs) != 2 || len(verdict.Findings) != 1 || verdict.Findings[0].ChapterID != "chapter-2" ||
 		verdict.ReviewKey != "review/findings" || len(verdict.Checks) != 2 ||
 		verdict.CheckStatus("intent:forbidden:0") != domainmodel.CheckSatisfied || verdict.CheckStatus("directive:hook") != domainmodel.CheckPending {
@@ -438,7 +425,7 @@ func TestRuntimeReviewSubmitsVerdictWithoutProposal(t *testing.T) {
 	// 活动通道（页面设计 §4）：执行过程以带归属的事件发布——两次被拒的提交
 	// 呈现为出错条目（模型自纠可见），最终提交成功收尾。
 	feed, ok := hub.Snapshot("book-review")
-	if !ok || feed.RunID != operation.RunID || feed.OperationID != operation.ID {
+	if !ok || feed.RunID != operation.RunID {
 		t.Fatalf("activity feed identity = %#v ok=%v", feed, ok)
 	}
 	if len(feed.Tasks) != 1 || !feed.Tasks[0].Done || feed.Tasks[0].OperationID != operation.ID {
@@ -485,7 +472,7 @@ func createRuntimeTestRun(
 		ID: "run:" + projectID, ProjectID: projectID,
 		Goal: domainmodel.NovelGoal{Premise: "测试创作", TargetChapters: 3}.Goal(),
 		Strategy: domainmodel.CreationRunStrategy{
-			ReviewCadence: domainmodel.ReviewPerPlanWindow, AutoRepairBudget: 3,
+			AutoRepairBudget: 3,
 		},
 		Preset: domainmodel.CreationRunPreset{
 			Source: "test", Digest: "test-preset", Approval: domainmodel.ApprovalAuto,
@@ -498,10 +485,10 @@ func createRuntimeTestRun(
 	return run.ID
 }
 
-// recoveryScript 先列工作区，再按 proposalArgs 提交，提交成功即收尾：多一次调用就越出脚本。
+// recoveryScript 先读回本章工作稿，再按 proposalArgs 提交，提交成功即收尾：多一次调用就越出脚本。
 func recoveryScript(proposalArgs json.RawMessage) *litellmtest.Provider {
 	return litellmtest.New(
-		callReply("list-workspace", "workspace_list", json.RawMessage(`{}`)),
+		callReply("read-draft", "workspace_read", json.RawMessage(`{}`)),
 		callReply("submit-existing", "proposal_submit", proposalArgs),
 	)
 }
@@ -616,8 +603,8 @@ func TestPublishActivityTranslatesStreamingToolDeltas(t *testing.T) {
 		t.Fatalf("streaming snapshot = %#v ok=%v", snapshot, ok)
 	}
 	// 逐字预览：参数流里的正文被解出并归属本次调用（页面设计 §3）。
-	if string(snapshot.Prose) != "正文" || snapshot.ProseCallID != "call-1" {
-		t.Fatalf("prose = %q callID = %q", snapshot.Prose, snapshot.ProseCallID)
+	if text, callID := feedProse(snapshot); text != "正文" || callID != "call-1" {
+		t.Fatalf("prose = %q callID = %q", text, callID)
 	}
 	runtime.publishActivity(operation, delta(litellm.ToolUseDelta{Index: 0, Arguments: `，一句接一句"}]}}`}), stream)
 	runtime.publishActivity(operation, agentcore.ToolStart{Call: call}, stream)
@@ -626,9 +613,20 @@ func TestPublishActivityTranslatesStreamingToolDeltas(t *testing.T) {
 	if len(snapshot.Entries) != 1 || !snapshot.Entries[0].Done {
 		t.Fatalf("after exec = %#v", snapshot.Entries)
 	}
-	if string(snapshot.Prose) != `正文，一句接一句` {
-		t.Fatalf("prose after close = %q", snapshot.Prose)
+	if text, _ := feedProse(snapshot); text != `正文，一句接一句` {
+		t.Fatalf("prose after close = %q", text)
 	}
+}
+
+// feedProse 是快照里正文输出块的文字与所属调用。
+func feedProse(snapshot activity.Snapshot) (string, string) {
+	var text, callID string
+	for _, block := range snapshot.Output {
+		if block.Kind == activity.Prose {
+			text, callID = text+string(block.Text), block.CallID
+		}
+	}
+	return text, callID
 }
 
 // TestPublishActivityAttributesDeltaByBlock 守卫交错归属：并行调用并存时按块序号
@@ -647,8 +645,8 @@ func TestPublishActivityAttributesDeltaByBlock(t *testing.T) {
 	runtime.publishActivity(operation, delta(litellm.BlockStart{Index: 1, Block: litellm.ToolUseBlock{ID: "call-b", Name: "authority_read"}}), stream)
 	runtime.publishActivity(operation, delta(litellm.ToolUseDelta{Index: 0, Arguments: `{"chapter":{"blocks":[{"text":"甲稿正文`}), stream)
 	snapshot, ok := hub.Snapshot("book-mix")
-	if !ok || string(snapshot.Prose) != "甲稿正文" || snapshot.ProseCallID != "call-a" {
-		t.Fatalf("prose = %q callID = %q ok=%v", snapshot.Prose, snapshot.ProseCallID, ok)
+	if text, callID := feedProse(snapshot); !ok || text != "甲稿正文" || callID != "call-a" {
+		t.Fatalf("prose = %q callID = %q ok=%v", text, callID, ok)
 	}
 	if len(snapshot.Entries) != 1 || snapshot.Entries[0].Tool != "workspace_put_chapter" ||
 		snapshot.Entries[0].CallID != "call-a" {
@@ -672,8 +670,8 @@ func TestPublishActivityThinkingTextAndToolError(t *testing.T) {
 		Call: agentcore.ToolCall{ID: "c1", Name: "workspace_put_chapter"}, Result: agentcore.ErrorResult(`章节段落 "p-9" 不存在`),
 	}, stream)
 	snapshot, ok := hub.Snapshot("book-9")
-	if !ok || snapshot.ThinkingNote != "回顾伏笔" {
-		t.Fatalf("thinking note = %q ok=%v", snapshot.ThinkingNote, ok)
+	if !ok || len(snapshot.Output) != 1 || snapshot.Output[0].Kind != activity.Thinking || string(snapshot.Output[0].Text) != "回顾伏笔" {
+		t.Fatalf("output = %#v ok=%v", snapshot.Output, ok)
 	}
 	if len(snapshot.Entries) != 1 || snapshot.Entries[0].Err != `章节段落 "p-9" 不存在` {
 		t.Fatalf("entries = %#v", snapshot.Entries)
@@ -723,7 +721,7 @@ func TestRuntimeSemanticComplianceUsesIndependentStructuredCall(t *testing.T) {
 	if _, err := authorityStore.CommitProposal(ctx, seed); err != nil {
 		t.Fatalf("commit seed: %v", err)
 	}
-	task := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1","chapter_number":1}`)
+	task := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1"}`)
 	operation := domainmodel.Operation{
 		ID: "semantic-operation", Kind: domainmodel.OperationWriteChapter, Target: target,
 		State: domainmodel.OperationQueued, RunID: createRuntimeTestRun(t, ctx, authorityStore, target.ID, now),
@@ -846,7 +844,7 @@ func TestRuntimeAnalyzesSemanticImpactInStoryLanguage(t *testing.T) {
 		Author: domainmodel.Author{Kind: domainmodel.AuthorUser, ID: "user-1"}, Reason: "钥匙改成邮票",
 		Patches: []domainmodel.Patch{put(domainmodel.DocumentCanon, "fact-key", fact)}, ApprovalState: domainmodel.ApprovalPending, CreatedAt: now.Add(time.Minute),
 	}
-	reportJSON, err := runtime.Analyze(ctx, proposal, change.StructuralImpact{
+	reportJSON, err := runtime.Analyze(ctx, proposal, domainmodel.StructuralImpact{
 		Direct:   []domainmodel.DocumentRef{{Kind: domainmodel.DocumentCanon, ID: "fact-key"}},
 		Affected: []domainmodel.DocumentRef{{Kind: domainmodel.DocumentManuscript, ID: "chapter-1"}},
 	})
@@ -875,66 +873,6 @@ func TestRuntimeAnalyzesSemanticImpactInStoryLanguage(t *testing.T) {
 			t.Fatalf("analyzer input leaks %q: %s", id, request)
 		}
 	}
-}
-
-func TestAffectedRewriteSubmissionCoversEveryWorkspaceChapter(t *testing.T) {
-	ctx := context.Background()
-	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
-	authorityStore, err := store.Open(ctx, filepath.Join(t.TempDir(), "ainovel.db"))
-	if err != nil {
-		t.Fatalf("open store: %v", err)
-	}
-	defer authorityStore.Close()
-	operation := domainmodel.Operation{
-		ID: "rewrite-affected", Kind: domainmodel.OperationRewriteAffected,
-		Target: domainmodel.AuthorityTarget{Kind: domainmodel.AuthorityProject, ID: "book-1"}, State: domainmodel.OperationQueued,
-		RunID: createRuntimeTestRun(t, ctx, authorityStore, "book-1", now),
-		Snapshot: runtimeSnapshot(
-			json.RawMessage(`{"chapter_ids":["chapter-1","chapter-2"],"base_revision":3,"resolution_proposal_id":"change-1","reason":"同步旧事实"}`),
-			3, domainmodel.ApprovalManual, "profile",
-		),
-		Input:     json.RawMessage(`{"chapter_ids":["chapter-1","chapter-2"],"base_revision":3,"resolution_proposal_id":"change-1","reason":"同步旧事实"}`),
-		CreatedAt: now, UpdatedAt: now,
-	}
-	if _, err := authorityStore.CreateOperation(ctx, operation); err != nil {
-		t.Fatalf("create operation: %v", err)
-	}
-	operation, err = authorityStore.ClaimOperationForExecutor(ctx, operation.ID, "worker-1", prompt.ExecutorIdentity, time.Minute, now)
-	if err != nil {
-		t.Fatalf("claim operation: %v", err)
-	}
-	chapters := []domainmodel.ManuscriptChapter{
-		{ID: "chapter-1", PlanNodeID: "plan-1", Number: 1, Author: domainmodel.AuthorAI, Blocks: []domainmodel.ManuscriptBlock{{ID: "block-1", Text: "新正文一"}}},
-		{ID: "chapter-2", PlanNodeID: "plan-2", Number: 2, Author: domainmodel.AuthorAI, Blocks: []domainmodel.ManuscriptBlock{{ID: "block-2", Text: "新正文二"}}},
-	}
-	versions := make(map[string]int64, len(chapters))
-	for _, chapter := range chapters {
-		content, err := json.Marshal(chapter)
-		if err != nil {
-			t.Fatal(err)
-		}
-		key := "chapter/" + chapter.ID
-		versions[key] = 1
-		if _, err := authorityStore.PutWorkspaceArtifact(ctx, domainmodel.WorkspaceArtifact{
-			OperationID: operation.ID, Key: key, MediaType: workspace.ChapterMediaType,
-			Content: content, UpdatedAt: now,
-		}, nil, operation.Attempt); err != nil {
-			t.Fatalf("put workspace chapter: %v", err)
-		}
-	}
-	runtime := NewRuntime(authorityStore)
-	drafts, err := runtime.workspaceDrafts(ctx, operation, versions)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(drafts) != 2 || drafts[0].ID != "chapter-1" || drafts[1].Blocks[0].Text != "新正文二" {
-		t.Fatalf("batch did not preserve both manuscripts: %+v", drafts)
-	}
-	if _, err := runtime.workspaceDrafts(ctx, operation, nil); err == nil {
-		t.Fatal("affected rewrite without drafts accepted")
-	}
-	// 只引用部分章节在工作区层面是一致的；是否覆盖任务的全部章节由任务提交契约判定
-	// （model.ValidateChange，工具边界经 validator.Validate 执行）。
 }
 
 func TestRuntimePlanSubmissionEnforcesLengthBound(t *testing.T) {
@@ -1020,7 +958,7 @@ func seedRuntimeProfile(
 ) string {
 	t.Helper()
 	compiled, err := prompt.NewRegistry(authorityStore).Reload(ctx, prompt.CompileRequest{
-		ProjectID: projectID, CoreProtocolVersion: "core-v1", Worker: worker,
+		ProjectID: projectID, Worker: worker, Ownership: json.RawMessage(`[]`),
 		Intent: domainmodel.Intent{Premise: "测试作品"}, StoryContext: json.RawMessage(`{"revision":` + fmt.Sprint(base) + `}`),
 		Task: task, BaseRevision: base, ProjectOverlayRevision: base,
 	}, time.Date(2026, 8, 18, 11, 0, 0, 0, time.UTC))
@@ -1075,7 +1013,7 @@ func TestWriterSubmissionRequiresRedeclaringChapterFacts(t *testing.T) {
 	if _, err := change.New(authorityStore).Commit(ctx, seed); err != nil {
 		t.Fatalf("commit seed: %v", err)
 	}
-	input := json.RawMessage(`{"chapter_id":"chapter-1","chapter_plan_id":"plan-1","chapter_number":1,"findings":["结尾仓促"]}`)
+	input := json.RawMessage(`{"chapter_id":"chapter-1","chapter_plan_id":"plan-1","findings":["结尾仓促"]}`)
 	operation := domainmodel.Operation{
 		ID: "rewrite-1", Kind: domainmodel.OperationRewriteChapter, Target: target, State: domainmodel.OperationQueued,
 		RunID: createRuntimeTestRun(t, ctx, authorityStore, "book-1", now), Snapshot: runtimeSnapshot(input, 1, domainmodel.ApprovalAuto, "profile"),
@@ -1093,7 +1031,7 @@ func TestWriterSubmissionRequiresRedeclaringChapterFacts(t *testing.T) {
 	}
 	content, _ := json.Marshal(chapter)
 	if _, err := authorityStore.PutWorkspaceArtifact(ctx, domainmodel.WorkspaceArtifact{
-		OperationID: operation.ID, Key: "chapter/chapter-1", MediaType: workspace.ChapterMediaType, Content: content, UpdatedAt: now,
+		OperationID: operation.ID, Key: workspace.ChapterKey, MediaType: workspace.ChapterMediaType, Content: content, UpdatedAt: now,
 	}, nil, operation.Attempt); err != nil {
 		t.Fatalf("put workspace chapter: %v", err)
 	}
@@ -1104,7 +1042,7 @@ func TestWriterSubmissionRequiresRedeclaringChapterFacts(t *testing.T) {
 		return proposal, nil
 	})
 	submit := func(fields map[string]any) error {
-		args := map[string]any{"reason": "重写提交", "workspace_key": "chapter/chapter-1", "workspace_version": 1}
+		args := map[string]any{"reason": "重写提交"}
 		maps.Copy(args, fields)
 		raw, err := json.Marshal(args)
 		if err != nil {
@@ -1151,7 +1089,7 @@ func TestWriterSubmissionRequiresRedeclaringChapterFacts(t *testing.T) {
 		last = proposal
 		return proposal, nil
 	})
-	raw, _ := json.Marshal(map[string]any{"reason": "确认", "workspace_key": "chapter/chapter-1", "workspace_version": 1, "confirm_facts": done})
+	raw, _ := json.Marshal(map[string]any{"reason": "确认", "confirm_facts": done})
 	if _, err := frozen(ctx, raw); err != nil {
 		t.Fatal(err)
 	}

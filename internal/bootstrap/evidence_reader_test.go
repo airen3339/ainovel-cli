@@ -1,4 +1,4 @@
-package evidence
+package bootstrap_test
 
 import (
 	"context"
@@ -10,29 +10,30 @@ import (
 	"github.com/voocel/ainovel-cli/internal/infra/store"
 )
 
-// Reader selects persisted evidence whose inputs remain valid at a chosen revision.
-type Reader struct {
+// evidenceReader 按选定 revision 取输入仍成立的工件与检查证据：第二种目标（渲染）的
+// 状态适配器只靠它读证据，证明内核机制不依赖小说（D52）。
+type evidenceReader struct {
 	store      *store.Store
 	changes    *change.Engine
 	operations *operation.Engine
 }
 
-func New(s *store.Store, changes *change.Engine, operations *operation.Engine) *Reader {
-	return &Reader{store: s, changes: changes, operations: operations}
+func newEvidenceReader(s *store.Store, changes *change.Engine, operations *operation.Engine) *evidenceReader {
+	return &evidenceReader{store: s, changes: changes, operations: operations}
 }
 
-type Check struct {
+type evidenceCheck struct {
 	OperationID string
 	Kind        model.OperationKind
 	Basis       model.EvidenceBasis
 	Content     json.RawMessage
 }
 
-func (r *Reader) Valid(ctx context.Context, target model.AuthorityTarget, revision model.Revision, basis model.EvidenceBasis) (bool, error) {
+func (r *evidenceReader) Valid(ctx context.Context, target model.AuthorityTarget, revision model.Revision, basis model.EvidenceBasis) (bool, error) {
 	return r.changes.BasisHolds(ctx, target, basis, revision)
 }
 
-func (r *Reader) Artifacts(ctx context.Context, projectID string, revision model.Revision) ([]model.Artifact, error) {
+func (r *evidenceReader) Artifacts(ctx context.Context, projectID string, revision model.Revision) ([]model.Artifact, error) {
 	artifacts, err := r.store.ListArtifacts(ctx, projectID)
 	if err != nil {
 		return nil, err
@@ -51,7 +52,7 @@ func (r *Reader) Artifacts(ctx context.Context, projectID string, revision model
 }
 
 // Checks filters by requested operation kinds before decoding their domain payloads.
-func (r *Reader) Checks(ctx context.Context, projectID string, revision model.Revision, kinds ...model.OperationKind) ([]Check, error) {
+func (r *evidenceReader) Checks(ctx context.Context, projectID string, revision model.Revision, kinds ...model.OperationKind) ([]evidenceCheck, error) {
 	selected := make(map[model.OperationKind]bool, len(kinds))
 	for _, kind := range kinds {
 		selected[kind] = true
@@ -60,7 +61,7 @@ func (r *Reader) Checks(ctx context.Context, projectID string, revision model.Re
 	if err != nil {
 		return nil, err
 	}
-	var valid []Check
+	var valid []evidenceCheck
 	for _, document := range documents {
 		op, err := r.store.GetOperation(ctx, document.Key)
 		if err != nil {
@@ -78,7 +79,7 @@ func (r *Reader) Checks(ctx context.Context, projectID string, revision model.Re
 			return nil, err
 		}
 		if ok {
-			valid = append(valid, Check{OperationID: op.ID, Kind: op.Kind, Basis: basis, Content: document.Content})
+			valid = append(valid, evidenceCheck{OperationID: op.ID, Kind: op.Kind, Basis: basis, Content: document.Content})
 		}
 	}
 	return valid, nil

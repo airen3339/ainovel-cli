@@ -18,7 +18,7 @@ func TestWorkbenchExportsAcceptedContent(t *testing.T) {
 	ctx := context.Background()
 	now := time.Now().UTC()
 	p := projectdoc.ProjectProjection{ProjectID: "book", Intent: domainmodel.Intent{Premise: "来信"}, Plan: []domainmodel.PlanNode{{ID: "v", Kind: domainmodel.PlanVolume, Title: "卷", Summary: "卷"}, {ID: "a", ParentID: "v", Kind: domainmodel.PlanArc, Title: "弧", Summary: "弧"}, {ID: "p", ParentID: "a", Kind: domainmodel.PlanChapter, Title: "信", Summary: "信"}}, Manuscript: []domainmodel.ManuscriptChapter{{ID: "c", PlanNodeID: "p", Number: 1, Author: domainmodel.AuthorUser, Blocks: []domainmodel.ManuscriptBlock{{ID: "b", Text: "已确认正文。"}}}}}
-	proposal, err := api.Projects.ImportNewProject(ctx, "import", "user", "test", p, now)
+	proposal, err := api.Projects.ImportProject(ctx, "import", "user", "test", p, now)
 	if err != nil {
 		t.Fatal(err)
 	}

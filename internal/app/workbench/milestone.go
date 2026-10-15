@@ -76,13 +76,7 @@ func (s *Query) milestones(ctx context.Context, project projectdoc.Snapshot, run
 			continue
 		}
 		milestone := Milestone{At: document.CreatedAt, Tone: MilestoneDone, Text: "审阅" + chapterSpan(numbers) + "：通过"}
-		if verdict.Status != model.ReviewPass {
-			blocking := 0
-			for _, finding := range verdict.Findings {
-				if finding.Severity == model.FindingBlocking {
-					blocking++
-				}
-			}
+		if blocking := verdict.Blocking(); blocking > 0 {
 			milestone.Tone, milestone.Text = MilestoneWait, fmt.Sprintf("审阅%s：未通过 · 阻塞 %d 处", chapterSpan(numbers), blocking)
 		}
 		milestones = append(milestones, milestone)

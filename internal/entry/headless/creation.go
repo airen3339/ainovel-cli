@@ -34,12 +34,8 @@ func runCreation(ctx context.Context, api *bootstrap.App, args []string, stdout,
 		if err != nil {
 			return err
 		}
-		approval := project.Approval
-		if approval == "" {
-			approval = model.ApprovalAuto
-		}
-		strategy := model.CreationRunStrategy{ReviewCadence: model.ReviewPerPlanWindow, AutoRepairBudget: *repairBudget}
-		preset, err := model.NewCreationRunPreset("custom", approval, strategy)
+		strategy := model.CreationRunStrategy{AutoRepairBudget: *repairBudget}
+		preset, err := model.NewCreationRunPreset("custom", project.Approval, strategy)
 		if err != nil {
 			return err
 		}

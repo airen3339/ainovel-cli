@@ -19,12 +19,8 @@ func TestReviewedChaptersOnlyBlockThroughRequirements(t *testing.T) {
 	raw, _ := json.Marshal(input)
 	operation := Operation{Kind: OperationReviewRange, Snapshot: ExecutionSnapshot{BaseRevision: 3}, Input: raw}
 	verdict := func(check string, findings ...ReviewFinding) ReviewVerdict {
-		status := ReviewPass
-		if check == CheckViolated || len(findings) > 0 && findings[0].Severity == FindingBlocking {
-			status = ReviewBlocked
-		}
 		return ReviewVerdict{
-			Status: status, Revision: 3, ChapterIDs: input.ChapterIDs, ReviewKey: "review", Basis: basis,
+			Revision: 3, ChapterIDs: input.ChapterIDs, ReviewKey: "review", Basis: basis,
 			Checks: []RequirementCheck{{ID: "directive:rain", Status: check}}, Findings: append([]ReviewFinding{}, findings...),
 		}
 	}
@@ -74,7 +70,7 @@ func TestReviewVerdictRequirementCoverage(t *testing.T) {
 	basis := EvidenceBasis{Documents: []DocumentBasis{{Ref: DocumentRef{Kind: DocumentManuscript, ID: "chapter-1"}, Revision: 2}}}
 	base := func(checks ...RequirementCheck) ReviewVerdict {
 		return ReviewVerdict{
-			Status: ReviewPass, Revision: 3, ChapterIDs: []string{"chapter-1"}, ReviewKey: "review", Basis: basis,
+			Revision: 3, ChapterIDs: []string{"chapter-1"}, ReviewKey: "review", Basis: basis,
 			Checks: checks, Findings: []ReviewFinding{},
 		}
 	}
@@ -154,10 +150,10 @@ func TestReviewStatusFollowsFindings(t *testing.T) {
 	blocking := ReviewFinding{ChapterID: "chapter-2", Severity: FindingBlocking, Note: "同一封信既没寄出又被退回"}
 	for _, c := range []struct {
 		findings []ReviewFinding
-		want     string
-	}{{nil, ReviewPass}, {[]ReviewFinding{note}, ReviewPass}, {[]ReviewFinding{note, blocking}, ReviewBlocked}} {
-		if got := ReviewStatusOf(c.findings); got != c.want {
-			t.Fatalf("status of %+v = %q, want %q", c.findings, got, c.want)
+		want     int
+	}{{nil, 0}, {[]ReviewFinding{note}, 0}, {[]ReviewFinding{note, blocking}, 1}} {
+		if got := (ReviewVerdict{Findings: c.findings}).Blocking(); got != c.want {
+			t.Fatalf("blocking of %+v = %d, want %d", c.findings, got, c.want)
 		}
 	}
 }

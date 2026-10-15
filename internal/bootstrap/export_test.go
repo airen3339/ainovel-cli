@@ -18,12 +18,13 @@ func TestNovelExportUsesAcceptedRevisionAndNumericOrder(t *testing.T) {
 	ctx := context.Background()
 	api := newTestApp(openTestStore(t))
 	projection := projectdoc.ProjectProjection{ProjectID: "export-book", Intent: model.Intent{Premise: "来信"}, Plan: []model.PlanNode{{ID: "v", Kind: model.PlanVolume, Title: "卷", Summary: "卷"}, {ID: "a", ParentID: "v", Kind: model.PlanArc, Title: "弧", Summary: "弧"}}}
-	for _, n := range []int{10, 2, 1} {
+	// 十章才有第 10 章：按数值排在第 2 章之后，而不是按字符串。
+	for n := 10; n >= 1; n-- {
 		id := fmt.Sprint(n)
 		projection.Plan = append(projection.Plan, model.PlanNode{ID: "p" + id, ParentID: "a", Kind: model.PlanChapter, Order: n, Title: "章" + id, Summary: "章"})
 		projection.Manuscript = append(projection.Manuscript, model.ManuscriptChapter{ID: "c" + id, PlanNodeID: "p" + id, Number: n, Author: model.AuthorUser, Blocks: []model.ManuscriptBlock{{ID: "b" + id, Text: "已确认正文" + id}}})
 	}
-	proposal, err := api.Projects.ImportNewProject(ctx, "import", "user", "test", projection, testTime())
+	proposal, err := api.Projects.ImportProject(ctx, "import", "user", "test", projection, testTime())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +44,7 @@ func TestNovelExportUsesAcceptedRevisionAndNumericOrder(t *testing.T) {
 	}
 	content, _ := os.ReadFile(path)
 	text := string(content)
-	if result.Chapters != 3 || !(strings.Index(text, "第1章 ") < strings.Index(text, "第2章 ") && strings.Index(text, "第2章 ") < strings.Index(text, "第10章 ")) {
+	if result.Chapters != 10 || !(strings.Index(text, "第1章 ") < strings.Index(text, "第2章 ") && strings.Index(text, "第2章 ") < strings.Index(text, "第10章 ")) {
 		t.Fatalf("order/result: %+v %s", result, text)
 	}
 	projection, err = api.Projects.ExportProject(ctx, projection.ProjectID, 0)

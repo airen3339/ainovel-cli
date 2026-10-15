@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,7 +42,10 @@ type RoleConfig struct {
 // ActiveProvider 返回默认绑定所用的连接。
 func (c Config) ActiveProvider() (ProviderConfig, error) { return c.Connection(c.Provider) }
 
-// Connection 返回并校验一个已命名连接：协议、api 选项都在这里把关。
+// ErrBaseURL 是自定义地址不合法：界面据此把焦点放回地址栏。
+var ErrBaseURL = errors.New("地址须为 http(s) URL，不能包含用户凭据或片段")
+
+// Connection 返回并校验一个已命名连接：协议、api 选项、自定义地址都在这里把关。
 func (c Config) Connection(name string) (ProviderConfig, error) {
 	pc, err := c.providerConfig(name)
 	if err != nil {
@@ -61,6 +65,12 @@ func (c Config) Connection(name string) (ProviderConfig, error) {
 	}
 	if pc.API != "" && pc.Type != "openai" {
 		return ProviderConfig{}, fmt.Errorf("连接 %q 只有 openai 协议支持 api 选项", name)
+	}
+	if pc.BaseURL != "" {
+		u, err := url.Parse(pc.BaseURL)
+		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.Fragment != "" {
+			return ProviderConfig{}, fmt.Errorf("连接 %q 的%w", name, ErrBaseURL)
+		}
 	}
 	return pc, nil
 }

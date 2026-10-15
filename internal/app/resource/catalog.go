@@ -332,7 +332,7 @@ func commitPack(
 			Document:  model.DocumentRef{Kind: model.DocumentPack, ID: target.ID},
 			Operation: model.PatchPut, Content: content,
 		}}, ApprovalState: model.ApprovalPending, CreatedAt: at,
-	}, at)
+	})
 }
 
 func (s *Catalog) SaveCreatorProfile(
@@ -358,7 +358,7 @@ func (s *Catalog) SaveCreatorProfile(
 			Operation: model.PatchPut, Content: content,
 		}}, ApprovalState: model.ApprovalPending, CreatedAt: createdAt,
 	}
-	return s.changes.CommitUser(ctx, proposal, createdAt)
+	return s.changes.CommitUser(ctx, proposal)
 }
 
 func (s *Catalog) CreatorProfile(

@@ -107,7 +107,7 @@ func TestResolvePlanEditsAssignIDsAndKeepNumbering(t *testing.T) {
 // 写新章：事实按自然键并入已有节点，old_value 取自基线；事件按章追加；新实体可当场引用。
 func TestResolveChapterSubmissionUsesNaturalKeys(t *testing.T) {
 	story := fixture()
-	input := &model.WriteChapterInput{ChapterPlanID: "c3", ChapterNumber: 3}
+	input := &model.WriteChapterInput{ChapterPlanID: "c3"}
 	draft, err := story.Draft(input, ChapterDraft{Blocks: []model.ManuscriptBlock{{ID: "b1", Text: "下山了。"}}})
 	if err != nil || draft.ID != "c3" || draft.PlanNodeID != "c3" || draft.Number != 3 || draft.Author != model.AuthorAI {
 		t.Fatalf("draft identity = %+v, %v", draft, err)
@@ -153,7 +153,7 @@ func TestResolveChapterSubmissionUsesNaturalKeys(t *testing.T) {
 // 重写：确认复制基线、删除按自然键定位，同一事实不得既确认又改。
 func TestResolveRedeclarationByNaturalKey(t *testing.T) {
 	story := fixture()
-	input := &model.RewriteChapterInput{ChapterID: "c2", ChapterPlanID: "c2", ChapterNumber: 2, Findings: []string{"节奏拖沓"}}
+	input := &model.RewriteChapterInput{ChapterID: "c2", ChapterPlanID: "c2", Findings: []string{"节奏拖沓"}}
 	draft, err := story.Draft(input, ChapterDraft{Blocks: []model.ManuscriptBlock{{ID: "b1", Text: "他立誓。"}}})
 	if err != nil {
 		t.Fatal(err)
@@ -182,47 +182,18 @@ func TestResolveRedeclarationByNaturalKey(t *testing.T) {
 	}
 }
 
-// 多章改写：工作稿按章号落到任务章节上，事实必须指明来源章。
-func TestAffectedRewriteResolvesChaptersByNumber(t *testing.T) {
-	story := fixture()
-	input := &model.RewriteAffectedInput{ChapterIDs: []string{"c1", "c2"}, BaseRevision: 3, ResolutionProposalID: "p", Reason: "设定变更"}
-	if _, err := story.Draft(input, ChapterDraft{Number: 3, Blocks: []model.ManuscriptBlock{{ID: "b", Text: "x"}}}); err == nil {
-		t.Fatal("chapter outside the task accepted")
-	}
-	first, err := story.Draft(input, ChapterDraft{Number: 1, Blocks: []model.ManuscriptBlock{{ID: "b", Text: "x"}}})
-	if err != nil || first.ID != "c1" {
-		t.Fatalf("draft = %+v, %v", first, err)
-	}
-	second, _ := story.Draft(input, ChapterDraft{Number: 2, Blocks: []model.ManuscriptBlock{{ID: "b", Text: "y"}}})
-	drafts := []model.ManuscriptChapter{first, second}
-	if _, err := story.Resolve(input, Submission{Facts: []FactEdit{{Subject: "林凡", Predicate: "event.fall", Value: json.RawMessage(`"跌落"`)}}}, drafts); !errors.Is(err, model.ErrInvalid) {
-		t.Fatalf("multi-chapter fact without chapter: %v", err)
-	}
-	patches, err := story.Resolve(input, Submission{
-		Facts:   []FactEdit{{Subject: "林凡", Predicate: "event.fall", Value: json.RawMessage(`"跌落"`), Chapter: 1}},
-		Confirm: []FactRef{{Subject: "林凡", Predicate: "event.oath", Chapter: 2}},
-	}, drafts)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fall := decodePatch[model.CanonFact](t, patches, "canon:f4"); fall.SourceChapterID != "c1" {
-		t.Fatalf("fall = %+v", fall)
-	}
-}
-
 // 模型读到的任务、上下文片段与回查结果里没有任何内部 ID。
 func TestModelFacingViewsCarryNoInternalIDs(t *testing.T) {
 	story := fixture()
 	directive := model.Directive{ID: "d1", Scope: model.DirectiveScopePlanNode("a1"), Text: "多写心理", Status: model.DirectiveActive}
 	tasks := map[model.OperationKind]any{
-		model.OperationRewriteChapter: model.RewriteChapterInput{ChapterID: "c2", ChapterPlanID: "c2", ChapterNumber: 2, Findings: []string{"拖沓"}, Directives: []model.Directive{directive}},
+		model.OperationRewriteChapter: model.RewriteChapterInput{ChapterID: "c2", ChapterPlanID: "c2", Findings: []string{"拖沓"}, Directives: []model.Directive{directive}},
 		model.OperationReviseCanon:    model.ReviseCanonInput{ChapterID: "c2", FactIDs: []string{"f2"}, Reason: "核验"},
 		model.OperationReviewRange: model.ReviewRangeInput{ChapterIDs: []string{"c2", "c1"}, Reviewed: []string{"c1"},
 			PriorFindings: []model.ReviewFinding{{ChapterID: "c2", Severity: model.FindingBlocking, Note: "拖沓"}},
 			Basis: model.EvidenceBasis{Documents: []model.DocumentBasis{
 				{Ref: model.DocumentRef{Kind: model.DocumentManuscript, ID: "c1"}, Revision: 2},
 			}}},
-		model.OperationRewriteAffected: model.RewriteAffectedInput{ChapterIDs: []string{"c1"}, BaseRevision: 3, ResolutionProposalID: "p-c1", Reason: "设定变更"},
 	}
 	var rendered []string
 	for kind, input := range tasks {
@@ -237,13 +208,13 @@ func TestModelFacingViewsCarryNoInternalIDs(t *testing.T) {
 		}
 		rendered = append(rendered, string(view))
 	}
-	ownership, err := story.Ownership([]model.OwnershipRule{
+	ownership := story.Ownership([]model.OwnershipRule{
 		{Target: model.DocumentRef{Kind: model.DocumentManuscript, ID: "c1"}, Control: model.ControlLocked},
 		{Target: model.DocumentRef{Kind: model.DocumentEntity, ID: "e1"}, Control: model.ControlGuided, Guidance: []string{"保持隐忍"}},
 		{Target: model.DocumentRef{Kind: model.DocumentPlan, ID: "gone"}, Control: model.ControlLocked},
 	})
-	if err != nil || len(ownership) != 2 {
-		t.Fatalf("ownership = %+v, %v", ownership, err)
+	if len(ownership) != 2 {
+		t.Fatalf("ownership = %+v", ownership)
 	}
 	for _, query := range []Query{{Chapter: 2}, {Arc: 1}, {Volume: 1}, {Entity: "小凡"}} {
 		view, err := story.Read(query)

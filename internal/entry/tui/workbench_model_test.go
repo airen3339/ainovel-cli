@@ -114,7 +114,7 @@ func TestModelPanelRoleOverrideAndFollowDefault(t *testing.T) {
 func TestModelPanelEscapeErrorsAndMouse(t *testing.T) {
 	m := modelPanelFixture(t)
 	m, _ = submit(t, m, "/model narrator")
-	if m.bench.modelPanel != nil || !strings.Contains(m.bench.err, "用法：/model [architect|writer|editor]") {
+	if m.bench.modelPanel != nil || !strings.Contains(m.bench.err, "用法：/model [architect|writer|editor|chief]") {
 		t.Fatalf("unknown role: panel=%v err=%q", m.bench.modelPanel != nil, m.bench.err)
 	}
 	m, _ = submit(t, m, "/model")

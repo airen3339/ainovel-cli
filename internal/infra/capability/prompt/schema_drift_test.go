@@ -15,11 +15,8 @@ import (
 // Schema 公开了结构体没有的字段，模型照 Schema 填写就会被硬拒——连撞到提交保护停机。
 // 这条检查按每个 Worker 的实际 Schema 逐路径比对 json tag，不需要人工登记的映射。
 func TestToolSchemaFieldsAreDecodable(t *testing.T) {
-	definitions, err := BuiltinCapabilities()
-	if err != nil {
-		t.Fatalf("built-in capabilities: %v", err)
-	}
-	submission := append(jsonFields(narrative.Submission{}), "reason", "workspace_key", "workspace_version", "workspace_versions")
+	definitions := BuiltinCapabilities()
+	submission := append(jsonFields(narrative.Submission{}), "reason")
 	cases := []struct {
 		tool, path string
 		fields     []string

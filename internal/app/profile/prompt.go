@@ -11,14 +11,12 @@ import (
 )
 
 type ReloadPromptCommand struct {
-	ProjectID           string
-	Kind                model.OperationKind
-	WorkerProfileID     string
-	Input               json.RawMessage
-	Packs               []resource.PackRef
-	CreatorProfiles     []resource.CreatorProfileRef
-	CoreProtocolVersion string
-	CreatedAt           time.Time
+	ProjectID       string
+	Kind            model.OperationKind
+	Input           json.RawMessage
+	Packs           []resource.PackRef
+	CreatorProfiles []resource.CreatorProfileRef
+	CreatedAt       time.Time
 }
 
 type ReloadPromptResult struct {
@@ -35,9 +33,8 @@ func (s *Compiler) ReloadPrompt(ctx context.Context, command ReloadPromptCommand
 		return ReloadPromptResult{}, err
 	}
 	compiled, err := s.Compile(ctx, CompileCommand{
-		ProjectID: command.ProjectID, Revision: revision, Kind: command.Kind, WorkerProfileID: command.WorkerProfileID,
-		Input: command.Input, Packs: command.Packs, CreatorProfiles: command.CreatorProfiles,
-		CoreProtocolVersion: command.CoreProtocolVersion, CreatedAt: command.CreatedAt,
+		ProjectID: command.ProjectID, Revision: revision, Kind: command.Kind,
+		Input: command.Input, Packs: command.Packs, CreatorProfiles: command.CreatorProfiles, CreatedAt: command.CreatedAt,
 	})
 	if err != nil {
 		return ReloadPromptResult{}, err

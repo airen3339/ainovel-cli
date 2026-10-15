@@ -2,9 +2,8 @@ package activity
 
 // Scope comes from the validated task input, never inferred from generated text.
 type Scope struct {
-	ChapterNumber int
-	PlanNodeID    string
-	ChapterIDs    []string
+	PlanNodeID string
+	ChapterIDs []string
 }
 
 func (s Scope) clone() Scope {

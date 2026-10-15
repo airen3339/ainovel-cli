@@ -155,13 +155,13 @@ func TestQuickWriteDraftOutdatedWhileWaitingIsRedoneBySuccessor(t *testing.T) {
 		t.Fatalf("a requirement on chapter 2 must leave the chapter 1 draft waiting: %#v, calls %d", result, executor.calls)
 	}
 	note("opening", 1, 1, testTime().Add(4*time.Hour))
-	if result.RunState != model.RunWaitingUser || result.WaitingOperationID != draft+":r2" || executor.calls != calls+1 {
+	if result.RunState != model.RunWaitingUser || result.WaitingOperationID != draft+":redo2" || executor.calls != calls+1 {
 		t.Fatalf("an outdated draft must be redone by its successor: %#v, calls %d", result, executor.calls)
 	}
 	if old, err := api.Tasks.Operation(ctx, draft); err != nil || old.State != model.OperationStale {
 		t.Fatalf("outdated draft = %s, %v", old.State, err)
 	}
-	successor, err := api.Tasks.Operation(ctx, draft+":r2")
+	successor, err := api.Tasks.Operation(ctx, draft+":redo2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -191,10 +191,10 @@ func TestQuickWriteRejectedBlueprintIsReplannedWithTheReason(t *testing.T) {
 		t.Fatal(err)
 	}
 	command.CreatedAt = testTime().Add(2 * time.Hour)
-	if result, err = api.Novels.QuickWrite(ctx, command); err != nil || result.WaitingOperationID != blueprint+":r2" {
+	if result, err = api.Novels.QuickWrite(ctx, command); err != nil || result.WaitingOperationID != blueprint+":redo2" {
 		t.Fatalf("replan = %#v, %v", result, err)
 	}
-	successor, err := api.Tasks.Operation(ctx, blueprint+":r2")
+	successor, err := api.Tasks.Operation(ctx, blueprint+":redo2")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +271,7 @@ func TestQuickWriteRejectedChapterIsRewrittenBySuccessor(t *testing.T) {
 	if result, err = api.Novels.QuickWrite(ctx, command); err != nil {
 		t.Fatalf("rewrite after rejection: %v", err)
 	}
-	successor := chapterOperationID + ":r2"
+	successor := chapterOperationID + ":redo2"
 	if result.RunState != model.RunWaitingUser || executor.calls != 3 ||
 		len(result.Chapters) != 1 || result.Chapters[0].OperationID != successor {
 		t.Fatalf("rewrite = %#v, executor calls = %d", result, executor.calls)
@@ -591,7 +591,7 @@ func TestQuickWriteDirectiveAddedMidRunReachesSuccessorAndGatesReview(t *testing
 	if result.RunState != model.RunCompleted || result.Revision != 6 || executor.calls != 7 {
 		t.Fatalf("result = %#v, executor calls = %d", result, executor.calls)
 	}
-	successor := runQuickID(result.RunID, "chapter", "chapter-plan-1") + ":r2"
+	successor := runQuickID(result.RunID, "chapter", "chapter-plan-1") + ":redo2"
 	operation, err := authorityStore.GetOperation(ctx, successor)
 	if err != nil {
 		t.Fatalf("read successor: %v", err)
@@ -911,12 +911,16 @@ func (e *scriptedQuickExecutor) Execute(ctx context.Context, operation model.Ope
 		if err != nil {
 			return model.OperationOutcome{}, err
 		}
+		number, err := e.chapterNumber(ctx, operation, input.ChapterPlanID)
+		if err != nil {
+			return model.OperationOutcome{}, err
+		}
 		chapter := model.ManuscriptChapter{
 			ID: "chapter-" + input.ChapterPlanID, PlanNodeID: input.ChapterPlanID,
-			Number: input.ChapterNumber, Author: model.AuthorAI,
+			Number: number, Author: model.AuthorAI,
 			Blocks: []model.ManuscriptBlock{{
-				ID:   fmt.Sprintf("chapter-%d-block-1", input.ChapterNumber),
-				Text: fmt.Sprintf("第%d章正文", input.ChapterNumber),
+				ID:   fmt.Sprintf("chapter-%d-block-1", number),
+				Text: fmt.Sprintf("第%d章正文", number),
 			}},
 		}
 		content, err := json.Marshal(chapter)
@@ -925,7 +929,7 @@ func (e *scriptedQuickExecutor) Execute(ctx context.Context, operation model.Ope
 		}
 		fact := model.CanonFact{
 			ID: chapter.ID + "-outcome", Kind: model.CanonEvent, SubjectID: "hero",
-			Predicate: "event.chapter_outcome", Value: json.RawMessage(fmt.Sprintf(`"第%d章"`, input.ChapterNumber)),
+			Predicate: "event.chapter_outcome", Value: json.RawMessage(fmt.Sprintf(`"第%d章"`, number)),
 			SourceChapterID: chapter.ID,
 		}
 		canon, err := json.Marshal(fact)
@@ -943,7 +947,7 @@ func (e *scriptedQuickExecutor) Execute(ctx context.Context, operation model.Ope
 		}
 		e.reviews = append(e.reviews, input)
 		verdict := model.ReviewVerdict{
-			Status: model.ReviewPass, Revision: operation.Snapshot.BaseRevision,
+			Revision:   operation.Snapshot.BaseRevision,
 			ChapterIDs: input.ChapterIDs, ReviewKey: "scripted-review", Basis: input.Basis,
 			Findings: []model.ReviewFinding{},
 		}
@@ -956,7 +960,6 @@ func (e *scriptedQuickExecutor) Execute(ctx context.Context, operation model.Ope
 			if requirement.ID == "directive:"+e.unmetDirective && e.unmetRemaining > 0 {
 				e.unmetRemaining--
 				check.Status, check.Note = model.CheckViolated, "结尾没有留下钩子"
-				verdict.Status = model.ReviewBlocked
 				verdict.Findings = append(verdict.Findings, model.ReviewFinding{
 					ChapterID: e.blockChapter, Severity: model.FindingBlocking, Note: "按要求补上结尾钩子：" + requirement.Text,
 					Requirement: requirement.ID,
@@ -966,19 +969,17 @@ func (e *scriptedQuickExecutor) Execute(ctx context.Context, operation model.Ope
 		}
 		if e.blockRemaining > 0 && blockable(e.blockChapter) {
 			e.blockRemaining--
-			verdict.Status = model.ReviewBlocked
 			verdict.Findings = append(verdict.Findings, model.ReviewFinding{
 				ChapterID: e.blockChapter, Severity: model.FindingBlocking, Note: "结尾太仓促，补全告别场景",
 			})
 		}
 		for _, id := range e.blockOnce {
 			if blockable(id) {
-				verdict.Status = model.ReviewBlocked
 				verdict.Findings = append(verdict.Findings, model.ReviewFinding{ChapterID: id, Severity: model.FindingBlocking, Note: "人物前后矛盾"})
 			}
 		}
 		e.blockOnce = nil
-		if e.passNote != "" && verdict.Status == model.ReviewPass {
+		if e.passNote != "" && verdict.Blocking() == 0 {
 			verdict.Findings = append(verdict.Findings, model.ReviewFinding{
 				ChapterID: input.ChapterIDs[0], Severity: model.FindingNote, Note: e.passNote,
 			})
@@ -1008,28 +1009,12 @@ func (e *scriptedQuickExecutor) Execute(ctx context.Context, operation model.Ope
 		if input.Rework {
 			note = "按返工要求重写"
 		}
-		if patches, err = e.rewrite(input.ChapterID, input.ChapterPlanID, input.ChapterNumber, note); err != nil {
-			return model.OperationOutcome{}, err
-		}
-	case model.OperationRewriteAffected:
-		input, err := model.TaskInputAs[model.RewriteAffectedInput](operation)
+		number, err := e.chapterNumber(ctx, operation, input.ChapterPlanID)
 		if err != nil {
 			return model.OperationOutcome{}, err
 		}
-		for _, id := range input.ChapterIDs {
-			stored, err := e.authorityStore.GetDocument(ctx, operation.Target, model.DocumentRef{Kind: model.DocumentManuscript, ID: id}, operation.Snapshot.BaseRevision)
-			if err != nil {
-				return model.OperationOutcome{}, err
-			}
-			var chapter model.ManuscriptChapter
-			if err := json.Unmarshal(stored.Content, &chapter); err != nil {
-				return model.OperationOutcome{}, err
-			}
-			rewritten, err := e.rewrite(chapter.ID, chapter.PlanNodeID, chapter.Number, "按改过的设定重写")
-			if err != nil {
-				return model.OperationOutcome{}, err
-			}
-			patches = append(patches, rewritten...)
+		if patches, err = e.rewrite(input.ChapterID, input.ChapterPlanID, number, note); err != nil {
+			return model.OperationOutcome{}, err
 		}
 	case model.OperationReviseCanon:
 		input, err := model.TaskInputAs[model.ReviseCanonInput](operation)
@@ -1076,6 +1061,21 @@ func (e *scriptedQuickExecutor) Execute(ctx context.Context, operation model.Ope
 }
 
 // rewrite 是重写一章的提交：正文写明为什么重写，随章事实按轮次连续更新。
+// chapterNumber 是章节计划在任务基线上的位置（D66）。
+func (e *scriptedQuickExecutor) chapterNumber(ctx context.Context, operation model.Operation, planID string) (int, error) {
+	documents, err := e.authorityStore.ListDocuments(ctx, operation.Target, model.DocumentPlan, operation.Snapshot.BaseRevision)
+	if err != nil {
+		return 0, err
+	}
+	plan := make([]model.PlanNode, len(documents))
+	for i, document := range documents {
+		if err := json.Unmarshal(document.Content, &plan[i]); err != nil {
+			return 0, err
+		}
+	}
+	return slices.IndexFunc(model.ChapterPlansInOrder(plan), func(node model.PlanNode) bool { return node.ID == planID }) + 1, nil
+}
+
 func (e *scriptedQuickExecutor) rewrite(chapterID, planID string, number int, note string) ([]model.Patch, error) {
 	content, err := json.Marshal(model.ManuscriptChapter{
 		ID: chapterID, PlanNodeID: planID, Number: number, Author: model.AuthorAI,
@@ -1192,10 +1192,11 @@ func TestQuickWriteAcceptedFindingUnblocksAndWithdrawRestoresBlock(t *testing.T)
 	}
 	accept := novelapp.AddAdjudicationCommand{
 		ProjectID: command.ProjectID, ChangeID: "accept-1", UserID: "user-1",
-		Finding: snapshot.Findings[0].ID, Reason: "仓促的告别也是一种风格", CreatedAt: testTime().Add(time.Minute),
+		Findings: []string{snapshot.Findings[0].ID}, Reason: "仓促的告别也是一种风格", CreatedAt: testTime().Add(time.Minute),
 	}
 	accepted, err := api.Reviews.AddAdjudication(ctx, accept)
-	if err != nil || accepted.Adjudication.Finding != accept.Finding || accepted.Adjudication.Basis.Equal(model.EvidenceBasis{}) {
+	if err != nil || len(accepted.Adjudications) != 1 || accepted.Adjudications[0].Finding != accept.Findings[0] ||
+		accepted.Adjudications[0].Basis.Equal(model.EvidenceBasis{}) {
 		t.Fatalf("accepted = %#v, %v", accepted, err)
 	}
 	accept.CreatedAt = testTime().Add(2 * time.Minute)
@@ -1213,13 +1214,13 @@ func TestQuickWriteAcceptedFindingUnblocksAndWithdrawRestoresBlock(t *testing.T)
 	}
 	if _, err := api.Reviews.WithdrawAdjudication(ctx, novelapp.WithdrawAdjudicationCommand{
 		ProjectID: command.ProjectID, ChangeID: "withdraw-1", UserID: "user-1",
-		AdjudicationID: "accept-1", Reason: "还是改一下", CreatedAt: testTime().Add(4 * time.Minute),
+		AdjudicationID: "accept-1:1", Reason: "还是改一下", CreatedAt: testTime().Add(4 * time.Minute),
 	}); err != nil {
 		t.Fatalf("withdraw: %v", err)
 	}
 	if _, err := api.Reviews.WithdrawAdjudication(ctx, novelapp.WithdrawAdjudicationCommand{
 		ProjectID: command.ProjectID, ChangeID: "withdraw-2", UserID: "user-1",
-		AdjudicationID: "accept-1", Reason: "再撤一次", CreatedAt: testTime().Add(5 * time.Minute),
+		AdjudicationID: "accept-1:1", Reason: "再撤一次", CreatedAt: testTime().Add(5 * time.Minute),
 	}); !errors.Is(err, model.ErrStateConflict) {
 		t.Fatalf("second withdraw err = %v", err)
 	}
@@ -1256,7 +1257,7 @@ func TestAdjudicationExpiresWhenChapterChanges(t *testing.T) {
 	}
 	if _, err := api.Reviews.AddAdjudication(ctx, novelapp.AddAdjudicationCommand{
 		ProjectID: command.ProjectID, ChangeID: "accept-1", UserID: "user-1",
-		Finding: snapshot.Findings[0].ID, Reason: "接受", CreatedAt: testTime().Add(time.Minute),
+		Findings: []string{snapshot.Findings[0].ID}, Reason: "接受", CreatedAt: testTime().Add(time.Minute),
 	}); err != nil {
 		t.Fatalf("accept: %v", err)
 	}
@@ -1324,7 +1325,7 @@ func TestQuickWriteDisjointDirectiveMidRunRelocatesInFlightChapter(t *testing.T)
 		t.Fatalf("result = %#v, executor calls = %d", result, executor.calls)
 	}
 	chapterTwo := runQuickID(result.RunID, "chapter", "chapter-plan-2")
-	if _, err := executor.authorityStore.GetOperation(ctx, chapterTwo+":r2"); !errors.Is(err, model.ErrNotFound) {
+	if _, err := executor.authorityStore.GetOperation(ctx, chapterTwo+":redo2"); !errors.Is(err, model.ErrNotFound) {
 		t.Fatalf("chapter 2 must not need a successor, got %v", err)
 	}
 	proposal, err := api.Decisions.ProposalForOperation(ctx, chapterTwo)

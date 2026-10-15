@@ -45,12 +45,6 @@ type ActivitySink interface {
 // SetActivitySink 装配实时活动通道；须在执行开始前完成。
 func (r *Runtime) SetActivitySink(sink ActivitySink) { r.activity = sink }
 
-// ActivityHub 返回装配的活动 Hub（订阅端用）；装的不是 Hub 时为 nil。
-func (r *Runtime) ActivityHub() *activity.Hub {
-	hub, _ := r.activity.(*activity.Hub)
-	return hub
-}
-
 // proposalValidator 是工具边界对变更机制的全部需要：提交前当场校验。提交只由
 // Operation Engine 经 change 完成，Runtime 拿不到提交入口。
 type proposalValidator interface {

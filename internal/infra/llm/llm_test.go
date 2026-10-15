@@ -137,3 +137,16 @@ func TestStructuredRetriesTemporaryFailures(t *testing.T) {
 		t.Fatalf("auth failure = %v after %d requests", err, len(denied.Requests()))
 	}
 }
+
+func TestStructuredRetriesAVendorEndedError(t *testing.T) {
+	p := litellmtest.New(litellmtest.Reply{FinishReason: litellm.FinishReasonError}, litellmtest.Text(`{"status":"pass"}`))
+	var out struct {
+		Status string `json:"status"`
+	}
+	if _, err := llm.Structured(context.Background(), binding(t, p), call, &out); err != nil || out.Status != "pass" {
+		t.Fatalf("structured call: err=%v out=%+v", err, out)
+	}
+	if len(p.Requests()) != 2 {
+		t.Fatalf("requests = %d, want a retry after the vendor error", len(p.Requests()))
+	}
+}

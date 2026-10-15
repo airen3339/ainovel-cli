@@ -10,7 +10,6 @@ import (
 	"github.com/voocel/ainovel-cli/internal/app/chief"
 	"github.com/voocel/ainovel-cli/internal/app/task"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
-	"github.com/voocel/ainovel-cli/internal/domain/change"
 	"github.com/voocel/ainovel-cli/internal/domain/model"
 	"github.com/voocel/litellm"
 	"github.com/voocel/litellm/litellmtest"
@@ -19,7 +18,7 @@ import (
 // conflictingExecutor 照脚本写书，语义影响分析一律报第一章与改动有出入（S4）。
 type conflictingExecutor struct{ *scriptedQuickExecutor }
 
-func (conflictingExecutor) Analyze(context.Context, model.Proposal, change.StructuralImpact) (json.RawMessage, error) {
+func (conflictingExecutor) Analyze(context.Context, model.Proposal, model.StructuralImpact) (json.RawMessage, error) {
 	chapter := "chapter-chapter-plan-1"
 	return json.Marshal(model.SemanticImpactReport{
 		Status:   model.SemanticImpactConflict,
@@ -96,7 +95,8 @@ func TestChiefReworksAChapterOfAFinishedBook(t *testing.T) {
 	}
 }
 
-// 完本的书上选“重写受影响的章”（S4）：开新一轮，重写任务归进它并接着推进。
+// 完本的书上选“重写受影响的章”（S4）：受影响的章记为返工要求（D86），与点名返工一样开新一轮，
+// 只重写那一章、重审后再完成。
 func TestRewritingAffectedChaptersOfAFinishedBookStartsANewRound(t *testing.T) {
 	api, session := finishedBook(t, litellmtest.New(
 		chiefCall("canon", "propose_change", `{"reason":"邮差其实记得一切","facts":[{"subject":"邮差","predicate":"state.memory","value":"记得一切"}]}`),
@@ -112,8 +112,14 @@ func TestRewritingAffectedChaptersOfAFinishedBookStartsANewRound(t *testing.T) {
 		t.Fatal(err)
 	}
 	end := driven(t, session, 2)
-	if end.Err != nil || end.Result.RunState != model.RunWaitingUser || !strings.HasSuffix(end.Result.RunID, ":2") ||
-		!strings.Contains(end.Result.RunReason, "已按改过的设定重写") {
-		t.Fatalf("drive end = %+v", end)
+	requireCompleted(t, end, 2)
+	if !strings.HasSuffix(end.Result.RunID, ":2") {
+		t.Fatalf("rewriting a finished book must be a new round: %s", end.Result.RunID)
+	}
+	if text := chapterText(t, api, "finished-book", 1); !strings.Contains(text, "按返工要求重写") {
+		t.Fatalf("chapter 1 = %q", text)
+	}
+	if text := chapterText(t, api, "finished-book", 2); strings.Contains(text, "重写") {
+		t.Fatalf("chapter 2 is outside the affected chapters: %q", text)
 	}
 }

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain/change"
@@ -33,7 +35,7 @@ type ProjectDraft struct {
 	Entities  []model.Entity        `json:"entities,omitempty"`
 	Canon     []model.CanonFact     `json:"canon"`
 	Ownership []model.OwnershipRule `json:"ownership"`
-	// Approval 是初始化事务写入权威的审批策略（§6.3）；留空表示 auto。
+	// Approval 是初始化事务写入权威的审批策略（§6.3）；留空即 auto，建书总会写入。
 	Approval model.ApprovalPolicy `json:"approval,omitempty"`
 }
 
@@ -88,11 +90,6 @@ func (index DocumentIndex) Add(document model.DocumentVersion) error {
 	return nil
 }
 
-// ListProjects 列举作品库中的全部作品。
-func (s *Repository) ListProjects(ctx context.Context) ([]model.ProjectRecord, error) {
-	return s.store.ListProjects(ctx)
-}
-
 // DeleteProject 永久删除一部作品的全部数据；进行中（running）的创作需先取消。
 func (s *Repository) DeleteProject(ctx context.Context, projectID string) error {
 	return s.store.DeleteProject(ctx, projectID)
@@ -115,7 +112,7 @@ func (s *Repository) CreateProject(ctx context.Context, command CreateProjectCom
 		Reason: command.Reason, Patches: patches,
 		ApprovalState: model.ApprovalPending, CreatedAt: command.CreatedAt,
 	}
-	committed, err := s.changes.CommitUser(ctx, proposal, command.CreatedAt)
+	committed, err := s.changes.CommitUser(ctx, proposal)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -132,7 +129,7 @@ func (s *Repository) Project(ctx context.Context, projectID string, revision mod
 		}
 	}
 	result := Snapshot{ID: projectID, Revision: revision, Index: DocumentIndex{}}
-	intent, err := s.store.GetDocument(ctx, target, model.DocumentRef{Kind: model.DocumentIntent, ID: "root"}, revision)
+	intent, err := s.store.GetDocument(ctx, target, model.DocumentRef{Kind: model.DocumentIntent, ID: model.SingletonDocumentID}, revision)
 	if err != nil {
 		return Snapshot{}, err
 	}
@@ -216,50 +213,26 @@ func (s *Repository) DerivedDocuments(
 	return s.store.ListDerivedDocuments(ctx, projectID, revision)
 }
 
+// projectDraftPatches 是建书的补丁：与导入同一份投影→文档映射，按文档键排序。审批策略
+// 总会写入，作品快照因此总有确定的策略。
 func projectDraftPatches(draft ProjectDraft, assets model.ProjectAssetRefs) ([]model.Patch, error) {
-	patches := make([]model.Patch, 0, 2+len(draft.Plan)+len(draft.Canon)+len(draft.Ownership))
-	appendPut := func(ref model.DocumentRef, value any) error {
-		payload, err := json.Marshal(value)
-		if err != nil {
-			return err
-		}
-		patches = append(patches, model.Patch{Document: ref, Operation: model.PatchPut, Content: payload})
-		return nil
-	}
-	if err := appendPut(model.DocumentRef{Kind: model.DocumentIntent, ID: "root"}, draft.Intent); err != nil {
-		return nil, err
-	}
-	for _, node := range draft.Plan {
-		if err := appendPut(model.DocumentRef{Kind: model.DocumentPlan, ID: node.ID}, node); err != nil {
-			return nil, err
-		}
-	}
-	for _, entity := range draft.Entities {
-		if err := appendPut(model.DocumentRef{Kind: model.DocumentEntity, ID: entity.ID}, entity); err != nil {
-			return nil, err
-		}
-	}
-	for _, fact := range draft.Canon {
-		if err := appendPut(model.DocumentRef{Kind: model.DocumentCanon, ID: fact.ID}, fact); err != nil {
-			return nil, err
-		}
-	}
-	for _, rule := range draft.Ownership {
-		if err := appendPut(model.DocumentRef{Kind: model.DocumentOwnership, ID: rule.Target.Key()}, rule); err != nil {
-			return nil, err
-		}
-	}
-	if draft.Approval != "" {
-		setting := model.ApprovalSetting{Policy: draft.Approval}
-		if err := appendPut(model.DocumentRef{Kind: model.DocumentApproval, ID: "root"}, setting); err != nil {
-			return nil, err
-		}
-	}
 	if err := assets.Validate(); err != nil {
 		return nil, err
 	}
-	if err := appendPut(model.DocumentRef{Kind: model.DocumentAssets, ID: "root"}, assets); err != nil {
+	if draft.Approval == "" {
+		draft.Approval = model.ApprovalAuto
+	}
+	documents, err := projectionDocuments(ProjectProjection{
+		Intent: draft.Intent, Plan: draft.Plan, Entities: draft.Entities, Canon: draft.Canon,
+		Ownership: draft.Ownership, Approval: draft.Approval, Assets: &assets,
+	})
+	if err != nil {
 		return nil, err
+	}
+	keys := slices.Sorted(maps.Keys(documents))
+	patches := make([]model.Patch, len(keys))
+	for i, key := range keys {
+		patches[i] = model.Patch{Document: documents[key].Document, Operation: model.PatchPut, Content: documents[key].Content}
 	}
 	return patches, nil
 }

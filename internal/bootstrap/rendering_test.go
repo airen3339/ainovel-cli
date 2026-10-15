@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	evidencereader "github.com/voocel/ainovel-cli/internal/app/evidence"
 	novelapp "github.com/voocel/ainovel-cli/internal/app/novel"
 	projectdoc "github.com/voocel/ainovel-cli/internal/app/project"
 	"github.com/voocel/ainovel-cli/internal/app/resource"
@@ -27,7 +26,7 @@ import (
 // adapter loads only project documents and generic artifact/check evidence.
 type renderingEvidence struct {
 	artifacts []model.Artifact
-	checks    []evidencereader.Check
+	checks    []evidenceCheck
 }
 
 type renderingPolicy interface {
@@ -37,7 +36,7 @@ type renderingPolicy interface {
 
 type renderingAdapter struct {
 	projects *projectdoc.Repository
-	evidence *evidencereader.Reader
+	evidence *evidenceReader
 	policy   renderingPolicy
 }
 
@@ -64,7 +63,7 @@ func (g renderingAdapter) Next(ctx context.Context, run model.CreationRun) (runs
 func newMediaApp(st *store.Store, executors tasks.ExecutorSet, policy renderingPolicy, contracts ...operation.VerdictContract) *testApp {
 	changes := change.New(st)
 	official := resource.NewOfficial(st, changes, assets.OfficialPack())
-	adapter := renderingAdapter{projects: projectdoc.New(st, changes, official), evidence: evidencereader.New(st, changes, operation.NewEngine(st, changes, contracts...)), policy: policy}
+	adapter := renderingAdapter{projects: projectdoc.New(st, changes, official), evidence: newEvidenceReader(st, changes, operation.NewEngine(st, changes, contracts...)), policy: policy}
 	return newTestApp(st, bootstrap.Options{Executors: executors, Contracts: contracts, Goals: map[model.GoalKind]runs.Goal{goalRendering: adapter}, Now: testTime})
 }
 
@@ -206,7 +205,7 @@ func newRenderingApp(t *testing.T, approval model.ApprovalPolicy) (*testApp, *ex
 
 func startRenderingRun(t *testing.T, api *testApp, sequence int, at time.Time) model.CreationRun {
 	t.Helper()
-	strategy := model.CreationRunStrategy{ReviewCadence: model.ReviewPerPlanWindow, AutoRepairBudget: 0}
+	strategy := model.CreationRunStrategy{AutoRepairBudget: 0}
 	preset, err := model.NewCreationRunPreset("rendering", model.ApprovalAuto, strategy)
 	if err != nil {
 		t.Fatalf("preset: %v", err)
@@ -227,11 +226,7 @@ func renderingBase() tasks.StartOperationCommand {
 }
 
 func renderingTasks(api *testApp) runs.Tasks {
-	return api.Tasks.ForCreation(renderingBase())
-}
-
-func renderingCommand(at time.Time) runs.DriveCommand {
-	return runs.DriveCommand{WorkerID: "render-worker", LeaseDuration: time.Minute, CreatedAt: at}
+	return api.Tasks.ForCreation(renderingBase(), "render-worker", time.Minute)
 }
 
 // attachmentsByTarget 取当前附件到工件引用的映射，键为目标节点 ID。
@@ -276,7 +271,7 @@ func TestRenderingRunRecoversExternalJobAcrossLeaseExpiry(t *testing.T) {
 		t.Fatalf("recover expired: %v", err)
 	}
 
-	outcome, err := api.Runs.Drive(ctx, run, renderingTasks(api), renderingCommand(testTime().Add(3*time.Minute)))
+	outcome, err := api.Runs.Drive(ctx, run, renderingTasks(api), testTime().Add(3*time.Minute))
 	if err != nil || outcome.Run.State != model.RunCompleted {
 		t.Fatalf("outcome = %#v, %v", outcome.Run, err)
 	}
@@ -301,7 +296,7 @@ func TestRenderingRunRegeneratesOnlyAffectedTargetAfterSourceChange(t *testing.T
 	// 完成绑定新 Revision；旧工件行保留，GC 不删被引用对象。
 	ctx := context.Background()
 	api, executor := newRenderingApp(t, model.ApprovalAuto)
-	outcome, err := api.Runs.Drive(ctx, startRenderingRun(t, api, 1, testTime()), renderingTasks(api), renderingCommand(testTime()))
+	outcome, err := api.Runs.Drive(ctx, startRenderingRun(t, api, 1, testTime()), renderingTasks(api), testTime())
 	if err != nil || outcome.Run.State != model.RunCompleted {
 		t.Fatalf("initial render = %#v, %v", outcome.Run, err)
 	}
@@ -319,7 +314,7 @@ func TestRenderingRunRegeneratesOnlyAffectedTargetAfterSourceChange(t *testing.T
 		BaseRevision: outcome.Revision, Author: model.Author{Kind: model.AuthorUser, ID: "user-1"}, Reason: "改第二章计划",
 		Patches:       []model.Patch{{Document: model.DocumentRef{Kind: model.DocumentPlan, ID: "chapter-plan-2"}, Operation: model.PatchPut, Content: edited}},
 		ApprovalState: model.ApprovalPending, CreatedAt: at,
-	}, at); err != nil {
+	}); err != nil {
 		t.Fatalf("edit plan: %v", err)
 	}
 	if _, err := api.Projects.SetApprovalPolicy(ctx, projectdoc.SetApprovalPolicyCommand{
@@ -329,11 +324,11 @@ func TestRenderingRunRegeneratesOnlyAffectedTargetAfterSourceChange(t *testing.T
 	}
 
 	run := startRenderingRun(t, api, 2, at.Add(2*time.Minute))
-	outcome, err = api.Runs.Drive(ctx, run, renderingTasks(api), renderingCommand(at.Add(3*time.Minute)))
+	outcome, err = api.Runs.Drive(ctx, run, renderingTasks(api), at.Add(3*time.Minute))
 	if err != nil || outcome.Run.State != model.RunWaitingUser || outcome.Waiting == "" {
 		t.Fatalf("regeneration = %#v, %v", outcome.Run, err)
 	}
-	operations, err := api.Runs.RunOperations(ctx, run.ID)
+	operations, err := runOperations(ctx, api.App, run.ID)
 	if err != nil || len(operations) != 1 || operations[0].Kind != model.OperationGenerateAsset {
 		t.Fatalf("run operations = %#v, %v", operations, err)
 	}
@@ -343,7 +338,7 @@ func TestRenderingRunRegeneratesOnlyAffectedTargetAfterSourceChange(t *testing.T
 	if _, err := api.Decisions.Approve(ctx, outcome.Waiting+"-proposal", "user-1", at.Add(4*time.Minute)); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
-	outcome, err = api.Runs.Drive(ctx, outcome.Run, renderingTasks(api), renderingCommand(at.Add(5*time.Minute)))
+	outcome, err = api.Runs.Drive(ctx, outcome.Run, renderingTasks(api), at.Add(5*time.Minute))
 	if err != nil || outcome.Run.State != model.RunCompleted || outcome.Run.CompletedRevision != outcome.Revision {
 		t.Fatalf("delivery = %#v, %v", outcome.Run, err)
 	}
@@ -385,11 +380,11 @@ func TestOneApplicationRunsNovelThenExternalGeneration(t *testing.T) {
 	}
 	llmCalls := llm.calls
 	run := startRenderingRun(t, api, 2, testTime().Add(time.Hour))
-	outcome, err := api.Runs.Drive(ctx, run, renderingTasks(api), renderingCommand(testTime().Add(time.Hour)))
+	outcome, err := api.Runs.Drive(ctx, run, renderingTasks(api), testTime().Add(time.Hour))
 	if err != nil || outcome.Run.State != model.RunCompleted || external.service.submits != 3 || llm.calls != llmCalls || len(renderingSnapshot(t, api).Attachments) != 3 {
 		t.Fatalf("render=%#v err=%v submits=%d llm calls=%d", outcome.Run, err, external.service.submits, llm.calls)
 	}
-	operations, err := api.Runs.RunOperations(ctx, run.ID)
+	operations, err := runOperations(ctx, api.App, run.ID)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -13,7 +13,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/voocel/ainovel-cli/internal/app/chief"
 	projectdoc "github.com/voocel/ainovel-cli/internal/app/project"
-	"github.com/voocel/ainovel-cli/internal/app/workbench"
 	domainmodel "github.com/voocel/ainovel-cli/internal/domain/model"
 	appconfig "github.com/voocel/ainovel-cli/internal/infra/config"
 	"github.com/voocel/ainovel-cli/internal/infra/jsonc"
@@ -90,8 +89,6 @@ type projectDeletedMsg struct {
 
 type importDoneMsg struct {
 	projectID string
-	proposal  domainmodel.Proposal
-	view      workbench.ProposalView
 	err       error
 }
 
@@ -211,14 +208,9 @@ func (m model) updateHome(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.home.notice = "已删除"
 		if m.home.lastOpened == message.projectID {
-			// 只清落点，读改写保住其他作品的折叠偏好；读失败不回写不覆盖。
+			// 只清落点，其他作品的折叠偏好保留。
 			m.home.lastOpened = ""
-			state, err := appconfig.LoadState(m.deps.ConfigDir)
-			if err == nil {
-				state.LastProjectID = ""
-				err = appconfig.SaveState(m.deps.ConfigDir, state)
-			}
-			if err != nil {
+			if err := appconfig.UpdateState(m.deps.ConfigDir, func(state *appconfig.State) { state.LastProjectID = "" }); err != nil {
 				m.home.notice = "已删除（落点偏好未能更新：" + err.Error() + "）"
 			}
 		}
@@ -229,11 +221,8 @@ func (m model) updateHome(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.home.err = message.err.Error()
 			return m, nil
 		}
-		// 导入产出一份待批准草案：进入该作品工作台，用决定卡裁决。
+		// 导入产出一份待批准草案：进入该作品工作台，快照带着它的决定卡。
 		watch := m.openBench(message.projectID)
-		m.bench.presentDecision(&decisionState{
-			reason: "导入的草案等你批准", proposal: message.proposal, view: message.view, hasProposal: true,
-		})
 		return m, tea.Batch(m.refreshBenchCmd(), watch)
 	case tea.MouseMsg:
 		return m.handleHomeMouse(message)
@@ -424,36 +413,19 @@ func (m model) handleImportKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-// importProjectCmd 导入作品文件：库中已有的作品走差异导入，新作品先建再导；
-// 与 Headless `project import` 调同一 应用用例（workbench §9）。
+// importProjectCmd 导入作品文件，与 Headless `project import` 调同一应用用例（workbench §9）。
 func (m model) importProjectCmd(path string) tea.Cmd {
 	api, ctx, user := m.api, m.ctx, m.deps.UserID
-	known := make(map[string]bool, len(m.home.library))
-	for _, entry := range m.home.library {
-		known[entry.id] = true
-	}
 	return func() tea.Msg {
 		var projection projectdoc.ProjectProjection
 		if err := jsonc.DecodeFile(path, &projection); err != nil {
 			return importDoneMsg{err: err}
 		}
 		now := time.Now().UTC()
-		changeID := projectdoc.NewID("import", now)
-		var proposal domainmodel.Proposal
-		var err error
-		if known[projection.ProjectID] {
-			proposal, err = api.Projects.ImportProject(ctx, changeID, user, "导入作品文件", projection, now)
-		} else {
-			proposal, err = api.Projects.ImportNewProject(ctx, changeID, user, "导入作品文件", projection, now)
-		}
-		if err != nil {
+		if _, err := api.Projects.ImportProject(ctx, projectdoc.NewID("import", now), user, "导入作品文件", projection, now); err != nil {
 			return importDoneMsg{err: err}
 		}
-		view, err := api.Workbench.DescribeProposal(ctx, projection.ProjectID, proposal)
-		if err != nil {
-			return importDoneMsg{err: err}
-		}
-		return importDoneMsg{projectID: projection.ProjectID, proposal: proposal, view: view}
+		return importDoneMsg{projectID: projection.ProjectID}
 	}
 }
 

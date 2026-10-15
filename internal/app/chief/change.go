@@ -197,21 +197,14 @@ func (s *Session) Confirm(ctx context.Context, proposalID string) error {
 	return s.proceed(ctx, false)
 }
 
-// Resolve 是用户在确认卡上选的处置（S4）。重写受影响的章是要归属一轮创作的任务：已完本或
-// 停止的书先开新一轮；之后创作接着对账。
+// Resolve 是用户在确认卡上选的处置（S4）。重写受影响的章记为返工要求（D86），与主编记下的
+// 返工一样：已完本或停止的书开新一轮；之后创作接着对账。
 func (s *Session) Resolve(ctx context.Context, proposalID string, strategy model.ResolutionStrategy) error {
 	command := decision.ResolveProposalCommand{ProposalID: proposalID, UserID: s.userID, Strategy: string(strategy), CreatedAt: time.Now().UTC()}
-	if strategy == model.ResolutionRewriteAffected {
-		run, err := s.service.round(ctx, s.projectID, s.userID)
-		if err != nil {
-			return err
-		}
-		command.RunID = run.ID
-	}
 	if _, err := s.service.decisions.ResolveProposal(ctx, command); err != nil {
 		return err
 	}
-	return s.proceed(ctx, false)
+	return s.proceed(ctx, strategy == model.ResolutionRewriteAffected)
 }
 
 func (s *Session) history(ctx context.Context, _ none) (string, error) {

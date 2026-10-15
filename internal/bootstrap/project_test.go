@@ -12,11 +12,11 @@ import (
 	"time"
 
 	decisions "github.com/voocel/ainovel-cli/internal/app/decision"
+	"github.com/voocel/ainovel-cli/internal/app/novel"
 	profiles "github.com/voocel/ainovel-cli/internal/app/profile"
 	projectdoc "github.com/voocel/ainovel-cli/internal/app/project"
 	resources "github.com/voocel/ainovel-cli/internal/app/resource"
 	tasks "github.com/voocel/ainovel-cli/internal/app/task"
-	"github.com/voocel/ainovel-cli/internal/domain/change"
 	"github.com/voocel/ainovel-cli/internal/domain/model"
 	"github.com/voocel/ainovel-cli/internal/infra/capability/prompt"
 	"github.com/voocel/ainovel-cli/internal/infra/store"
@@ -47,11 +47,10 @@ func TestCreateProjectAndStartOperationFreezeExecutionProfile(t *testing.T) {
 
 	first, err := service.Tasks.StartOperation(ctx, tasks.StartOperationCommand{
 		OperationID: "write-1", ProjectID: project.ID,
-		RunID: ensureTestRun(t, ctx, authorityStore, project.ID, now),
-		Kind:  model.OperationWriteChapter, WorkerProfileID: "writer.compose",
-		Input:               json.RawMessage(`{"chapter_plan_id":"chapter-plan-1","chapter_number":1}`),
-		CoreProtocolVersion: "core-v1",
-		ApprovalPolicy:      model.ApprovalManual, CreatedAt: now.Add(time.Minute),
+		RunID:          ensureTestRun(t, ctx, authorityStore, project.ID, now),
+		Kind:           model.OperationWriteChapter,
+		Input:          json.RawMessage(`{"chapter_plan_id":"chapter-plan-1"}`),
+		ApprovalPolicy: model.ApprovalManual, CreatedAt: now.Add(time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("start first operation: %v", err)
@@ -66,12 +65,11 @@ func TestCreateProjectAndStartOperationFreezeExecutionProfile(t *testing.T) {
 	}
 	second, err := service.Tasks.StartOperation(ctx, tasks.StartOperationCommand{
 		OperationID: "write-2", ProjectID: project.ID,
-		RunID: ensureTestRun(t, ctx, authorityStore, project.ID, now),
-		Kind:  model.OperationWriteChapter, WorkerProfileID: "writer.compose",
-		Input:               json.RawMessage(`{"chapter_plan_id":"chapter-plan-1","chapter_number":1}`),
-		CreatorProfiles:     []resources.CreatorProfileRef{{ID: "user-1", Scope: "global"}},
-		CoreProtocolVersion: "core-v1",
-		ApprovalPolicy:      model.ApprovalManual, CreatedAt: now.Add(2 * time.Minute),
+		RunID:           ensureTestRun(t, ctx, authorityStore, project.ID, now),
+		Kind:            model.OperationWriteChapter,
+		Input:           json.RawMessage(`{"chapter_plan_id":"chapter-plan-1"}`),
+		CreatorProfiles: []resources.CreatorProfileRef{{ID: "user-1", Scope: "global"}},
+		ApprovalPolicy:  model.ApprovalManual, CreatedAt: now.Add(2 * time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("start second operation: %v", err)
@@ -114,11 +112,10 @@ func TestNewBookCompilesOfficialPackIntoWorkerPrompt(t *testing.T) {
 	}
 	operation, err := service.Tasks.StartOperation(ctx, tasks.StartOperationCommand{
 		OperationID: "write-1", ProjectID: project.ID,
-		RunID: ensureTestRun(t, ctx, authorityStore, project.ID, now),
-		Kind:  model.OperationWriteChapter, WorkerProfileID: "writer.compose",
-		Input:               json.RawMessage(`{"chapter_plan_id":"chapter-plan-1","chapter_number":1}`),
-		CoreProtocolVersion: "core-v1",
-		ApprovalPolicy:      model.ApprovalManual, CreatedAt: now.Add(time.Minute),
+		RunID:          ensureTestRun(t, ctx, authorityStore, project.ID, now),
+		Kind:           model.OperationWriteChapter,
+		Input:          json.RawMessage(`{"chapter_plan_id":"chapter-plan-1"}`),
+		ApprovalPolicy: model.ApprovalManual, CreatedAt: now.Add(time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("start operation: %v", err)
@@ -131,7 +128,7 @@ func TestNewBookCompilesOfficialPackIntoWorkerPrompt(t *testing.T) {
 		t.Fatalf("writer prompt does not carry exactly the writer slots:\n%s", text)
 	}
 	if !slices.ContainsFunc(sources, func(source prompt.Source) bool {
-		return source.Layer == "pack_defaults" && source.ID == "official@6"
+		return source.Layer == "pack_defaults" && source.ID == "official@7"
 	}) {
 		t.Fatalf("sources = %#v", sources)
 	}
@@ -155,7 +152,7 @@ func TestLockedAIProposalRequiresServiceApproval(t *testing.T) {
 	if err != nil {
 		t.Fatalf("encode fact: %v", err)
 	}
-	proposal, err := service.Decisions.Propose(ctx, model.Proposal{
+	proposal, err := service.changes.Prepare(ctx, model.Proposal{
 		ID: "change-bottom-line", Target: model.AuthorityTarget{Kind: model.AuthorityProject, ID: "book-1"},
 		BaseRevision: 1, Author: model.Author{Kind: model.AuthorAI, ID: "writer.compose"},
 		Reason: "剧情需要改变底线", Patches: []model.Patch{{
@@ -222,10 +219,9 @@ func TestPackDirectoryUpdateOnlyAffectsNewOperations(t *testing.T) {
 	first, err := service.Tasks.StartOperation(ctx, tasks.StartOperationCommand{
 		OperationID: "write-with-pack-v1", ProjectID: "book-1",
 		RunID: ensureTestRun(t, ctx, authorityStore, "book-1", now),
-		Kind:  model.OperationWriteChapter, WorkerProfileID: "writer.compose",
-		Input: json.RawMessage(`{"chapter_plan_id":"chapter-plan-1","chapter_number":1}`), Packs: []resources.PackRef{{ID: installed.Manifest.ID}},
-		CoreProtocolVersion: "core-v1",
-		ApprovalPolicy:      model.ApprovalManual, CreatedAt: now.Add(2 * time.Minute),
+		Kind:  model.OperationWriteChapter,
+		Input: json.RawMessage(`{"chapter_plan_id":"chapter-plan-1"}`), Packs: []resources.PackRef{{ID: installed.Manifest.ID}},
+		ApprovalPolicy: model.ApprovalManual, CreatedAt: now.Add(2 * time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("start first operation: %v", err)
@@ -252,10 +248,9 @@ func TestPackDirectoryUpdateOnlyAffectsNewOperations(t *testing.T) {
 	second, err := service.Tasks.StartOperation(ctx, tasks.StartOperationCommand{
 		OperationID: "write-with-pack-v2", ProjectID: "book-1",
 		RunID: ensureTestRun(t, ctx, authorityStore, "book-1", now),
-		Kind:  model.OperationWriteChapter, WorkerProfileID: "writer.compose",
-		Input: json.RawMessage(`{"chapter_plan_id":"chapter-plan-1","chapter_number":1}`), Packs: []resources.PackRef{{ID: installed.Manifest.ID}},
-		CoreProtocolVersion: "core-v1",
-		ApprovalPolicy:      model.ApprovalManual, CreatedAt: now.Add(4 * time.Minute),
+		Kind:  model.OperationWriteChapter,
+		Input: json.RawMessage(`{"chapter_plan_id":"chapter-plan-1"}`), Packs: []resources.PackRef{{ID: installed.Manifest.ID}},
+		ApprovalPolicy: model.ApprovalManual, CreatedAt: now.Add(4 * time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("start second operation: %v", err)
@@ -318,11 +313,10 @@ func TestProjectAssetsAndOverlayAutoAssembleIntoOperations(t *testing.T) {
 
 	operation, err := service.Tasks.StartOperation(ctx, tasks.StartOperationCommand{
 		OperationID: "write-auto-assemble", ProjectID: "book-assets",
-		RunID: ensureTestRun(t, ctx, authorityStore, "book-assets", now),
-		Kind:  model.OperationWriteChapter, WorkerProfileID: "writer.compose",
-		Input:               json.RawMessage(`{"chapter_plan_id":"chapter-plan-1","chapter_number":1}`),
-		CoreProtocolVersion: "core-v1",
-		ApprovalPolicy:      model.ApprovalManual, CreatedAt: now.Add(5 * time.Minute),
+		RunID:          ensureTestRun(t, ctx, authorityStore, "book-assets", now),
+		Kind:           model.OperationWriteChapter,
+		Input:          json.RawMessage(`{"chapter_plan_id":"chapter-plan-1"}`),
+		ApprovalPolicy: model.ApprovalManual, CreatedAt: now.Add(5 * time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("start operation without asset params: %v", err)
@@ -346,11 +340,10 @@ func TestProjectAssetsAndOverlayAutoAssembleIntoOperations(t *testing.T) {
 	}
 	pinned, err := service.Tasks.StartOperation(ctx, tasks.StartOperationCommand{
 		OperationID: "write-after-upgrade", ProjectID: "book-assets",
-		RunID: ensureTestRun(t, ctx, authorityStore, "book-assets", now),
-		Kind:  model.OperationWriteChapter, WorkerProfileID: "writer.compose",
-		Input:               json.RawMessage(`{"chapter_plan_id":"chapter-plan-1","chapter_number":1}`),
-		CoreProtocolVersion: "core-v1",
-		ApprovalPolicy:      model.ApprovalManual, CreatedAt: now.Add(7 * time.Minute),
+		RunID:          ensureTestRun(t, ctx, authorityStore, "book-assets", now),
+		Kind:           model.OperationWriteChapter,
+		Input:          json.RawMessage(`{"chapter_plan_id":"chapter-plan-1"}`),
+		ApprovalPolicy: model.ApprovalManual, CreatedAt: now.Add(7 * time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("start pinned operation: %v", err)
@@ -390,12 +383,11 @@ func TestConfirmedPreferenceCarriesToAnotherBook(t *testing.T) {
 	}
 	before, err := service.Tasks.StartOperation(ctx, tasks.StartOperationCommand{
 		OperationID: "book-2-before-confirm", ProjectID: "book-2",
-		RunID: ensureTestRun(t, ctx, authorityStore, "book-2", now),
-		Kind:  model.OperationWriteChapter, WorkerProfileID: "writer.compose",
-		Input:               json.RawMessage(`{"chapter_plan_id":"chapter-plan-1","chapter_number":1}`),
-		CreatorProfiles:     []resources.CreatorProfileRef{{ID: "user-1", Scope: "global"}},
-		CoreProtocolVersion: "core-v1",
-		ApprovalPolicy:      model.ApprovalManual, CreatedAt: now.Add(2 * time.Minute),
+		RunID:           ensureTestRun(t, ctx, authorityStore, "book-2", now),
+		Kind:            model.OperationWriteChapter,
+		Input:           json.RawMessage(`{"chapter_plan_id":"chapter-plan-1"}`),
+		CreatorProfiles: []resources.CreatorProfileRef{{ID: "user-1", Scope: "global"}},
+		ApprovalPolicy:  model.ApprovalManual, CreatedAt: now.Add(2 * time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("start before confirmation: %v", err)
@@ -415,12 +407,11 @@ func TestConfirmedPreferenceCarriesToAnotherBook(t *testing.T) {
 	}
 	after, err := service.Tasks.StartOperation(ctx, tasks.StartOperationCommand{
 		OperationID: "book-2-after-confirm", ProjectID: "book-2",
-		RunID: ensureTestRun(t, ctx, authorityStore, "book-2", now),
-		Kind:  model.OperationWriteChapter, WorkerProfileID: "writer.compose",
-		Input:               json.RawMessage(`{"chapter_plan_id":"chapter-plan-1","chapter_number":1}`),
-		CreatorProfiles:     []resources.CreatorProfileRef{{ID: "user-1", Scope: "global"}},
-		CoreProtocolVersion: "core-v1",
-		ApprovalPolicy:      model.ApprovalManual, CreatedAt: now.Add(4 * time.Minute),
+		RunID:           ensureTestRun(t, ctx, authorityStore, "book-2", now),
+		Kind:            model.OperationWriteChapter,
+		Input:           json.RawMessage(`{"chapter_plan_id":"chapter-plan-1"}`),
+		CreatorProfiles: []resources.CreatorProfileRef{{ID: "user-1", Scope: "global"}},
+		ApprovalPolicy:  model.ApprovalManual, CreatedAt: now.Add(4 * time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("start after confirmation: %v", err)
@@ -524,9 +515,9 @@ func (preferenceTestExecutor) AnalyzePreference(
 func (preferenceTestExecutor) Analyze(
 	_ context.Context,
 	_ model.Proposal,
-	_ change.StructuralImpact,
+	_ model.StructuralImpact,
 ) (json.RawMessage, error) {
-	report := model.SemanticImpactReport{
+	return json.Marshal(model.SemanticImpactReport{
 		Status: model.SemanticImpactConflict,
 		Findings: []model.SemanticImpactFinding{{
 			Document:    &model.DocumentRef{Kind: model.DocumentManuscript, ID: "chapter-1"},
@@ -537,11 +528,11 @@ func (preferenceTestExecutor) Analyze(
 			{Strategy: model.ResolutionReinterpretFuture, Explanation: "保留旧章并在后文解释变化"},
 			{Strategy: model.ResolutionAbandon, Explanation: "放弃本次事实变更"},
 		},
-	}
-	return json.Marshal(report)
+	})
 }
 
-func TestSemanticConflictResolutionCreatesOneAtomicAffectedRewrite(t *testing.T) {
+// S4 选重写受影响的章：修改生效后那几章记为返工要求，由推导按返工缺口重写（D86）。
+func TestSemanticConflictResolutionNotesAffectedChaptersForRework(t *testing.T) {
 	ctx := context.Background()
 	authorityStore := openTestStore(t)
 	api := newTestAppWithExecutor(authorityStore, preferenceTestExecutor{})
@@ -581,24 +572,26 @@ func TestSemanticConflictResolutionCreatesOneAtomicAffectedRewrite(t *testing.T)
 	if err != nil {
 		t.Fatalf("prepare semantic change: %v", err)
 	}
-	var report model.SemanticImpactReport
-	if err := json.Unmarshal(proposal.Impact.Semantic, &report); err != nil || report.Status != model.SemanticImpactConflict {
-		t.Fatalf("semantic impact = %#v, %v", report, err)
+	if report := proposal.Impact.Semantic; report == nil || report.Status != model.SemanticImpactConflict {
+		t.Fatalf("semantic impact = %#v", report)
 	}
 	resolved, err := api.Decisions.ResolveProposal(ctx, decisions.ResolveProposalCommand{
 		ProposalID: proposal.ID, UserID: "user-1", Strategy: string(model.ResolutionRewriteAffected),
-		RunID:     ensureTestRun(t, ctx, authorityStore, "semantic-book", now),
 		CreatedAt: now.Add(4 * time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("resolve semantic conflict: %v", err)
 	}
-	if resolved.ChangeSet == nil || resolved.ChangeSet.NewRevision != 3 || len(resolved.Operations) != 1 {
+	if resolved.ChangeSet == nil || resolved.ChangeSet.NewRevision != 3 || len(resolved.Reworks) != 1 {
 		t.Fatalf("resolution = %#v", resolved)
 	}
-	operation := resolved.Operations[0]
-	if operation.Kind != model.OperationRewriteAffected || operation.Snapshot.BaseRevision != 3 || operation.State != model.OperationQueued {
-		t.Fatalf("rewrite operation = %#v", operation)
+	snapshot, err := api.Projects.Project(ctx, "semantic-book", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	due := novel.ReworksDue(snapshot)
+	if rework, ok := due["chapter-1"]; len(due) != 1 || !ok || rework.Directives[0].Text != "同步重写第一章" {
+		t.Fatalf("reworks due = %#v", due)
 	}
 }
 
@@ -629,7 +622,7 @@ func TestEditableProjectProjectionProducesVersionedProposal(t *testing.T) {
 	if err != nil {
 		t.Fatalf("import project: %v", err)
 	}
-	if len(proposal.Patches) != 2 || len(proposal.Impact.Structural) == 0 {
+	if len(proposal.Patches) != 2 || proposal.Impact.Structural == nil {
 		t.Fatalf("proposal = %#v", proposal)
 	}
 	if _, err := service.Decisions.Approve(ctx, proposal.ID, "user-1", now.Add(2*time.Minute)); err != nil {
@@ -668,11 +661,10 @@ func TestOperationLifecycleKeepsExplicitState(t *testing.T) {
 	}
 	started, err := api.Tasks.StartOperation(ctx, tasks.StartOperationCommand{
 		OperationID: "write-lifecycle", ProjectID: "book-lifecycle",
-		RunID: ensureTestRun(t, ctx, authorityStore, "book-lifecycle", now),
-		Kind:  model.OperationWriteChapter, WorkerProfileID: "writer.compose",
-		Input:               json.RawMessage(`{"chapter_plan_id":"chapter-plan-1","chapter_number":1}`),
-		CoreProtocolVersion: "core-v1",
-		ApprovalPolicy:      model.ApprovalManual, CreatedAt: now.Add(time.Minute),
+		RunID:          ensureTestRun(t, ctx, authorityStore, "book-lifecycle", now),
+		Kind:           model.OperationWriteChapter,
+		Input:          json.RawMessage(`{"chapter_plan_id":"chapter-plan-1"}`),
+		ApprovalPolicy: model.ApprovalManual, CreatedAt: now.Add(time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("start operation: %v", err)
@@ -708,11 +700,10 @@ func TestRestartOperationFreezesNewSnapshotAndSeedsWorkspace(t *testing.T) {
 	}
 	started, err := api.Tasks.StartOperation(ctx, tasks.StartOperationCommand{
 		OperationID: "write-before-restart", ProjectID: "book-restart",
-		RunID: ensureTestRun(t, ctx, authorityStore, "book-restart", now),
-		Kind:  model.OperationWriteChapter, WorkerProfileID: "writer.compose",
-		Input:               json.RawMessage(`{"chapter_plan_id":"chapter-plan-1","chapter_number":1}`),
-		CoreProtocolVersion: "core-v1",
-		ApprovalPolicy:      model.ApprovalManual, CreatedAt: now.Add(time.Minute),
+		RunID:          ensureTestRun(t, ctx, authorityStore, "book-restart", now),
+		Kind:           model.OperationWriteChapter,
+		Input:          json.RawMessage(`{"chapter_plan_id":"chapter-plan-1"}`),
+		ApprovalPolicy: model.ApprovalManual, CreatedAt: now.Add(time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("start operation: %v", err)
@@ -755,7 +746,7 @@ func TestRestartOperationFreezesNewSnapshotAndSeedsWorkspace(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("idempotent restart: %v", err)
 	}
-	fresh := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1","chapter_number":1,"directives":[{"id":"d-1","scope":"project","text":"多写雨","status":"active"}]}`)
+	fresh := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1","directives":[{"id":"d-1","scope":"project","text":"多写雨","status":"active"}]}`)
 	if _, err := api.Tasks.RestartOperation(ctx, tasks.RestartOperationCommand{
 		FromOperationID: running.ID, OperationID: restarted.ID, Input: fresh, CreatedAt: now.Add(6 * time.Minute),
 	}); !errors.Is(err, model.ErrIdempotencyConflict) {
@@ -790,10 +781,9 @@ func TestReloadPromptAppliesCreatorProfileWithoutCreatingOperation(t *testing.T)
 	}
 	result, err := api.Prompts.ReloadPrompt(ctx, profiles.ReloadPromptCommand{
 		ProjectID: "book-prompt", Kind: model.OperationWriteChapter,
-		WorkerProfileID: "writer.compose", Input: json.RawMessage(`{"chapter_plan_id":"chapter-plan-1","chapter_number":1}`),
-		CreatorProfiles:     []resources.CreatorProfileRef{{ID: "user-1", Scope: "global"}},
-		CoreProtocolVersion: "core-v1",
-		CreatedAt:           now.Add(2 * time.Minute),
+		Input:           json.RawMessage(`{"chapter_plan_id":"chapter-plan-1"}`),
+		CreatorProfiles: []resources.CreatorProfileRef{{ID: "user-1", Scope: "global"}},
+		CreatedAt:       now.Add(2 * time.Minute),
 	})
 	if err != nil {
 		t.Fatalf("reload prompt: %v", err)
@@ -860,7 +850,7 @@ func ensureTestRun(
 		ID: "run:" + projectID, ProjectID: projectID,
 		Goal: model.NovelGoal{Premise: "测试创作", TargetChapters: 3}.Goal(),
 		Strategy: model.CreationRunStrategy{
-			ReviewCadence: model.ReviewPerPlanWindow, AutoRepairBudget: 3,
+			AutoRepairBudget: 3,
 		},
 		Preset: model.CreationRunPreset{
 			Source: "test", Digest: "test-preset", Approval: model.ApprovalAuto,
@@ -875,29 +865,4 @@ func ensureTestRun(
 
 func testTime() time.Time {
 	return time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
-}
-
-func TestListProjectsReturnsLibrary(t *testing.T) {
-	ctx := context.Background()
-	authorityStore := openTestStore(t)
-	service := newTestApp(authorityStore)
-	now := testTime()
-	if library, err := service.Projects.ListProjects(ctx); err != nil || len(library) != 0 {
-		t.Fatalf("empty library = %#v, %v", library, err)
-	}
-	for _, id := range []string{"book-b", "book-a"} {
-		if _, err := service.Projects.CreateProject(ctx, projectdoc.CreateProjectCommand{
-			ProjectID: id, ChangeID: "create-" + id, UserID: "user-1",
-			Reason: "创建作品", Draft: testProjectDraft(), CreatedAt: now,
-		}); err != nil {
-			t.Fatalf("create %s: %v", id, err)
-		}
-	}
-	library, err := service.Projects.ListProjects(ctx)
-	if err != nil || len(library) != 2 {
-		t.Fatalf("library = %#v, %v", library, err)
-	}
-	if library[0].ID != "book-a" || library[1].ID != "book-b" || library[0].Revision != 1 {
-		t.Fatalf("library order = %#v", library)
-	}
 }

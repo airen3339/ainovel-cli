@@ -18,28 +18,16 @@ func runProposal(ctx context.Context, api *bootstrap.App, args []string, stdout,
 		flags := newFlags("proposal resolve", stderr)
 		id := flags.String("id", "", "Proposal ID")
 		userID := flags.String("user", "", "User ID")
-		strategy := flags.String("strategy", "", "rewrite_affected、reinterpret_future 或 abandon")
-		runID := flags.String("run", "", "rewrite_affected 所属 Creation Run ID")
+		strategy := flags.String("strategy", "", "rewrite_affected（受影响的章记为返工要求，由创作推进重写）、reinterpret_future 或 abandon")
 		reason := flags.String("reason", "", "裁决反馈；放弃候选时会进入后续重写任务")
-		coreVersion := flags.String("core", "core-v1", "Core Protocol 版本")
-		var packIDs, profileRefs stringValues
-		flags.Var(&packIDs, "pack", "受影响章节重写使用的 Pack ID；可重复")
-		flags.Var(&profileRefs, "creator-profile", "受影响章节重写使用的 id@scope Profile；可重复")
 		if err := flags.Parse(args[1:]); err != nil {
 			return err
 		}
 		if *id == "" || *userID == "" || *strategy == "" || flags.NArg() != 0 {
 			return fmt.Errorf("proposal resolve 需要 --id --user --strategy")
 		}
-		profiles, err := parseCreatorProfileRefs(profileRefs)
-		if err != nil {
-			return err
-		}
 		result, err := api.Decisions.ResolveProposal(ctx, decision.ResolveProposalCommand{
-			ProposalID: *id, UserID: *userID, Strategy: *strategy, Reason: *reason,
-			RunID: *runID,
-			Packs: packRefs(packIDs), CreatorProfiles: profiles, CoreProtocolVersion: *coreVersion,
-			CreatedAt: time.Now().UTC(),
+			ProposalID: *id, UserID: *userID, Strategy: *strategy, Reason: *reason, CreatedAt: time.Now().UTC(),
 		})
 		return writeResult(stdout, result, err)
 	}

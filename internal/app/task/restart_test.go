@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
@@ -25,7 +26,7 @@ type recordingProfiles struct {
 
 func (p *recordingProfiles) Compile(_ context.Context, command profile.CompileCommand) (prompt.Compiled, error) {
 	p.last = command
-	c := prompt.Compiled{ProjectID: command.ProjectID, WorkerProfile: command.WorkerProfileID + "@1", CoreProtocolVersion: command.CoreProtocolVersion}
+	c := prompt.Compiled{ProjectID: command.ProjectID, WorkerProfile: "writer.compose@1", CoreProtocolVersion: prompt.CoreProtocolVersion}
 	for _, ref := range command.Packs {
 		c.Sources = append(c.Sources, prompt.Source{Layer: "pack_defaults", ID: ref.ID + "@1", Revision: ref.Revision})
 	}
@@ -49,17 +50,17 @@ func restartManager(t *testing.T) (*Manager, *recordingProfiles, StartOperationC
 	}
 	t.Cleanup(func() { s.Close() })
 	now := time.Date(2026, 9, 10, 0, 0, 0, 0, time.UTC)
-	_, err = change.New(s).CommitUser(ctx, model.Proposal{ID: "create", Target: model.AuthorityTarget{Kind: model.AuthorityProject, ID: "book"}, Author: model.Author{Kind: model.AuthorUser, ID: "user"}, Reason: "create", ApprovalState: model.ApprovalPending, CreatedAt: now, Patches: []model.Patch{{Document: model.DocumentRef{Kind: model.DocumentIntent, ID: "root"}, Operation: model.PatchPut, Content: json.RawMessage(`{"premise":"test"}`)}}}, now)
+	_, err = change.New(s).CommitUser(ctx, model.Proposal{ID: "create", Target: model.AuthorityTarget{Kind: model.AuthorityProject, ID: "book"}, Author: model.Author{Kind: model.AuthorUser, ID: "user"}, Reason: "create", ApprovalState: model.ApprovalPending, CreatedAt: now, Patches: []model.Patch{{Document: model.DocumentRef{Kind: model.DocumentIntent, ID: "root"}, Operation: model.PatchPut, Content: json.RawMessage(`{"premise":"test"}`)}}})
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = s.CreateCreationRun(ctx, model.CreationRun{ID: "run", ProjectID: "book", Goal: model.NovelGoal{Premise: "test", TargetChapters: 1}.Goal(), Strategy: model.CreationRunStrategy{ReviewCadence: model.ReviewPerPlanWindow}, Preset: model.CreationRunPreset{Source: "test", Digest: "test", Approval: model.ApprovalAuto}, State: model.RunRunning, CreatedAt: now, UpdatedAt: now})
+	_, err = s.CreateCreationRun(ctx, model.CreationRun{ID: "run", ProjectID: "book", Goal: model.NovelGoal{Premise: "test", TargetChapters: 1}.Goal(), Strategy: model.CreationRunStrategy{}, Preset: model.CreationRunPreset{Source: "test", Digest: "test", Approval: model.ApprovalAuto}, State: model.RunRunning, CreatedAt: now, UpdatedAt: now})
 	if err != nil {
 		t.Fatal(err)
 	}
 	p := &recordingProfiles{compiled: make(map[string]prompt.Compiled)}
 	m := New(s, nil, ExecutorSet{}, p)
-	return m, p, StartOperationCommand{ProjectID: "book", RunID: "run", OperationID: "source", Kind: model.OperationWriteChapter, Input: json.RawMessage(`{"chapter_plan_id":"chapter","chapter_number":1}`), WorkerProfileID: "writer", CoreProtocolVersion: "core-v1", ApprovalPolicy: model.ApprovalAuto, CreatedAt: now}
+	return m, p, StartOperationCommand{ProjectID: "book", RunID: "run", OperationID: "source", Kind: model.OperationWriteChapter, Input: json.RawMessage(`{"chapter_plan_id":"chapter"}`), ApprovalPolicy: model.ApprovalAuto, CreatedAt: now}
 }
 
 func TestCreationRestartKeepsExplicitExecutionSettings(t *testing.T) {
@@ -72,16 +73,16 @@ func TestCreationRestartKeepsExplicitExecutionSettings(t *testing.T) {
 	if _, err = m.CancelOperation(ctx, first.ID, base.CreatedAt); err != nil {
 		t.Fatal(err)
 	}
-	base.WorkerProfileID = "new-writer"
+	base.Packs = []resource.PackRef{{ID: "style", Revision: 2}}
 	input, err := model.DecodeTaskInput(base.Kind, base.Input)
 	if err != nil {
 		t.Fatal(err)
 	}
-	successor, err := m.ForCreation(base).Restart(ctx, first.ID, base.RunID, creation.WorkItem{ID: "successor", Kind: base.Kind, Input: input}, base.CreatedAt.Add(time.Second))
+	successor, err := m.ForCreation(base, "", 0).Restart(ctx, first.ID, base.RunID, creation.WorkItem{ID: "successor", Kind: base.Kind, Input: input}, base.CreatedAt.Add(time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p.last.WorkerProfileID != base.WorkerProfileID {
+	if !slices.Equal(p.last.Packs, base.Packs) {
 		t.Fatalf("dropped explicit execution settings: %#v", p.last)
 	}
 	if successor.Snapshot.Executor != prompt.ExecutorIdentity {
@@ -110,7 +111,7 @@ func TestRestartSameIDRejectsDifferentResources(t *testing.T) {
 				Author: model.Author{Kind: model.AuthorUser, ID: "user"}, Reason: "edit after restart",
 				ApprovalState: model.ApprovalPending, CreatedAt: base.CreatedAt.Add(2 * time.Second),
 				Patches: []model.Patch{{Document: model.DocumentRef{Kind: model.DocumentIntent, ID: "root"}, Operation: model.PatchPut, Content: json.RawMessage(`{"premise":"edited"}`)}},
-			}, base.CreatedAt.Add(2*time.Second))
+			})
 			if err != nil {
 				t.Fatal(err)
 			}

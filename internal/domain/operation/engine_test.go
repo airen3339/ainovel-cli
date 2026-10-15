@@ -84,7 +84,7 @@ func TestRunNextRecoversCommittedProposalWithoutExecutingAgain(t *testing.T) {
 	}
 
 	executor := &neverExecutor{}
-	result, err := NewEngine(authorityStore, change.New(authorityStore)).RunNextWithExecutors(ctx, []Executor{executor}, "worker-after-crash", time.Minute, now.Add(3*time.Minute))
+	result, err := NewEngine(authorityStore, change.New(authorityStore)).RunNext(ctx, []Executor{executor}, "worker-after-crash", time.Minute, now.Add(3*time.Minute))
 	if err != nil {
 		t.Fatalf("resume operation: %v", err)
 	}
@@ -143,7 +143,7 @@ func TestAutoApprovalRequiresIndependentSemanticComplianceForConstrainedStory(t 
 			defer authorityStore.Close()
 			target := model.AuthorityTarget{Kind: model.AuthorityProject, ID: "book-constraints"}
 			seedConstrainedProject(t, ctx, authorityStore, target, now)
-			input := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1","chapter_number":1}`)
+			input := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1"}`)
 			operation := model.Operation{
 				ID: "write-constrained", Kind: model.OperationWriteChapter, Target: target,
 				State: model.OperationQueued,
@@ -153,18 +153,14 @@ func TestAutoApprovalRequiresIndependentSemanticComplianceForConstrainedStory(t 
 			if _, err := authorityStore.CreateOperation(ctx, operation); err != nil {
 				t.Fatalf("create operation: %v", err)
 			}
-			result, err := NewEngine(authorityStore, change.New(authorityStore)).RunNextWithExecutors(ctx, []Executor{test.executor}, "worker-1", time.Minute, now.Add(time.Minute))
+			result, err := NewEngine(authorityStore, change.New(authorityStore)).RunNext(ctx, []Executor{test.executor}, "worker-1", time.Minute, now.Add(time.Minute))
 			if err != nil {
 				t.Fatalf("run operation: %v", err)
 			}
 			if result.Operation.State != test.wantState {
 				t.Fatalf("state = %s, want %s", result.Operation.State, test.wantState)
 			}
-			var report model.SemanticComplianceReport
-			if err := json.Unmarshal(result.Proposal.Impact.Compliance, &report); err != nil {
-				t.Fatalf("decode compliance report: %v", err)
-			}
-			if report.Status != test.wantCheck {
+			if report := result.Proposal.Impact.Compliance; report == nil || report.Status != test.wantCheck {
 				t.Fatalf("semantic status = %s, want %s", report.Status, test.wantCheck)
 			}
 			revision, err := authorityStore.CurrentRevision(ctx, target)
@@ -184,7 +180,7 @@ func TestLongCallRenewsOperationLease(t *testing.T) {
 	defer authorityStore.Close()
 	now := time.Now().UTC()
 	lease := 300 * time.Millisecond
-	input := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1","chapter_number":1}`)
+	input := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1"}`)
 	operation := model.Operation{
 		ID: "long-call", Kind: model.OperationWriteChapter,
 		Target:   model.AuthorityTarget{Kind: model.AuthorityProject, ID: "book-1"},
@@ -324,7 +320,7 @@ func createEngineTestRun(
 		ID: "run:" + projectID, ProjectID: projectID,
 		Goal: model.NovelGoal{Premise: "测试创作", TargetChapters: 3}.Goal(),
 		Strategy: model.CreationRunStrategy{
-			ReviewCadence: model.ReviewPerPlanWindow, AutoRepairBudget: 3,
+			AutoRepairBudget: 3,
 		},
 		Preset: model.CreationRunPreset{
 			Source: "test", Digest: "test-preset", Approval: model.ApprovalAuto,
@@ -389,7 +385,7 @@ func TestArtifactWithUntruthfulBasisFails(t *testing.T) {
 	executor := &artifactExecutor{store: authorityStore, basis: model.EvidenceBasis{
 		Documents: []model.DocumentBasis{{Ref: model.DocumentRef{Kind: model.DocumentIntent, ID: "root"}, Revision: 1}, {Ref: model.DocumentRef{Kind: model.DocumentEntity, ID: "missing"}, Revision: 1}},
 	}}
-	result, err := NewEngine(authorityStore, change.New(authorityStore)).RunNextWithExecutors(ctx, []Executor{executor}, "worker-1", time.Minute, now.Add(time.Minute))
+	result, err := NewEngine(authorityStore, change.New(authorityStore)).RunNext(ctx, []Executor{executor}, "worker-1", time.Minute, now.Add(time.Minute))
 	if !errors.Is(err, model.ErrInvalid) || result.Operation.State != model.OperationFailed {
 		t.Fatalf("result = %#v, err = %v", result, err)
 	}
@@ -426,7 +422,7 @@ func TestArtifactOnlyOutcomeConcludesSucceeded(t *testing.T) {
 	defer authorityStore.Close()
 	operation := createAssetOperation(t, ctx, authorityStore, now)
 	executor := &artifactExecutor{store: authorityStore}
-	result, err := NewEngine(authorityStore, change.New(authorityStore)).RunNextWithExecutors(ctx, []Executor{executor}, "worker-1", time.Minute, now.Add(time.Minute))
+	result, err := NewEngine(authorityStore, change.New(authorityStore)).RunNext(ctx, []Executor{executor}, "worker-1", time.Minute, now.Add(time.Minute))
 	if err != nil {
 		t.Fatalf("run: %v", err)
 	}
@@ -453,7 +449,7 @@ func TestCrashAfterArtifactPublishBeforeMetadataCommitRecoversByReexecution(t *t
 	operation := createAssetOperation(t, ctx, authorityStore, now)
 	executor := &artifactExecutor{store: authorityStore, crashAfterPublish: true}
 	engine := NewEngine(authorityStore, change.New(authorityStore))
-	if result, err := engine.RunNextWithExecutors(ctx, []Executor{executor}, "worker-1", time.Minute, now.Add(time.Minute)); err == nil || result.Operation.State != model.OperationFailed {
+	if result, err := engine.RunNext(ctx, []Executor{executor}, "worker-1", time.Minute, now.Add(time.Minute)); err == nil || result.Operation.State != model.OperationFailed {
 		t.Fatalf("first run = %#v, %v; want failed after crash", result, err)
 	}
 	if _, err := authorityStore.GetArtifact(ctx, model.ArtifactID(operation.ID, "cover")); !errors.Is(err, model.ErrNotFound) {
@@ -462,7 +458,7 @@ func TestCrashAfterArtifactPublishBeforeMetadataCommitRecoversByReexecution(t *t
 	if _, err := authorityStore.TransitionOperation(ctx, operation.ID, model.OperationFailed, model.OperationQueued, "resume", now.Add(2*time.Minute)); err != nil {
 		t.Fatalf("resume: %v", err)
 	}
-	result, err := engine.RunNextWithExecutors(ctx, []Executor{executor}, "worker-1", time.Minute, now.Add(3*time.Minute))
+	result, err := engine.RunNext(ctx, []Executor{executor}, "worker-1", time.Minute, now.Add(3*time.Minute))
 	if err != nil || result.Operation.State != model.OperationSucceeded || executor.calls != 2 {
 		t.Fatalf("second run = %#v, %v, calls = %d", result, err, executor.calls)
 	}
@@ -557,7 +553,7 @@ func TestFinalizeRelocatesControlOnlyDrift(t *testing.T) {
 		t.Fatalf("recover crashed operation: %v", err)
 	}
 	executor := &neverExecutor{}
-	result, err := NewEngine(authorityStore, change.New(authorityStore)).RunNextWithExecutors(ctx, []Executor{executor}, "worker-after-crash", time.Minute, now.Add(3*time.Minute))
+	result, err := NewEngine(authorityStore, change.New(authorityStore)).RunNext(ctx, []Executor{executor}, "worker-after-crash", time.Minute, now.Add(3*time.Minute))
 	if err != nil || executor.called {
 		t.Fatalf("resume: %v, executed again = %v", err, executor.called)
 	}
@@ -610,7 +606,7 @@ func TestCommitConflictAfterRelocationGoesStale(t *testing.T) {
 	defer authorityStore.Close()
 	target := model.AuthorityTarget{Kind: model.AuthorityProject, ID: "book-constraints"}
 	seedConstrainedProject(t, ctx, authorityStore, target, now)
-	input := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1","chapter_number":1}`)
+	input := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1"}`)
 	if _, err := authorityStore.CreateOperation(ctx, model.Operation{
 		ID: "write-constrained", Kind: model.OperationWriteChapter, Target: target, State: model.OperationQueued,
 		RunID: createEngineTestRun(t, ctx, authorityStore, target.ID, now), Snapshot: engineSnapshot(input, 1, model.ApprovalAuto),
@@ -619,7 +615,7 @@ func TestCommitConflictAfterRelocationGoesStale(t *testing.T) {
 		t.Fatalf("create operation: %v", err)
 	}
 	executor := &driftingExecutor{t: t, store: authorityStore, target: target, now: now.Add(time.Second)}
-	result, err := NewEngine(authorityStore, change.New(authorityStore)).RunNextWithExecutors(ctx, []Executor{executor}, "worker-1", time.Minute, now.Add(time.Minute))
+	result, err := NewEngine(authorityStore, change.New(authorityStore)).RunNext(ctx, []Executor{executor}, "worker-1", time.Minute, now.Add(time.Minute))
 	if !errors.Is(err, model.ErrRevisionConflict) || result.Operation.State != model.OperationStale {
 		t.Fatalf("result = %#v, err = %v", result, err)
 	}

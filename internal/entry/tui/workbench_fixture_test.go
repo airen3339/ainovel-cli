@@ -26,9 +26,9 @@ func studioModel(t *testing.T, width, height int) model {
 		ProjectID: "letters", Intent: domainmodel.Intent{Premise: "亡者来信"}, Length: novel.Length{Fixed: 8, Final: 8},
 		Run:          &domainmodel.CreationRun{ID: "run", State: domainmodel.RunRunning},
 		CurrentPhase: "正在落笔第 4 章",
-		Directives: []domainmodel.Directive{
-			{ID: "d1", Scope: "project", Text: "保持悬疑氛围，不要过早揭示门后人的身份", Status: domainmodel.DirectiveActive},
-			{ID: "d2", Scope: "chapter_range:4-4", Text: "用声音与一个具体动作承接悬念", Status: domainmodel.DirectiveActive},
+		Directives: []workbench.Directive{
+			{Directive: domainmodel.Directive{ID: "d1", Scope: "project", Text: "保持悬疑氛围，不要过早揭示门后人的身份", Status: domainmodel.DirectiveActive}, Where: "全书"},
+			{Directive: domainmodel.Directive{ID: "d2", Scope: "chapter_range:4-4", Text: "用声音与一个具体动作承接悬念", Status: domainmodel.DirectiveActive}, Where: "第 4 章"},
 		},
 		Outline: []workbench.OutlineNode{{Node: domainmodel.PlanNode{ID: "v1", Kind: domainmodel.PlanVolume, Title: "第一卷 · 未寄出的信"}}},
 	}
@@ -47,10 +47,12 @@ func studioModel(t *testing.T, width, height int) model {
 			Node: domainmodel.PlanNode{ID: fmt.Sprint("c", i+1), Kind: domainmodel.PlanChapter, ParentID: "v1", Title: title, Summary: summaries[i]}, Number: i + 1, State: state,
 		})
 		if i < 3 {
-			m.bench.snap.Manuscript = append(m.bench.snap.Manuscript, domainmodel.ManuscriptChapter{
+			chapter := domainmodel.ManuscriptChapter{
 				ID: fmt.Sprint("ch-", i+1), PlanNodeID: fmt.Sprint("c", i+1), Number: i + 1,
 				Blocks: []domainmodel.ManuscriptBlock{{ID: "b", Text: strings.Repeat(texts[i]+"\n\n", 3)}},
-			})
+			}
+			m.bench.snap.Manuscript = append(m.bench.snap.Manuscript, chapter)
+			m.bench.snap.Words += chapter.Runes()
 		}
 	}
 	suspense := workbench.BriefRequirement{ID: "directive:d1", Text: "保持悬疑氛围，不要过早揭示门后人的身份"}
@@ -79,18 +81,18 @@ func studioModel(t *testing.T, width, height int) model {
 	thinking := "保留上一章的雨声作为过渡。门后的人可以认出他的脚步，但暂时不解释身份。用声音与一个具体动作承接悬念，让读者先感到异常。"
 	prose := "雨停了，屋檐却还在滴水。\n\n陈渡站在门前，把那封没有邮戳的信翻了过来。收件人的名字已经被雨水洇开，只有最后一个“渡”字，还像一枚钉子，牢牢留在纸上。\n\n他没有敲门。\n\n门后却传来一个声音：“你今天来晚了。”"
 	m.bench.activity = activity.Snapshot{
-		Seq: 1, ProjectID: "letters", RunID: "run", OperationID: "writing", Thinking: true, ThinkingSeen: true,
+		Seq: 1, ProjectID: "letters", RunID: "run",
 		Entries: []activity.Entry{
 			{ID: 1, OperationID: "writing", Kind: activity.ToolStart, Tool: "authority_read", Done: true, At: at, DoneAt: at.Add(2 * time.Second)},
 			{ID: 2, OperationID: "writing", Kind: activity.ToolStart, Tool: "workspace_put_chapter", Bytes: 2048, At: at.Add(10 * time.Second)},
 		},
 		Tasks: []activity.Task{
 			{OperationID: "planning", Label: "全书规划", Done: true},
-			{OperationID: "writing", Label: "第 4 章写作", Scope: activity.Scope{ChapterNumber: 4}},
+			{OperationID: "writing", Label: "第 4 章写作", Scope: activity.Scope{PlanNodeID: "c4"}},
 		},
 		Output: []activity.OutputBlock{
-			{ID: 1, Version: 1, OperationID: "writing", TaskLabel: "第 4 章写作", Kind: activity.Thinking, At: at.Add(time.Second), Scope: activity.Scope{ChapterNumber: 4}, Text: []byte(thinking)},
-			{ID: 2, Version: 1, OperationID: "writing", TaskLabel: "第 4 章写作", Kind: activity.Prose, At: at.Add(10 * time.Second), Scope: activity.Scope{ChapterNumber: 4}, Text: []byte(prose)},
+			{ID: 1, Version: 1, OperationID: "writing", TaskLabel: "第 4 章写作", Kind: activity.Thinking, At: at.Add(time.Second), Scope: activity.Scope{PlanNodeID: "c4"}, Text: []byte(thinking)},
+			{ID: 2, Version: 1, OperationID: "writing", TaskLabel: "第 4 章写作", Kind: activity.Prose, At: at.Add(10 * time.Second), Scope: activity.Scope{PlanNodeID: "c4"}, Text: []byte(prose)},
 		},
 	}
 	m.bench.snap.Usage = workbench.TeamUsage{
@@ -119,7 +121,9 @@ func longWorkbench(tb testing.TB, count int) model {
 			m.bench.snap.Outline = append(m.bench.snap.Outline, workbench.OutlineNode{Node: domainmodel.PlanNode{ID: fmt.Sprintf("v%d", i), Kind: domainmodel.PlanVolume, Title: fmt.Sprintf("第%d卷", i/50+1)}})
 		}
 		m.bench.snap.Outline = append(m.bench.snap.Outline, workbench.OutlineNode{Node: domainmodel.PlanNode{ID: fmt.Sprint(i), Kind: domainmodel.PlanChapter, Title: fmt.Sprintf("雨夜来信 %d", i)}, Number: i, State: workbench.ChapterConfirmed})
-		m.bench.snap.Manuscript = append(m.bench.snap.Manuscript, domainmodel.ManuscriptChapter{ID: fmt.Sprint(i), Number: i, Blocks: []domainmodel.ManuscriptBlock{{Text: strings.Repeat("雨停了，屋檐却还在滴水。", 250)}}})
+		chapter := domainmodel.ManuscriptChapter{ID: fmt.Sprint(i), Number: i, Blocks: []domainmodel.ManuscriptBlock{{Text: strings.Repeat("雨停了，屋檐却还在滴水。", 250)}}}
+		m.bench.snap.Manuscript = append(m.bench.snap.Manuscript, chapter)
+		m.bench.snap.Words += chapter.Runes()
 	}
 	m.bench.activity = activity.Snapshot{Seq: 1, RunID: "run"}
 	m.bench.activity.Output = []activity.OutputBlock{
@@ -148,7 +152,6 @@ func planningModel(t *testing.T, width, height int) model {
 	m := studioModel(t, width, height)
 	m.bench.snap.CurrentPhase = "正在规划故事蓝图"
 	at := time.Now().Add(-75 * time.Second)
-	m.bench.activity.OperationID = "planning"
 	m.bench.activity.Tasks = []activity.Task{{OperationID: "planning", Label: "全书规划"}}
 	m.bench.activity.Entries = []activity.Entry{
 		{ID: 1, OperationID: "planning", Kind: activity.ToolStart, Tool: "authority_read", Detail: "「陈渡」", Done: true, At: at.Add(20 * time.Second), DoneAt: at.Add(21 * time.Second)},

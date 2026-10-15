@@ -20,7 +20,7 @@ func (f *interruptedTasks) Start(_ context.Context, _ string, work creation.Work
 	return model.Operation{ID: work.ID, State: model.OperationQueued}, nil
 }
 
-func (f *interruptedTasks) Run(_ context.Context, _ creation.WorkItem, operation model.Operation, _ string, _ time.Duration, _ time.Time) (model.Operation, error) {
+func (f *interruptedTasks) Run(_ context.Context, _ creation.WorkItem, operation model.Operation, _ time.Time) (model.Operation, error) {
 	f.cancel()
 	return model.Operation{ID: operation.ID, State: model.OperationQueued, Attempt: 1, Error: "进程退出"}, context.Canceled
 }
@@ -34,7 +34,7 @@ func TestDriverLeavesRunResumableWhenExecutionIsInterrupted(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	driver := creation.New(st, map[model.GoalKind]creation.Goal{run.Goal.Kind: goal}, time.Now)
-	outcome, err := driver.Drive(ctx, run, &interruptedTasks{cancel: cancel}, creation.DriveCommand{})
+	outcome, err := driver.Drive(ctx, run, &interruptedTasks{cancel: cancel}, time.Time{})
 	if !errors.Is(err, context.Canceled) || outcome.Run.State != model.RunRunning {
 		t.Fatalf("interrupted drive: outcome=%+v err=%v", outcome, err)
 	}

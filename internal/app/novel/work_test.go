@@ -2,6 +2,7 @@ package novel
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -39,87 +40,65 @@ func directiveIDs(directives []model.Directive) []string {
 	return ids
 }
 
-func TestCoveringDirectivesByWorkItem(t *testing.T) {
+// 章节任务按目标章装配要求（§4.9）：写第 1 章命中全书与所在弧的，重写第 2 章还命中本章的。
+func TestChapterWorkCarriesCoveringDirectives(t *testing.T) {
 	project := directiveTestProject()
-	cases := []struct {
-		name string
-		item novelItem
-		want []string
-	}{
-		{"write chapter 1", novelItem{kind: workWriteChapter, number: 1, plan: project.Plan[2]}, []string{"d-all", "d-arc"}},
-		{"rewrite chapter 2", novelItem{kind: workRewrite, number: 2, plan: project.Plan[3], chapterID: "chapter-2"}, []string{"d-all", "d-arc", "d-ch2"}},
-		{"review carries requirements instead", novelItem{kind: workReview, chapters: []string{"chapter-1", "chapter-2"}}, []string{}},
-		{"extend takes all active", novelItem{kind: workExtendPlan, covered: 2}, []string{"d-all", "d-arc", "d-ch2", "d-later"}},
+	run := model.CreationRun{ID: "run-1", ProjectID: "book-1"}
+	write := writeWork(project, run, chapterSlot{number: 1, plan: project.Plan[2]})
+	if got := directiveIDs(write.Input.(model.WriteChapterInput).Directives); !slices.Equal(got, []string{"d-all", "d-arc"}) {
+		t.Fatalf("write directives = %v", got)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := directiveIDs(coveringDirectives(project, tc.item))
-			if len(got) != len(tc.want) {
-				t.Fatalf("directives = %v, want %v", got, tc.want)
-			}
-			for i := range got {
-				if got[i] != tc.want[i] {
-					t.Fatalf("directives = %v, want %v", got, tc.want)
-				}
-			}
-		})
+	rewrite := rewriteWork(project, run, chapterSlot{number: 2, plan: project.Plan[3], chapterID: "chapter-2"}, []string{"节奏太慢"}, 7)
+	input, ok := rewrite.Input.(model.RewriteChapterInput)
+	if !ok || rewrite.Kind != model.OperationRewriteChapter || rewrite.ID != "run-1:rewrite:chapter-2:r7" {
+		t.Fatalf("rewrite work = %#v", rewrite)
+	}
+	if input.ChapterID != "chapter-2" || input.ChapterPlanID != "chapter-plan-2" || !slices.Equal(input.Findings, []string{"节奏太慢"}) {
+		t.Fatalf("rewrite input = %+v", input)
+	}
+	if got := directiveIDs(input.Directives); !slices.Equal(got, []string{"d-all", "d-arc", "d-ch2"}) {
+		t.Fatalf("rewrite directives = %v", got)
+	}
+	// 章节任务基线只钉本章的要求作用域（D51）：相干要求变化才使任务失效。
+	if len(input.Basis.Documents) != 0 || len(input.Basis.Scopes) != 1 || input.Basis.Scopes[0].Target.ChapterNumber != 2 {
+		t.Fatalf("rewrite basis = %+v", input.Basis)
+	}
+	if rewrite.Reasons.Waiting == "" || rewrite.Reasons.Failure == "" || rewrite.Reasons.Stuck == "" {
+		t.Fatalf("rewrite reasons = %#v", rewrite.Reasons)
 	}
 }
 
-func TestNovelItemWorkCarriesDirectivesAndRewriteBase(t *testing.T) {
+// 审阅以要求核验项投递（D62）：命中窗口的 active 要求；作用域全在目标之外的跳过。
+func TestReviewWorkCarriesWindowRequirements(t *testing.T) {
 	project := directiveTestProject()
+	project.Revision = 7
+	project.Index = projectdoc.DocumentIndex{}
+	for _, ref := range []model.DocumentRef{
+		{Kind: model.DocumentIntent, ID: model.SingletonDocumentID},
+		{Kind: model.DocumentManuscript, ID: "chapter-1"},
+		{Kind: model.DocumentPlan, ID: "chapter-plan-1"},
+	} {
+		project.Index[ref.Key()] = projectdoc.DocumentEntry{Ref: ref, Revision: 3}
+	}
 	run := model.CreationRun{ID: "run-1", ProjectID: "book-1"}
-	length := Length{Fixed: 2, Final: 2}
-
-	item := novelItem{
-		kind: workRewrite, number: 2, plan: project.Plan[3], chapterID: "chapter-2", revision: 7,
-		notes: []string{"节奏太慢"}, basis: chapterBasis(project, 2, project.Plan[3].ID),
-	}
-	item.directives = coveringDirectives(project, item)
-	work, err := item.work(run, "故事", length)
-	if err != nil {
-		t.Fatalf("rewrite work: %v", err)
-	}
-	rewrite, ok := work.Input.(model.RewriteChapterInput)
-	if !ok || work.Kind != model.OperationRewriteChapter || work.ID != "run-1:rewrite:chapter-2:r7" {
-		t.Fatalf("rewrite work = %#v", work)
-	}
-	if rewrite.ChapterID != "chapter-2" || rewrite.ChapterPlanID != "chapter-plan-2" || rewrite.ChapterNumber != 2 {
-		t.Fatalf("rewrite input = %+v", rewrite)
-	}
-	// 章节任务基线只钉本章的要求作用域（D51）：相干要求变化才使任务失效。
-	if len(rewrite.Basis.Documents) != 0 || len(rewrite.Basis.Scopes) != 1 || rewrite.Basis.Scopes[0].Target.ChapterNumber != 2 {
-		t.Fatalf("rewrite basis = %+v", rewrite.Basis)
-	}
-	if got := directiveIDs(rewrite.Directives); len(got) != 3 || got[2] != "d-ch2" {
-		t.Fatalf("rewrite directives = %v", got)
-	}
-	if work.Reasons.Waiting == "" || work.Reasons.Failure == "" || work.Reasons.Stuck == "" {
-		t.Fatalf("rewrite reasons = %#v", work.Reasons)
-	}
-
-	// 审阅以要求核验项投递（D62）：命中窗口的 active 要求；作用域全在目标之外的跳过。
-	chapters := []string{"chapter-1"}
-	review := novelItem{kind: workReview, chapters: chapters, revision: 7,
-		requirements: newReviewLedger(project, length.Final, nil).window(chapters)}
-	review.directives = coveringDirectives(project, review)
-	work, err = review.work(run, "故事", length)
+	ledger := newReviewLedger(project, 2, nil)
+	work, err := reviewWork(project, run, ledger, gateStep{review: []string{"chapter-1"}})
 	if err != nil {
 		t.Fatalf("review work: %v", err)
 	}
-	reviewInput, ok := work.Input.(model.ReviewRangeInput)
-	if !ok || work.ID != reviewOperationID("run-1", 7, model.ReviewRangeInput{ChapterIDs: chapters, Requirements: review.requirements}) || !strings.HasPrefix(work.ID, "run-1:review:chapter-1:r7:") {
+	input, ok := work.Input.(model.ReviewRangeInput)
+	if !ok || work.ID != reviewOperationID("run-1", 7, input) || !strings.HasPrefix(work.ID, "run-1:review:chapter-1:r7:") {
 		t.Fatalf("review work = %#v", work)
 	}
-	if got := reviewInput.Requirements; len(got) != 2 || got[0].ID != "directive:d-all" || got[1].ID != "directive:d-arc" || got[0].Settle {
+	if got := input.Requirements; len(got) != 2 || got[0].ID != "directive:d-all" || got[1].ID != "directive:d-arc" || got[0].Settle {
 		t.Fatalf("review requirements = %+v", got)
 	}
+}
 
-	plain := novelItem{kind: workWriteChapter, number: 1, plan: project.Plan[2]}
-	work, err = plain.work(run, "故事", length)
-	if err != nil {
-		t.Fatalf("write work: %v", err)
-	}
+func TestWriteInputWithoutDirectivesOmitsTheField(t *testing.T) {
+	project := directiveTestProject()
+	project.Directives = nil
+	work := writeWork(project, model.CreationRun{ID: "run-1"}, chapterSlot{number: 1, plan: project.Plan[2]})
 	encoded, err := json.Marshal(work.Input)
 	if err != nil {
 		t.Fatalf("encode write input: %v", err)

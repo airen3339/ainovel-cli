@@ -139,8 +139,8 @@ func (m model) liveProse(number int) (activity.OutputBlock, bool) {
 
 // proseOf 报告输出块是不是第 number 章的正文预览：块自带章节归属时按章匹配，否则按当前章。
 func (m model) proseOf(block activity.OutputBlock, number int) bool {
-	return block.Kind == activity.Prose && number > 0 &&
-		(block.Scope.ChapterNumber == number || block.Scope.ChapterNumber == 0 && number == m.currentChapter())
+	own := m.planNumber(block.Scope.PlanNodeID)
+	return block.Kind == activity.Prose && number > 0 && (own == number || own == 0 && number == m.currentChapter())
 }
 
 func chapterByNumber(chapters []domainmodel.ManuscriptChapter, number int) (domainmodel.ManuscriptChapter, bool) {

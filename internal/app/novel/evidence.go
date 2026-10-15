@@ -24,7 +24,7 @@ func directiveScope(project projectdoc.Snapshot, target model.DirectiveTarget) m
 	members := model.ScopeMembers(project.Directives, target, func(ref model.DocumentRef) model.Revision {
 		return project.Index[ref.Key()].Revision
 	})
-	return model.ScopeBasis{Kind: model.ScopeDirective, Target: target, Digest: model.ScopeDigest(members)}
+	return model.ScopeBasis{Target: target, Digest: model.ScopeDigest(members)}
 }
 
 // basisValid delegates validity to the same contract used by change submission.

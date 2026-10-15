@@ -64,13 +64,13 @@ func TestRelocateFollowsControlOnlyRule(t *testing.T) {
 	hero := model.DocumentRef{Kind: model.DocumentEntity, ID: "hero"}
 	chapterTwo := model.DirectiveTarget{ChapterNumber: 2, PlanNodeIDs: []string{"chapter-plan-2", "arc-1", "volume-1"}}
 	scopeBasis := func(members ...model.DocumentBasis) model.EvidenceBasis {
-		return model.EvidenceBasis{Scopes: []model.ScopeBasis{{Kind: model.ScopeDirective, Target: chapterTwo, Digest: model.ScopeDigest(members)}}}
+		return model.EvidenceBasis{Scopes: []model.ScopeBasis{{Target: chapterTwo, Digest: model.ScopeDigest(members)}}}
 	}
 	proposal := pendingChange("ai-fact", target, 1, model.AuthorAI, model.Patch{
 		Document: model.DocumentRef{Kind: model.DocumentCanon, ID: "hero-mood"}, Operation: model.PatchPut,
 		Content: documentJSON(t, model.CanonFact{ID: "hero-mood", Kind: model.CanonState, SubjectID: "hero", Predicate: "state.mood", Value: json.RawMessage(`"忐忑"`)}),
 	})
-	proposal.Impact.Compliance = json.RawMessage(`{"status":"pass"}`)
+	proposal.Impact.Compliance = &model.SemanticComplianceReport{Status: model.SemanticCompliancePass}
 
 	same, moved, err := engine.relocate(ctx, proposal, scopeBasis(), false)
 	if err != nil || moved || same.BaseRevision != 1 {
@@ -80,8 +80,8 @@ func TestRelocateFollowsControlOnlyRule(t *testing.T) {
 	commitUserChange(t, ctx, s, target, "lock-hero", ownershipPatch(t, hero, model.ControlLocked))
 	commitUserChange(t, ctx, s, target, "unrelated", directivePatch(t, "d1", "chapter_range:1-1"))
 	relocated, moved, err := engine.relocate(ctx, proposal, scopeBasis(), false)
-	if err != nil || !moved || relocated.BaseRevision != 3 || len(relocated.Impact.Structural) == 0 ||
-		string(relocated.Impact.Compliance) != `{"status":"pass"}` {
+	if err != nil || !moved || relocated.BaseRevision != 3 || relocated.Impact.Structural == nil ||
+		relocated.Impact.Compliance != proposal.Impact.Compliance {
 		t.Fatalf("relocated = %#v, %v, %v", relocated, moved, err)
 	}
 	if proposal.BaseRevision != 1 {
@@ -139,7 +139,7 @@ func TestVerifyBasisAtRevision(t *testing.T) {
 	}
 	chapterOne := model.DirectiveTarget{ChapterNumber: 1, PlanNodeIDs: []string{"chapter-plan-1", "arc-1", "volume-1"}}
 	scope := model.EvidenceBasis{Scopes: []model.ScopeBasis{{
-		Kind: model.ScopeDirective, Target: chapterOne,
+		Target: chapterOne,
 		Digest: model.ScopeDigest([]model.DocumentBasis{{Ref: model.DocumentRef{Kind: model.DocumentDirective, ID: "hook"}, Revision: directive}}),
 	}}}
 	cases := []struct {

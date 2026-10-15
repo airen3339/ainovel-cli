@@ -56,14 +56,6 @@ const (
 	FindingNote     = "note"
 )
 
-// ReviewStatusOf 是审阅结论：有 blocking 发现即未通过。结论由发现推出，不让审阅者另报（D81）。
-func ReviewStatusOf(findings []ReviewFinding) string {
-	if slices.ContainsFunc(findings, func(finding ReviewFinding) bool { return finding.Severity == FindingBlocking }) {
-		return ReviewBlocked
-	}
-	return ReviewPass
-}
-
 // ReviewFinding 是一条审阅发现。阻塞发现可通过 Requirement 链接到它证明被违反的要求
 // （§6.4）：违反项与阻塞发现一一可追溯，用户接受发现即接受该项（D43）。
 type ReviewFinding struct {
@@ -88,17 +80,27 @@ type RequirementCheck struct {
 	Note   string `json:"note,omitempty"`
 }
 
-// ReviewVerdict 是审阅 Operation 的版本化裁定（§6.4）：pass 表示范围内正文没有阻塞级
-// 发现、没有被违反的要求。Checks 逐项声明任务输入的要求（D62）。
+// ReviewVerdict 是审阅 Operation 的版本化裁定（§6.4）：没有阻塞发现即通过，被违反的要求
+// 必有阻塞发现链接它。Checks 逐项声明任务输入的要求（D62）。
 // Revision 是产出裁定的基线 Revision；有效性按 Basis 判定（D48），不按 Revision 相等。
 type ReviewVerdict struct {
-	Status     string             `json:"status"`
 	Revision   Revision           `json:"revision"`
 	ChapterIDs []string           `json:"chapter_ids"`
 	ReviewKey  string             `json:"review_key"`
 	Basis      EvidenceBasis      `json:"basis"`
 	Checks     []RequirementCheck `json:"checks,omitempty"`
 	Findings   []ReviewFinding    `json:"findings"`
+}
+
+// Blocking 是阻塞发现的条数，为 0 即通过：结论由发现推出，不让审阅者另报（D81）。
+func (v ReviewVerdict) Blocking() int {
+	blocking := 0
+	for _, finding := range v.Findings {
+		if finding.Severity == FindingBlocking {
+			blocking++
+		}
+	}
+	return blocking
 }
 
 // CheckStatus 返回裁定对某项要求的结论；未声明返回空串。
@@ -139,14 +141,12 @@ func (v ReviewVerdict) Validate() error {
 			return fmt.Errorf("review verdict check %q has unknown status %q: %w", check.ID, check.Status, ErrInvalid)
 		}
 	}
-	blocking := 0
 	for i, finding := range v.Findings {
 		if strings.TrimSpace(finding.ChapterID) == "" || strings.TrimSpace(finding.Note) == "" {
 			return fmt.Errorf("review finding %d requires chapter and note: %w", i, ErrInvalid)
 		}
 		switch finding.Severity {
 		case FindingBlocking:
-			blocking++
 		case FindingNote:
 			if finding.Requirement != "" {
 				// 工具边界的错误要能让模型当场自纠：指明改哪个字段，不要只说违反了规则。
@@ -158,18 +158,6 @@ func (v ReviewVerdict) Validate() error {
 		default:
 			return fmt.Errorf("unknown finding severity %q: %w", finding.Severity, ErrInvalid)
 		}
-	}
-	switch v.Status {
-	case ReviewPass:
-		if blocking != 0 {
-			return fmt.Errorf("passing verdict cannot carry blocking findings: %w", ErrInvalid)
-		}
-	case ReviewBlocked:
-		if blocking == 0 {
-			return fmt.Errorf("blocked verdict requires at least one blocking finding: %w", ErrInvalid)
-		}
-	default:
-		return fmt.Errorf("unknown review status %q: %w", v.Status, ErrInvalid)
 	}
 	return nil
 }
@@ -237,7 +225,7 @@ func validateChecks(requirements []Requirement, verdict ReviewVerdict) error {
 		case check.Status == CheckPending && requirement.Settle:
 			return fmt.Errorf("requirement %q must be settled in this window; declare %q or %q instead of %q: %w",
 				check.ID, CheckSatisfied, CheckViolated, CheckPending, ErrInvalid)
-		case check.Status == CheckViolated && verdict.Status == ReviewPass:
+		case check.Status == CheckViolated && verdict.Blocking() == 0:
 			return fmt.Errorf("review pass cannot declare requirement %q violated; report it as a blocking finding: %w", check.ID, ErrInvalid)
 		case check.Status == CheckViolated:
 			linked[check.ID] = false
@@ -288,9 +276,6 @@ func (v ReviewVerdict) Adjudicated(operationID string, accepted map[string]struc
 		if _, still := linked[check.ID]; check.Status == CheckViolated && !still {
 			effective.Checks[i].Status = CheckSatisfied
 		}
-	}
-	if len(effective.BlockingChapters()) == 0 {
-		effective.Status = ReviewPass
 	}
 	return effective
 }

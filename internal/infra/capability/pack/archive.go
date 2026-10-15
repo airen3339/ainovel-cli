@@ -89,11 +89,5 @@ func decodeArchive(reader io.Reader, source string) (Loaded, error) {
 	if _, err := ParseEvals(value.Manifest); err != nil {
 		return Loaded{}, err
 	}
-	loaded := Loaded{
-		Root: source, Manifest: value.Manifest,
-		References: value.Manifest.ReferenceData,
-		Templates:  value.Manifest.TemplateData,
-		Evals:      value.Manifest.EvalData,
-	}
-	return finalizeLoaded(loaded)
+	return finalizeLoaded(Loaded{Root: source, Manifest: value.Manifest})
 }

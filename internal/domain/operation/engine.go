@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"strings"
+	"slices"
 	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain/change"
@@ -61,48 +61,50 @@ func NewEngine(authorityStore Store, changes *change.Engine, contracts ...Verdic
 	return e
 }
 
-// RunNextWithExecutors 在所有已装配执行器之间按同一队列优先级原子领取，
+// RunNext 在所有已装配执行器之间按同一队列优先级原子领取，
 // 再把任务交给其冻结身份对应的执行器。
-func (e *Engine) RunNextWithExecutors(ctx context.Context, executors []Executor, workerID string, leaseDuration time.Duration, now time.Time) (RunResult, error) {
-	byID := make(map[string]Executor, len(executors))
-	identities := make([]string, 0, len(executors))
-	for _, executor := range executors {
-		if executor == nil || strings.TrimSpace(executor.Identity()) == "" {
-			return RunResult{}, fmt.Errorf("executor identity is required: %w", model.ErrInvalid)
-		}
-		id := executor.Identity()
-		if _, exists := byID[id]; exists {
-			return RunResult{}, fmt.Errorf("duplicate executor identity %q: %w", id, model.ErrInvalid)
-		}
-		byID[id] = executor
-		identities = append(identities, id)
-	}
-	if len(identities) == 0 {
-		return RunResult{}, fmt.Errorf("operation executor is required: %w", model.ErrInvalid)
+func (e *Engine) RunNext(ctx context.Context, executors []Executor, workerID string, leaseDuration time.Duration, now time.Time) (RunResult, error) {
+	identities := make([]string, len(executors))
+	for i, executor := range executors {
+		identities[i] = executor.Identity()
 	}
 	op, err := e.store.ClaimNextOperationForExecutors(ctx, workerID, identities, leaseDuration, now)
 	if err != nil {
 		return RunResult{}, err
 	}
-	return e.runClaimed(ctx, byID[op.Snapshot.Executor], op, workerID, leaseDuration, now)
+	return e.runClaimed(ctx, route(executors, op.Snapshot.Executor), op, workerID, leaseDuration, now)
 }
 
+// Run 领取指定任务，交给其冻结身份对应的执行器；该执行器未装配时拒绝。
 func (e *Engine) Run(
 	ctx context.Context,
-	executor Executor,
+	executors []Executor,
 	operationID, workerID string,
 	leaseDuration time.Duration,
 	now time.Time,
 ) (RunResult, error) {
-	if executor == nil {
-		return RunResult{}, fmt.Errorf("operation executor is required: %w", model.ErrInvalid)
+	operation, err := e.store.GetOperation(ctx, operationID)
+	if err != nil {
+		return RunResult{}, err
 	}
-	operation, err := e.store.ClaimOperationForExecutor(ctx, operationID, workerID, executor.Identity(), leaseDuration, now)
+	executor := route(executors, operation.Snapshot.Executor)
+	if executor == nil {
+		return RunResult{}, fmt.Errorf("executor %q is not configured: %w", operation.Snapshot.Executor, model.ErrInvalid)
+	}
+	operation, err = e.store.ClaimOperationForExecutor(ctx, operationID, workerID, executor.Identity(), leaseDuration, now)
 	if err != nil {
 		stored, err := e.persisted(ctx, operationID, err)
 		return RunResult{Operation: stored}, err
 	}
 	return e.runClaimed(ctx, executor, operation, workerID, leaseDuration, now)
+}
+
+// route 取身份对应的执行器，没有则为 nil。
+func route(executors []Executor, identity string) Executor {
+	if i := slices.IndexFunc(executors, func(executor Executor) bool { return executor.Identity() == identity }); i >= 0 {
+		return executors[i]
+	}
+	return nil
 }
 
 func (e *Engine) runClaimed(
@@ -191,10 +193,7 @@ func (e *Engine) deliver(
 	if proposal.Target != operation.Target || proposal.BaseRevision != operation.Snapshot.BaseRevision {
 		return e.fail(ctx, operation, fmt.Errorf("proposal does not belong to the frozen operation target and revision: %w", model.ErrInvalid), now)
 	}
-	if err := proposal.Validate(); err != nil {
-		return e.fail(ctx, operation, err, now)
-	}
-	if len(proposal.Impact.Semantic) != 0 || len(proposal.Impact.Compliance) != 0 {
+	if proposal.Impact.Semantic != nil || proposal.Impact.Compliance != nil {
 		return e.fail(ctx, operation, fmt.Errorf("executor cannot self-assert semantic compliance: %w", model.ErrInvalid), now)
 	}
 	// 宿主规范化提交（D40：故事依赖由宿主写入，执行器声明的 depends_on 不作数）。
@@ -256,9 +255,7 @@ func (e *Engine) finalizeVerdict(
 		return e.fail(ctx, operation, err, now)
 	}
 	currentRevision, err := e.store.CurrentRevision(ctx, operation.Target)
-	if errors.Is(err, model.ErrNotFound) {
-		currentRevision = model.InitialRevision
-	} else if err != nil {
+	if err != nil {
 		return e.fail(ctx, operation, err, now)
 	}
 	if err := e.changes.VerifyBasis(ctx, operation.Target, basis, currentRevision); errors.Is(err, change.ErrBasisMismatch) {
@@ -354,8 +351,8 @@ func (e *Engine) finalize(
 }
 
 // adjudicate 先按 D51 重定位，再问 Change Engine 能否按策略放行；需要独立合规分析时
-// 只重做检查、保留已生成的候选，证据写回后重新判定。放行则以系统身份裁决提交，授权
-// 层面的等待（locked、用户专属等）由提交返回 ErrUnauthorized。proposal 随写回更新。
+// 只重做检查、保留已生成的候选，证据写回后重新判定。放行则以策略的名义批准提交，否则
+// 等用户。proposal 随写回更新。
 func (e *Engine) adjudicate(
 	ctx context.Context,
 	executor Executor,
@@ -392,18 +389,11 @@ func (e *Engine) adjudicate(
 		awaiting, err := e.conclude(ctx, operation, model.OperationAwaitingApproval, admission.Hold, now)
 		return RunResult{Operation: awaiting}, err
 	}
-	approved, err := change.Decide(
-		*proposal, model.ApprovalApproved,
-		model.Author{Kind: model.AuthorSystem, ID: "approval-policy:" + string(admission.Policy)}, now,
-	)
+	approved, err := admission.Approve(*proposal, now)
 	if err != nil {
 		return e.fail(ctx, operation, err, now)
 	}
 	committed, err := e.changes.CommitExecution(ctx, approved, operation.Attempt)
-	if errors.Is(err, change.ErrUnauthorized) {
-		awaiting, transitionErr := e.conclude(ctx, operation, model.OperationAwaitingApproval, err.Error(), now)
-		return RunResult{Operation: awaiting}, transitionErr
-	}
 	if err != nil {
 		return e.settle(ctx, operation, err, now)
 	}
@@ -424,7 +414,6 @@ func unavailableComplianceReport(
 	return report
 }
 
-// fail 收尾失败并按原因打码（D46）：结果未知不是普通失败，用户对账或重提前不会自动重试。
 // fail 落盘执行失败。执行被取消（用户暂停或进程退出）时不是失败：任务放回队列、释放
 // 租约，续跑时接着对话与工作区，不消耗失败预算。
 func (e *Engine) fail(ctx context.Context, operation model.Operation, cause error, now time.Time) (RunResult, error) {
@@ -460,7 +449,8 @@ func (e *Engine) conclude(ctx context.Context, operation model.Operation, to mod
 	return concluded, nil
 }
 
-// failed 落盘执行失败并按原因打码（D46），写入被拒时同 conclude 回读。
+// failed 落盘执行失败并按原因打码（D46）：结果未知不是普通失败，用户对账或重提前不会
+// 自动重试。写入被拒时同 conclude 回读。
 func (e *Engine) failed(ctx context.Context, operation model.Operation, cause error, now time.Time) (model.Operation, error) {
 	failed, err := e.store.FailOperation(ctx, operation.ID, operation.Attempt, model.FailureCodeFor(cause), cause.Error(), now)
 	if err != nil {

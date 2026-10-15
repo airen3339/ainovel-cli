@@ -113,7 +113,7 @@ func TestValidateBlueprint(t *testing.T) {
 	unbounded := blueprint(nil, chapters(1, 2, 3)...)
 	open := func(t *testing.T) Operation { return extend(t, 0, 3) }
 	fixedSix := func(t *testing.T) Operation { return extend(t, 6, 3) }
-	chapterOp, _ := json.Marshal(WriteChapterInput{ChapterPlanID: "chapter-1", ChapterNumber: 1})
+	chapterOp, _ := json.Marshal(WriteChapterInput{ChapterPlanID: "chapter-1"})
 	for _, c := range []struct {
 		name      string
 		operation func(*testing.T) Operation

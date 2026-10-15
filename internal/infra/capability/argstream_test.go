@@ -66,8 +66,7 @@ func assertSplitEquivalence(t *testing.T, path tapPath, full, want string) {
 }
 
 func TestProseExtractorPutChapter(t *testing.T) {
-	full := `{"key":"ch-1","chapter":{"id":"c1","plan_node_id":"p1",` +
-		`"number":1,"title":"山野少年","blocks":[{"id":"b1","text":"少年在山野间奔跑。"},` +
+	full := `{"chapter":{"blocks":[{"id":"b1","text":"少年在山野间奔跑。"},` +
 		`{"id":"b2","text":"暮色四合，他停下了脚步。"}]}}`
 	assertSplitEquivalence(t, putChapterPath, full,
 		"少年在山野间奔跑。\n\n暮色四合，他停下了脚步。")
@@ -75,10 +74,10 @@ func TestProseExtractorPutChapter(t *testing.T) {
 
 func TestProseExtractorReplaceBlockFieldOrders(t *testing.T) {
 	assertSplitEquivalence(t, replaceBlockPath,
-		`{"key":"ch-1","block_id":"b2","text":"改写后的段落。"}`,
+		`{"block_id":"b2","text":"改写后的段落。"}`,
 		"改写后的段落。")
 	assertSplitEquivalence(t, replaceBlockPath,
-		`{"text":"正文在前。","key":"ch-1","block_id":"b1"}`,
+		`{"text":"正文在前。","block_id":"b1"}`,
 		"正文在前。")
 }
 
@@ -387,14 +386,13 @@ func TestToolDetailNamesTheTarget(t *testing.T) {
 		{prompt.ToolAuthorityRead, `{"chapter":3}`, "第 3 章"},
 		{prompt.ToolAuthorityRead, `{"arc":2}`, "第 2 个故事弧"},
 		{prompt.ToolAuthorityRead, `{"entity":"陈渡"}`, "「陈渡」"},
-		{prompt.ToolWorkspaceRead, `{"key":"draft"}`, "draft"},
-		{prompt.ToolWorkspacePutChapter, `{"key":"draft","chapter":{"blocks":[{"id":"b1","text":"雨停了。"},{"id":"b2","text":"他没有敲门。"}]}}`, "10 字"},
-		{prompt.ToolWorkspacePutChapter, `{"key":"ch5","chapter":{"number":5,"blocks":[{"id":"b1","text":"信"}]}}`, "第 5 章 · 1 字"},
-		{prompt.ToolWorkspaceReplaceBlock, `{"key":"draft","block_id":"b2","text":"他敲了门。"}`, "段落 b2 · 5 字"},
+		{prompt.ToolWorkspacePutCandidate, `{"key":"draft","content":{}}`, "draft"},
+		{prompt.ToolWorkspacePutChapter, `{"chapter":{"blocks":[{"id":"b1","text":"雨停了。"},{"id":"b2","text":"他没有敲门。"}]}}`, "10 字"},
+		{prompt.ToolWorkspaceReplaceBlock, `{"block_id":"b2","text":"他敲了门。"}`, "段落 b2 · 5 字"},
 		{prompt.ToolWorkspacePutReview, `{"key":"r","findings":[{"severity":"blocking"},{"severity":"note"}]}`, "2 条意见（阻塞 1）"},
 		{prompt.ToolWorkspacePutReview, `{"key":"r","findings":[]}`, "0 条意见"},
 		{prompt.ToolProposalSubmit, `{"reason":"完成第四章\n初稿"}`, "完成第四章 初稿"},
-		{prompt.ToolWorkspaceList, `{}`, ""},
+		{prompt.ToolWorkspaceRead, `{}`, ""},
 		{prompt.ToolAuthorityRead, `not json`, ""},
 	}
 	for _, c := range cases {

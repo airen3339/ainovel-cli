@@ -34,10 +34,7 @@ func TestPrepareReportsTransitiveStructuralImpact(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
-	var impact StructuralImpact
-	if err := json.Unmarshal(prepared.Impact.Structural, &impact); err != nil {
-		t.Fatalf("decode impact: %v", err)
-	}
+	impact := prepared.Impact.Structural
 	if got := refKeys(impact.Direct); !slices.Equal(got, []string{"canon:hero-origin"}) {
 		t.Fatalf("direct = %v", got)
 	}
@@ -64,6 +61,10 @@ func TestLockedDocumentRejectsSystemApproval(t *testing.T) {
 	prepared, err := engine.Prepare(ctx, proposal)
 	if err != nil {
 		t.Fatalf("prepare: %v", err)
+	}
+	// 放行结论与提交时的授权同一口径：锁定的文档 Admit 就给出等待，不等提交被挡。
+	if admission, err := engine.Admit(ctx, prepared); err != nil || !strings.Contains(admission.Hold, "locked document") {
+		t.Fatalf("admission = %+v, %v; want a hold on the locked document", admission, err)
 	}
 	decidedAt := testTime().Add(time.Minute)
 	autoApproved, err := Decide(prepared, model.ApprovalApproved, model.Author{Kind: model.AuthorSystem, ID: "auto-policy"}, decidedAt)
@@ -144,19 +145,19 @@ func TestGuidedDocumentRequiresPassingCompliance(t *testing.T) {
 
 	cases := []struct {
 		name       string
-		compliance json.RawMessage
+		compliance *model.SemanticComplianceReport
 		wantErr    bool
 	}{
 		{"missing evidence", nil, true},
-		{"conflict report", documentJSON(t, model.SemanticComplianceReport{
+		{"conflict report", &model.SemanticComplianceReport{
 			Status: model.SemanticComplianceConflict, BasisDigest: basis,
 			Findings: []model.SemanticComplianceFinding{{
 				Constraint: canon, Explanation: "正文实质改写了受限出身",
 			}},
-		}), true},
+		}, true},
 		// 授权与执行收尾共用 complianceGap：不绑定当前候选与约束的 pass 不能放行。
-		{"pass report for another candidate", documentJSON(t, model.SemanticComplianceReport{Status: model.SemanticCompliancePass, BasisDigest: "stale"}), true},
-		{"pass report", documentJSON(t, model.SemanticComplianceReport{Status: model.SemanticCompliancePass, BasisDigest: basis}), false},
+		{"pass report for another candidate", &model.SemanticComplianceReport{Status: model.SemanticCompliancePass, BasisDigest: "stale"}, true},
+		{"pass report", &model.SemanticComplianceReport{Status: model.SemanticCompliancePass, BasisDigest: basis}, false},
 	}
 	for _, testCase := range cases {
 		t.Run(testCase.name, func(t *testing.T) {
@@ -201,7 +202,7 @@ func TestAIIntentChangesRequireUserApproval(t *testing.T) {
 				Document: model.DocumentRef{Kind: model.DocumentIntent, ID: "root"}, Operation: model.PatchPut,
 				Content: documentJSON(t, model.Intent{Premise: "凡人修仙"}),
 			})
-			if _, err := engine.CommitUser(ctx, seed, decidedAt); err != nil {
+			if _, err := engine.CommitUser(ctx, seed); err != nil {
 				t.Fatalf("user intent: %v", err)
 			}
 		}
@@ -417,15 +418,15 @@ func TestPrepareWithSemanticRequiresAnalyzer(t *testing.T) {
 		t.Fatalf("prepare error = %v, want ErrSemanticUnavailable", err)
 	}
 
-	analyzer := semanticAnalyzerFunc(func(context.Context, model.Proposal, StructuralImpact) (json.RawMessage, error) {
+	analyzer := semanticAnalyzerFunc(func(context.Context, model.Proposal, model.StructuralImpact) (json.RawMessage, error) {
 		return json.RawMessage(`{"status":"consistent","findings":[],"options":[]}`), nil
 	})
 	prepared, err := NewWithSemanticAnalyzer(s, analyzer).PrepareWithSemantic(context.Background(), proposal)
 	if err != nil {
 		t.Fatalf("prepare with semantic analyzer: %v", err)
 	}
-	if string(prepared.Impact.Semantic) != `{"status":"consistent","findings":[],"options":[]}` {
-		t.Fatalf("semantic impact = %s", prepared.Impact.Semantic)
+	if prepared.Impact.Semantic == nil || prepared.Impact.Semantic.Status != model.SemanticImpactConsistent {
+		t.Fatalf("semantic impact = %+v", prepared.Impact.Semantic)
 	}
 }
 
@@ -496,9 +497,9 @@ func TestRevertCreatesNewRevisionWithoutRewritingHistory(t *testing.T) {
 	}
 }
 
-type semanticAnalyzerFunc func(context.Context, model.Proposal, StructuralImpact) (json.RawMessage, error)
+type semanticAnalyzerFunc func(context.Context, model.Proposal, model.StructuralImpact) (json.RawMessage, error)
 
-func (f semanticAnalyzerFunc) Analyze(ctx context.Context, proposal model.Proposal, impact StructuralImpact) (json.RawMessage, error) {
+func (f semanticAnalyzerFunc) Analyze(ctx context.Context, proposal model.Proposal, impact model.StructuralImpact) (json.RawMessage, error) {
 	return f(ctx, proposal, impact)
 }
 
@@ -686,10 +687,7 @@ func TestAttachmentRequiresPublishedArtifactAndFollowsTarget(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepare impact: %v", err)
 	}
-	var impact StructuralImpact
-	if err := json.Unmarshal(impacted.Impact.Structural, &impact); err != nil {
-		t.Fatalf("decode impact: %v", err)
-	}
+	impact := impacted.Impact.Structural
 	if got := refKeys(impact.Affected); !slices.Equal(got, []string{"attachment:cover-1", "manuscript:chapter-1"}) {
 		t.Fatalf("affected = %v", got)
 	}
@@ -702,7 +700,7 @@ func publishTestArtifact(t *testing.T, ctx context.Context, s *store.Store, proj
 	if _, err := s.CreateCreationRun(ctx, model.CreationRun{
 		ID: "run:" + projectID, ProjectID: projectID,
 		Goal:     model.NovelGoal{Premise: "测试创作", TargetChapters: 3}.Goal(),
-		Strategy: model.CreationRunStrategy{ReviewCadence: model.ReviewPerPlanWindow, AutoRepairBudget: 3},
+		Strategy: model.CreationRunStrategy{AutoRepairBudget: 3},
 		Preset:   model.CreationRunPreset{Source: "test", Digest: "test-preset", Approval: model.ApprovalAuto},
 		State:    model.RunRunning, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
@@ -781,7 +779,7 @@ func TestAppendOnlyDocumentsRejectOverwriteAndDeleteAndSurviveRevert(t *testing.
 	if err := commit("delete", 2, model.Patch{Document: ref, Operation: model.PatchDelete}); !errors.Is(err, model.ErrStructuralConflict) {
 		t.Fatalf("delete err = %v, want model.ErrStructuralConflict", err)
 	}
-	if _, err := engine.PrepareRevert(ctx, "revert", target, 1, model.Author{Kind: model.AuthorUser, ID: "user-1"}, "回滚", testTime().Add(2*time.Minute)); !errors.Is(err, ErrInvalidState) {
+	if _, err := engine.PrepareRevert(ctx, "revert", target, 1, model.Author{Kind: model.AuthorUser, ID: "user-1"}, "回滚", testTime().Add(2*time.Minute)); !errors.Is(err, model.ErrInvalid) {
 		t.Fatalf("revert across an adjudication-only revision must be a no-op, got %v", err)
 	}
 }

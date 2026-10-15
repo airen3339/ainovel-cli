@@ -121,7 +121,7 @@ func (g dependencyGraph) detectCycles() error {
 }
 
 // impact 沿反向依赖边求受直接改动波及的文档。
-func (g dependencyGraph) impact(state model.DocumentSet, direct []model.DocumentRef) StructuralImpact {
+func (g dependencyGraph) impact(state model.DocumentSet, direct []model.DocumentRef) model.StructuralImpact {
 	slices.SortFunc(direct, compareDocumentRef)
 	direct = slices.CompactFunc(direct, func(a, b model.DocumentRef) bool { return a.Key() == b.Key() })
 	reverse := make(map[string][]model.DocumentRef)
@@ -152,7 +152,7 @@ func (g dependencyGraph) impact(state model.DocumentSet, direct []model.Document
 	if affected == nil {
 		affected = []model.DocumentRef{}
 	}
-	return StructuralImpact{Direct: direct, Affected: affected}
+	return model.StructuralImpact{Direct: direct, Affected: affected}
 }
 
 func compareDocumentRef(a, b model.DocumentRef) int {

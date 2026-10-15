@@ -2,10 +2,9 @@ package tui
 
 import (
 	"context"
-	"net/url"
+	"errors"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -313,16 +312,12 @@ func (m model) runWizardAction(test bool) (tea.Model, tea.Cmd) {
 	if previous, ok := m.wizard.source.Providers[m.wizard.original]; ok {
 		pc.Models = previous.Models
 	}
-	if pc.BaseURL != "" {
-		u, err := url.Parse(pc.BaseURL)
-		if err != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || u.Fragment != "" {
-			m.wizard.err = "地址须为 http(s) URL，不能包含用户凭据或片段"
-			return m.focusWizard(3)
-		}
-	}
 	config := m.wizard.source.WithProvider(name, strings.TrimSpace(m.wizard.inputs[1].Value()), pc)
 	if err := config.Validate(); err != nil {
 		m.wizard.err = err.Error()
+		if errors.Is(err, appconfig.ErrBaseURL) {
+			return m.focusWizard(3)
+		}
 		return m, nil
 	}
 	m.wizard.err = ""
@@ -331,17 +326,13 @@ func (m model) runWizardAction(test bool) (tea.Model, tea.Cmd) {
 		return m.saveWizard(config)
 	}
 	m.wizard.verifying = true
-	ctx, cancel := context.WithTimeout(m.ctx, 30*time.Second)
+	ctx, cancel := context.WithCancel(m.ctx)
 	m.wizard.cancel = cancel
 	m.wizard.request = &struct{ token byte }{}
 	request, verify := m.wizard.request, m.deps.Verify
 	return m, func() tea.Msg {
 		defer cancel()
-		var err error
-		if verify != nil {
-			err = verify(ctx, config)
-		}
-		return wizardVerifiedMsg{config: config, request: request, err: err}
+		return wizardVerifiedMsg{config: config, request: request, err: verify(ctx, config)}
 	}
 }
 

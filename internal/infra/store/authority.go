@@ -11,17 +11,6 @@ import (
 )
 
 func commitProposalTx(ctx context.Context, tx *sql.Tx, proposal model.Proposal, digest string) (model.ChangeSet, error) {
-	storedRevision, storedDigest, found, err := findCommittedChange(ctx, tx, proposal.ID)
-	if err != nil {
-		return model.ChangeSet{}, err
-	}
-	if found {
-		if storedDigest != digest {
-			return model.ChangeSet{}, fmt.Errorf("change set %q: %w", proposal.ID, model.ErrIdempotencyConflict)
-		}
-		return model.ChangeSet{Proposal: proposal, NewRevision: storedRevision}, nil
-	}
-
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO authority_streams (target_kind, target_id, target_scope, current_revision)
 		VALUES (?, ?, ?, 0)
@@ -51,6 +40,10 @@ func commitProposalTx(ctx context.Context, tx *sql.Tx, proposal model.Proposal, 
 		return model.ChangeSet{}, fmt.Errorf("base revision %d, current revision %d: %w", proposal.BaseRevision, current, model.ErrRevisionConflict)
 	}
 
+	impact, err := impactColumns(proposal.Impact)
+	if err != nil {
+		return model.ChangeSet{}, err
+	}
 	if _, err := tx.ExecContext(ctx, `
 		INSERT INTO change_sets (
 			id, content_digest, target_kind, target_id, target_scope,
@@ -61,8 +54,7 @@ func commitProposalTx(ctx context.Context, tx *sql.Tx, proposal model.Proposal, 
 		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		proposal.ID, digest, proposal.Target.Kind, proposal.Target.ID, proposal.Target.Scope,
 		proposal.BaseRevision, newRevision, proposal.Author.Kind, proposal.Author.ID, proposal.Reason, proposal.Source,
-		nullableJSON(proposal.Impact.Structural), nullableJSON(proposal.Impact.Semantic),
-		nullableJSON(proposal.Impact.Compliance),
+		impact[0], impact[1], impact[2],
 		proposal.ApprovalState, proposal.DecidedBy.Kind, proposal.DecidedBy.ID,
 		proposal.DecidedAt.UnixMilli(), proposal.CreatedAt.UnixMilli(), nullableString(proposal.OperationID)); err != nil {
 		return model.ChangeSet{}, fmt.Errorf("insert change set: %w", err)
@@ -102,16 +94,6 @@ func (s *Store) CurrentRevision(ctx context.Context, target model.AuthorityTarge
 }
 
 func (s *Store) GetDocument(ctx context.Context, target model.AuthorityTarget, ref model.DocumentRef, at model.Revision) (model.DocumentVersion, error) {
-	if err := target.Validate(); err != nil {
-		return model.DocumentVersion{}, err
-	}
-	if err := ref.Validate(); err != nil {
-		return model.DocumentVersion{}, err
-	}
-	if at <= model.InitialRevision {
-		return model.DocumentVersion{}, fmt.Errorf("revision must be positive: %w", model.ErrInvalid)
-	}
-
 	var operation model.PatchOperation
 	var content []byte
 	var version model.DocumentVersion
@@ -140,16 +122,6 @@ func (s *Store) GetDocument(ctx context.Context, target model.AuthorityTarget, r
 }
 
 func (s *Store) ListDocuments(ctx context.Context, target model.AuthorityTarget, kind model.DocumentKind, at model.Revision) ([]model.DocumentVersion, error) {
-	if err := target.Validate(); err != nil {
-		return nil, err
-	}
-	if err := (model.DocumentRef{Kind: kind, ID: "validation"}).Validate(); err != nil {
-		return nil, err
-	}
-	if at <= model.InitialRevision {
-		return nil, fmt.Errorf("revision must be positive: %w", model.ErrInvalid)
-	}
-
 	rows, err := s.db.QueryContext(ctx, `
 		WITH latest AS (
 			SELECT document_id, MAX(revision) AS revision
@@ -189,32 +161,6 @@ func (s *Store) ListDocuments(ctx context.Context, target model.AuthorityTarget,
 		return nil, fmt.Errorf("iterate documents: %w", err)
 	}
 	return documents, nil
-}
-
-// model.ProjectRecord 是作品库列表项。
-
-// ListProjects 列举全部已形成初始 Revision 的作品（作品库）。
-func (s *Store) ListProjects(ctx context.Context) ([]model.ProjectRecord, error) {
-	rows, err := s.db.QueryContext(ctx, `
-		SELECT target_id, current_revision FROM authority_streams
-		WHERE target_kind = ? AND target_scope = '' AND current_revision > 0
-		ORDER BY target_id`, model.AuthorityProject)
-	if err != nil {
-		return nil, fmt.Errorf("list projects: %w", err)
-	}
-	defer rows.Close()
-	records := make([]model.ProjectRecord, 0)
-	for rows.Next() {
-		var record model.ProjectRecord
-		if err := rows.Scan(&record.ID, &record.Revision); err != nil {
-			return nil, fmt.Errorf("scan project record: %w", err)
-		}
-		records = append(records, record)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate projects: %w", err)
-	}
-	return records, nil
 }
 
 // DeleteProject 在单个事务内永久清除一部作品的全部持久化数据。
@@ -287,18 +233,12 @@ func (s *Store) DeleteProject(ctx context.Context, projectID string) error {
 	return nil
 }
 
-func findCommittedChange(ctx context.Context, tx *sql.Tx, id string) (model.Revision, string, bool, error) {
+func committedRevision(ctx context.Context, tx *sql.Tx, id string) (model.Revision, error) {
 	var revision model.Revision
-	var digest string
-	err := tx.QueryRowContext(ctx, `SELECT new_revision, content_digest FROM change_sets WHERE id = ?`, id).
-		Scan(&revision, &digest)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, "", false, nil
+	if err := tx.QueryRowContext(ctx, `SELECT new_revision FROM change_sets WHERE id = ?`, id).Scan(&revision); err != nil {
+		return 0, fmt.Errorf("read committed change set %q: %w", id, err)
 	}
-	if err != nil {
-		return 0, "", false, fmt.Errorf("find committed change set: %w", err)
-	}
-	return revision, digest, true, nil
+	return revision, nil
 }
 
 func currentRevisionTx(ctx context.Context, tx *sql.Tx, target model.AuthorityTarget) (model.Revision, error) {
@@ -314,6 +254,60 @@ func currentRevisionTx(ctx context.Context, tx *sql.Tx, target model.AuthorityTa
 		return 0, fmt.Errorf("read current revision: %w", err)
 	}
 	return revision, nil
+}
+
+// impactColumns 把影响报告编码进三列可空 JSON（结构、语义、合规）：没有的报告存 NULL。
+func impactColumns(impact model.ImpactReport) ([3]any, error) {
+	structural, err := impactColumn(impact.Structural)
+	if err != nil {
+		return [3]any{}, err
+	}
+	semantic, err := impactColumn(impact.Semantic)
+	if err != nil {
+		return [3]any{}, err
+	}
+	compliance, err := impactColumn(impact.Compliance)
+	if err != nil {
+		return [3]any{}, err
+	}
+	return [3]any{structural, semantic, compliance}, nil
+}
+
+func impactColumn[T any](report *T) (any, error) {
+	if report == nil {
+		return nil, nil
+	}
+	payload, err := json.Marshal(report)
+	if err != nil {
+		return nil, fmt.Errorf("encode impact report: %w", err)
+	}
+	return payload, nil
+}
+
+// impactOf 解码三列可空 JSON 为影响报告。
+func impactOf(structural, semantic, compliance []byte) (model.ImpactReport, error) {
+	var impact model.ImpactReport
+	if err := decodeImpact(structural, &impact.Structural); err != nil {
+		return model.ImpactReport{}, err
+	}
+	if err := decodeImpact(semantic, &impact.Semantic); err != nil {
+		return model.ImpactReport{}, err
+	}
+	if err := decodeImpact(compliance, &impact.Compliance); err != nil {
+		return model.ImpactReport{}, err
+	}
+	return impact, nil
+}
+
+func decodeImpact[T any](column []byte, report **T) error {
+	if column == nil {
+		return nil
+	}
+	*report = new(T)
+	if err := json.Unmarshal(column, *report); err != nil {
+		return fmt.Errorf("decode impact report: %w", err)
+	}
+	return nil
 }
 
 func nullableJSON(value json.RawMessage) any {

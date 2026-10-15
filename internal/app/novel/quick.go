@@ -72,21 +72,13 @@ func (s *Application) QuickWrite(ctx context.Context, command QuickWriteCommand)
 	if err != nil {
 		return result, err
 	}
-	outcome, err := s.runs.Drive(ctx, run, s.creationTasks(command), driveCommand(command))
+	outcome, err := s.runs.Drive(ctx, run, s.creationTasks(command), command.CreatedAt)
 	result = attachRun(outcome.Run, result)
 	result.WaitingOperationID, result.RecoveredOperations = outcome.Waiting, outcome.Recovered
 	if err != nil {
 		return result, err
 	}
 	return s.finishQuickResult(ctx, outcome, result)
-}
-
-// EnsureRun 是这本书接下来的工作归属的那一轮创作，不推进：进行中的那一轮，没有就按命令
-// 开新一轮（D29：完本之后的修改是新一轮创作）。用户发起、要归属运行的任务（S4 的重写
-// 受影响章）先用它定下运行。
-func (s *Application) EnsureRun(ctx context.Context, command QuickWriteCommand) (model.CreationRun, error) {
-	_, run, err := s.quickRun(ctx, command)
-	return run, err
 }
 
 // quickRun 校验并补全命令，建立作品与这一轮创作。
@@ -228,10 +220,6 @@ func (s *Application) ensureQuickProject(ctx context.Context, command QuickWrite
 	target := model.AuthorityTarget{Kind: model.AuthorityProject, ID: command.ProjectID}
 	_, err := s.store.CurrentRevision(ctx, target)
 	if errors.Is(err, model.ErrNotFound) {
-		approval := command.Approval
-		if approval == "" {
-			approval = model.ApprovalAuto
-		}
 		return s.projects.CreateProject(ctx, projectdoc.CreateProjectCommand{
 			ProjectID: command.ProjectID,
 			ChangeID:  quickID(command.ProjectID, "create"),
@@ -239,7 +227,7 @@ func (s *Application) ensureQuickProject(ctx context.Context, command QuickWrite
 			Reason:    "一句话创建作品",
 			Draft: projectdoc.ProjectDraft{
 				Intent:   model.Intent{Premise: command.Premise},
-				Approval: approval,
+				Approval: command.Approval,
 			},
 			CreatedAt: command.CreatedAt,
 		})
@@ -305,7 +293,7 @@ func (s *Application) reconcileCompass(ctx context.Context, command QuickWriteCo
 			Operation: model.PatchPut, Content: content,
 		}},
 		ApprovalState: model.ApprovalPending, CreatedAt: command.CreatedAt,
-	}, command.CreatedAt)
+	})
 	if err != nil {
 		return projectdoc.Snapshot{}, err
 	}
@@ -318,15 +306,14 @@ func (s *Application) reconcileCompass(ctx context.Context, command QuickWriteCo
 func (s *Application) ensureCreationRun(
 	ctx context.Context,
 	command QuickWriteCommand,
-	projectApproval model.ApprovalPolicy,
+	approval model.ApprovalPolicy,
 ) (model.CreationRun, error) {
 	goal := model.NovelGoal{Premise: command.Premise, TargetChapters: command.Chapters}
-	approval := projectApproval
-	if approval == "" {
-		approval = model.ApprovalAuto
+	active, ok, err := s.runs.ActiveCreationRun(ctx, command.ProjectID)
+	if err != nil {
+		return model.CreationRun{}, err
 	}
-	active, err := s.store.ActiveCreationRun(ctx, command.ProjectID)
-	if err == nil {
+	if ok {
 		current, err := model.DecodeNovelGoal(active.Goal)
 		if err != nil {
 			return model.CreationRun{}, err
@@ -343,14 +330,11 @@ func (s *Application) ensureCreationRun(
 		}
 		return active, nil
 	}
-	if !errors.Is(err, model.ErrNotFound) {
-		return model.CreationRun{}, err
-	}
 	count, err := s.store.CountCreationRuns(ctx, command.ProjectID)
 	if err != nil {
 		return model.CreationRun{}, err
 	}
-	strategy := model.CreationRunStrategy{ReviewCadence: model.ReviewPerPlanWindow, AutoRepairBudget: DefaultRepairBudget}
+	strategy := model.CreationRunStrategy{AutoRepairBudget: DefaultRepairBudget}
 	preset, err := model.NewCreationRunPreset("quick", approval, strategy)
 	if err != nil {
 		return model.CreationRun{}, err

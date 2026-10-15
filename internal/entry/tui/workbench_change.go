@@ -70,14 +70,14 @@ func (m model) changeContent() string {
 		if len(items) == 0 {
 			return
 		}
-		body.WriteString("\n" + styleTitle.Render(title) + "\n")
+		body.WriteString("\n" + benchTheme.Title.Render(title) + "\n")
 		for _, item := range items {
-			body.WriteString(styleHint.Render("· ") + item + "\n")
+			body.WriteString(benchTheme.Muted.Render("· ") + item + "\n")
 		}
 	}
-	body.WriteString(styleTitle.Render("主编提出的修改") + "\n\n" + c.Proposal.Reason + "\n")
+	body.WriteString(benchTheme.Title.Render("主编提出的修改") + "\n\n" + c.Proposal.Reason + "\n")
 	if c.Stale {
-		body.WriteString("\n" + styleWarn.Render("提出之后书又有了新变化，不能照它确认；跟主编说，让它按最新内容重提。") + "\n")
+		body.WriteString("\n" + benchTheme.Warning.Render("提出之后书又有了新变化，不能照它确认；跟主编说，让它按最新内容重提。") + "\n")
 	}
 	section("改动", c.View.Changes)
 	section("与已写章节的出入", c.Findings)
@@ -86,7 +86,7 @@ func (m model) changeContent() string {
 		options = append(options, fmt.Sprintf("%d %s：%s", i+1, optionLabel(option), option.Explanation))
 	}
 	section("怎么处理", options)
-	body.WriteString("\n" + styleHint.Render(m.changeActions()))
+	body.WriteString("\n" + benchTheme.Muted.Render(m.changeActions()))
 	return body.String()
 }
 

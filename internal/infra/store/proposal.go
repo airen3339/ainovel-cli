@@ -37,12 +37,6 @@ func (s *Store) SaveExecutionProposal(ctx context.Context, proposal model.Propos
 }
 
 func (s *Store) saveProposal(ctx context.Context, query execQuerier, proposal model.Proposal) (model.Proposal, error) {
-	if err := proposal.Validate(); err != nil {
-		return model.Proposal{}, err
-	}
-	if proposal.ApprovalState != model.ApprovalPending {
-		return model.Proposal{}, fmt.Errorf("only pending proposals can be prepared: %w", model.ErrStateConflict)
-	}
 	payload, digest, err := encodeProposal(proposal)
 	if err != nil {
 		return model.Proposal{}, err
@@ -189,19 +183,10 @@ func (s *Store) CommitProposal(ctx context.Context, proposal model.Proposal) (mo
 // CommitExecutionProposal 是执行侧的自动提交路径（D42）：归属检查与 ChangeSet 写入在同一
 // 事务内完成，任务已取消或执行已被接替时提交被拒；分成两步会让取消落在缝隙里。
 func (s *Store) CommitExecutionProposal(ctx context.Context, proposal model.Proposal, attempt int) (model.ChangeSet, error) {
-	if attempt <= 0 || proposal.OperationID == "" {
-		return model.ChangeSet{}, fmt.Errorf("execution commit requires the operation and its attempt: %w", model.ErrInvalid)
-	}
 	return s.commitProposal(ctx, proposal, attempt)
 }
 
 func (s *Store) commitProposal(ctx context.Context, proposal model.Proposal, attempt int) (model.ChangeSet, error) {
-	if err := proposal.Validate(); err != nil {
-		return model.ChangeSet{}, err
-	}
-	if proposal.ApprovalState != model.ApprovalApproved {
-		return model.ChangeSet{}, model.ErrNotApproved
-	}
 	preparedDigest, err := preparedProposalDigest(proposal)
 	if err != nil {
 		return model.ChangeSet{}, err
@@ -235,6 +220,9 @@ func (s *Store) commitProposal(ctx context.Context, proposal model.Proposal, att
 		if storedDecisionDigest != changeDigest {
 			return model.ChangeSet{}, fmt.Errorf("proposal %q has a different approval decision: %w", proposal.ID, model.ErrIdempotencyConflict)
 		}
+		// 同一决定已入账即是重试：批准与 ChangeSet 在同一事务写入，二者同在。
+		revision, err := committedRevision(ctx, tx, proposal.ID)
+		return model.ChangeSet{Proposal: proposal, NewRevision: revision}, err
 	case model.ApprovalPending:
 	default:
 		return model.ChangeSet{}, fmt.Errorf("proposal %q has invalid state %q: %w", proposal.ID, stored.ApprovalState, model.ErrStateConflict)
@@ -282,12 +270,6 @@ func (s *Store) commitProposal(ctx context.Context, proposal model.Proposal, att
 }
 
 func (s *Store) RejectProposal(ctx context.Context, proposal model.Proposal) (model.Proposal, error) {
-	if err := proposal.Validate(); err != nil {
-		return model.Proposal{}, err
-	}
-	if proposal.ApprovalState != model.ApprovalRejected {
-		return model.Proposal{}, fmt.Errorf("rejection requires rejected state: %w", model.ErrStateConflict)
-	}
 	preparedDigest, err := preparedProposalDigest(proposal)
 	if err != nil {
 		return model.Proposal{}, err
@@ -337,6 +319,13 @@ func (s *Store) RejectProposal(ctx context.Context, proposal model.Proposal) (mo
 	}
 	if rows != 1 {
 		return model.Proposal{}, fmt.Errorf("proposal %q rejection raced: %w", proposal.ID, model.ErrStateConflict)
+	}
+	// 与批准对称：等待批准的任务在同一事务里随否决转为失败；已失效、取消或失败的保持原状。
+	if proposal.OperationID != "" {
+		if _, err := transitionOperationTx(ctx, tx, proposal.OperationID,
+			model.OperationAwaitingApproval, model.OperationFailed, "proposal rejected by user", "", *proposal.DecidedAt, 0); err != nil && !errors.Is(err, model.ErrStateConflict) {
+			return model.Proposal{}, err
+		}
 	}
 	if err := tx.Commit(); err != nil {
 		return model.Proposal{}, fmt.Errorf("commit proposal rejection: %w", err)

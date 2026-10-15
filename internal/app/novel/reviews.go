@@ -3,7 +3,6 @@ package novel
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"slices"
 
 	projectdoc "github.com/voocel/ainovel-cli/internal/app/project"
@@ -30,9 +29,6 @@ type Evidence struct {
 	Prior []StoredVerdict
 	// Repairs 是各章自运行最近一次策略事件以来已派发的自动修订次数，预算按章计（D63）。
 	Repairs map[string]int
-	// Requested 是用户发起、归属本次运行、还没做完的任务（§6.3 缺口来源），每条是后继链
-	// 的首个任务：语义影响处置里选的“重写受影响章”（S4，D77）。
-	Requested []model.Operation
 	// Change 表示主编提出的修改正等用户确认（D77）：照着要变的内容接着写是白写，先停下。
 	Change bool
 }
@@ -50,7 +46,6 @@ func (g *Goal) Next(ctx context.Context, run model.CreationRun) (creation.Decisi
 	decision := creation.Decision{Revision: p.Revision}
 	verdicts, prior, err := g.reader.listVerdicts(ctx, p)
 	if err != nil {
-		decision.Step.Fail = "审阅结果缺失或损坏，需要人工检查"
 		return decision, err
 	}
 	evidence, err := g.reader.runEvidence(ctx, p, run)
@@ -78,8 +73,7 @@ func (s *Reviews) RepairHold(ctx context.Context, project projectdoc.Snapshot, r
 
 // runEvidence 读本次运行的任务账与作品上等用户确认的修改。修订预算按章统计自最近一次策略
 // 事件以来已派发的自动修订任务数：预算管的是无人过问的连续修订，运行创建、用户调整策略、
-// 或在预算用尽时确认继续，都重新起算（D63）。用户发起的任务按后继链归并，链上最新的
-// 还没成功（也没被取消）就还要做。
+// 或在预算用尽时确认继续，都重新起算（D63）。
 func (s *Reviews) runEvidence(ctx context.Context, project projectdoc.Snapshot, run model.CreationRun) (Evidence, error) {
 	pending, err := s.store.PendingProposals(ctx, model.AuthorityTarget{Kind: model.AuthorityProject, ID: project.ID})
 	if err != nil {
@@ -91,8 +85,6 @@ func (s *Reviews) runEvidence(ctx context.Context, project projectdoc.Snapshot, 
 		return Evidence{}, err
 	}
 	repairs := make(map[string]int)
-	var resolutions []string
-	first, latest := make(map[string]model.Operation), make(map[string]model.Operation)
 	for _, event := range events {
 		if event.Kind == model.RunEventCreated || event.Kind == model.RunEventStrategyUpdated {
 			repairs = make(map[string]int)
@@ -101,34 +93,13 @@ func (s *Reviews) runEvidence(ctx context.Context, project projectdoc.Snapshot, 
 		if event.Kind != model.RunEventOperationCreated {
 			continue
 		}
-		var payload struct {
-			OperationID string `json:"operation_id"`
-		}
-		if err := json.Unmarshal(event.Payload, &payload); err != nil {
-			return Evidence{}, fmt.Errorf("run %q event %d payload is corrupt: %w", run.ID, event.Sequence, err)
-		}
-		op, err := s.store.GetOperation(ctx, payload.OperationID)
+		created, err := event.OperationCreated()
 		if err != nil {
 			return Evidence{}, err
 		}
-		if op.Kind == model.OperationRewriteAffected {
-			input, err := model.TaskInputAs[model.RewriteAffectedInput](op)
-			if err != nil {
-				return Evidence{}, err
-			}
-			if _, seen := first[input.ResolutionProposalID]; !seen {
-				first[input.ResolutionProposalID] = op
-				resolutions = append(resolutions, input.ResolutionProposalID)
-			}
-			latest[input.ResolutionProposalID] = op
-			continue
-		}
-		spec, err := model.KindSpec(op.Kind)
+		op, err := s.store.GetOperation(ctx, created.OperationID)
 		if err != nil {
 			return Evidence{}, err
-		}
-		if !spec.Repair {
-			continue
 		}
 		input, err := model.DecodeTaskInput(op.Kind, op.Input)
 		if err != nil {
@@ -139,10 +110,5 @@ func (s *Reviews) runEvidence(ctx context.Context, project projectdoc.Snapshot, 
 		}
 	}
 	evidence.Repairs = repairs
-	for _, resolution := range resolutions {
-		if state := latest[resolution].State; state != model.OperationSucceeded && state != model.OperationCancelled {
-			evidence.Requested = append(evidence.Requested, first[resolution])
-		}
-	}
 	return evidence, nil
 }

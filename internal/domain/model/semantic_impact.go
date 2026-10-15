@@ -98,8 +98,8 @@ func (r SemanticImpactReport) Validate() error {
 	return nil
 }
 
-// ValidateSemanticImpact 校验报告与作品基线一致：处置选项引用的章节必须存在。
-func ValidateSemanticImpact(report SemanticImpactReport, base DocumentSet) error {
+// validateSemanticImpact 校验报告与作品基线一致：处置选项引用的章节必须存在。
+func validateSemanticImpact(report SemanticImpactReport, base DocumentSet) error {
 	if err := report.Validate(); err != nil {
 		return err
 	}
@@ -113,11 +113,15 @@ func ValidateSemanticImpact(report SemanticImpactReport, base DocumentSet) error
 	return nil
 }
 
-// DecodeSemanticImpact 解码并校验语义影响报告。
-func DecodeSemanticImpact(payload json.RawMessage, base DocumentSet) (SemanticImpactReport, error) {
+// DecodeSemanticImpact 解码分析器给出的语义影响报告并对照作品基线校验：这是报告进入提案的
+// 唯一入口，之后按类型读取。
+func DecodeSemanticImpact(payload json.RawMessage, base DocumentSet) (*SemanticImpactReport, error) {
 	var report SemanticImpactReport
-	if err := json.Unmarshal(payload, &report); err != nil {
-		return SemanticImpactReport{}, fmt.Errorf("decode semantic impact: %w", err)
+	if err := DecodeStrict(payload, &report); err != nil {
+		return nil, fmt.Errorf("decode semantic impact: %w", err)
 	}
-	return report, ValidateSemanticImpact(report, base)
+	if err := validateSemanticImpact(report, base); err != nil {
+		return nil, err
+	}
+	return &report, nil
 }

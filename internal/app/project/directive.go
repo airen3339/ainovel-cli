@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -37,6 +38,18 @@ type RetireDirectiveCommand struct {
 	CreatedAt   time.Time
 }
 
+// ReworkChaptersCommand 是用户在语义影响处置里选的“重写受影响的章”（S4，D86）：ChapterIDs
+// 是要重写的正文章节，Text 是分析给出的处置说明。
+type ReworkChaptersCommand struct {
+	ProjectID  string
+	ChangeID   string
+	UserID     string
+	ChapterIDs []string
+	Text       string
+	Reason     string
+	CreatedAt  time.Time
+}
+
 type DirectiveResult struct {
 	ProjectID string          `json:"project_id"`
 	Revision  model.Revision  `json:"revision"`
@@ -60,7 +73,36 @@ func (s *Repository) AddDirective(ctx context.Context, command AddDirectiveComma
 	if err := directive.Validate(); err != nil {
 		return DirectiveResult{}, err
 	}
-	return s.putDirective(ctx, command.ProjectID, command.ChangeID, command.UserID, command.Reason, directive, command.CreatedAt)
+	revision, err := s.putDirectives(ctx, command.ProjectID, command.ChangeID, command.UserID, command.Reason, []model.Directive{directive}, command.CreatedAt)
+	return DirectiveResult{ProjectID: command.ProjectID, Revision: revision, Directive: directive}, err
+}
+
+// ReworkChapters 把要重写的章逐章记为返工要求（D78）：作用域是各章的计划节点，ID 为
+// <ChangeID>:<序号>，一次决定一次提交。之后由推导逐章返工、审阅按要求核验。
+func (s *Repository) ReworkChapters(ctx context.Context, command ReworkChaptersCommand) ([]model.Directive, error) {
+	if err := ValidateDirectiveCommand(command.ProjectID, command.ChangeID, command.UserID, command.Reason, command.CreatedAt); err != nil {
+		return nil, err
+	}
+	project, err := s.Project(ctx, command.ProjectID, 0)
+	if err != nil {
+		return nil, err
+	}
+	directives := make([]model.Directive, len(command.ChapterIDs))
+	for i, id := range command.ChapterIDs {
+		index := slices.IndexFunc(project.Manuscript, func(chapter model.ManuscriptChapter) bool { return chapter.ID == id })
+		if index < 0 {
+			return nil, fmt.Errorf("chapter %q is not written: %w", id, model.ErrInvalid)
+		}
+		directives[i] = model.Directive{
+			ID: fmt.Sprintf("%s:%d", command.ChangeID, i+1), Scope: model.DirectiveScopePlanNode(project.Manuscript[index].PlanNodeID),
+			Text: strings.TrimSpace(command.Text), Status: model.DirectiveActive, Rework: true,
+		}
+		if err := directives[i].Validate(); err != nil {
+			return nil, err
+		}
+	}
+	_, err = s.putDirectives(ctx, command.ProjectID, command.ChangeID, command.UserID, command.Reason, directives, command.CreatedAt)
+	return directives, err
 }
 
 // RetireDirective 退役一条要求：不删除文档，历史 Revision 仍可查它曾对哪些章生效。
@@ -82,42 +124,49 @@ func (s *Repository) RetireDirective(ctx context.Context, command RetireDirectiv
 		return DirectiveResult{}, fmt.Errorf("decode directive: %w", err)
 	}
 	directive.Status = model.DirectiveRetired
-	return s.putDirective(ctx, command.ProjectID, command.ChangeID, command.UserID, command.Reason, directive, command.CreatedAt)
+	revision, err = s.putDirectives(ctx, command.ProjectID, command.ChangeID, command.UserID, command.Reason, []model.Directive{directive}, command.CreatedAt)
+	return DirectiveResult{ProjectID: command.ProjectID, Revision: revision, Directive: directive}, err
 }
 
-func (s *Repository) putDirective(
+// putDirectives 把一次决定的要求作为一次提交写入；内容都已入账即是重试，不产生新 Revision。
+func (s *Repository) putDirectives(
 	ctx context.Context,
 	projectID, changeID, userID, reason string,
-	directive model.Directive,
+	directives []model.Directive,
 	at time.Time,
-) (DirectiveResult, error) {
+) (model.Revision, error) {
 	target := model.AuthorityTarget{Kind: model.AuthorityProject, ID: projectID}
 	revision, err := s.store.CurrentRevision(ctx, target)
 	if err != nil {
-		return DirectiveResult{}, err
+		return 0, err
 	}
-	content, err := json.Marshal(directive)
-	if err != nil {
-		return DirectiveResult{}, fmt.Errorf("encode directive: %w", err)
+	var patches []model.Patch
+	for _, directive := range directives {
+		content, err := json.Marshal(directive)
+		if err != nil {
+			return 0, fmt.Errorf("encode directive: %w", err)
+		}
+		ref := model.DocumentRef{Kind: model.DocumentDirective, ID: directive.ID}
+		existing, err := s.store.GetDocument(ctx, target, ref, revision)
+		if err != nil && !errors.Is(err, model.ErrNotFound) {
+			return 0, err
+		}
+		if err != nil || string(existing.Content) != string(content) {
+			patches = append(patches, model.Patch{Document: ref, Operation: model.PatchPut, Content: content})
+		}
 	}
-	ref := model.DocumentRef{Kind: model.DocumentDirective, ID: directive.ID}
-	existing, err := s.store.GetDocument(ctx, target, ref, revision)
-	if err != nil && !errors.Is(err, model.ErrNotFound) {
-		return DirectiveResult{}, err
-	}
-	if err == nil && string(existing.Content) == string(content) {
-		return DirectiveResult{ProjectID: projectID, Revision: revision, Directive: directive}, nil
+	if len(patches) == 0 {
+		return revision, nil
 	}
 	committed, err := s.changes.CommitUser(ctx, model.Proposal{
 		ID: changeID, Target: target, BaseRevision: revision,
 		Author: model.Author{Kind: model.AuthorUser, ID: userID},
-		Reason: reason, Patches: []model.Patch{{Document: ref, Operation: model.PatchPut, Content: content}},
-		ApprovalState: model.ApprovalPending, CreatedAt: at,
-	}, at)
+		Reason: reason, Patches: patches, ApprovalState: model.ApprovalPending, CreatedAt: at,
+	})
 	if err != nil {
-		return DirectiveResult{}, err
+		return 0, err
 	}
-	return DirectiveResult{ProjectID: projectID, Revision: committed.NewRevision, Directive: directive}, nil
+	return committed.NewRevision, nil
 }
 
 func ValidateDirectiveCommand(projectID, changeID, userID, reason string, at time.Time) error {

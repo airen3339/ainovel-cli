@@ -439,7 +439,7 @@ func runProjectAdjudication(ctx context.Context, api *bootstrap.App, args []stri
 		}
 		result, err := api.Reviews.AddAdjudication(ctx, novel.AddAdjudicationCommand{
 			ProjectID: *projectID, ChangeID: *changeID, UserID: *userID,
-			Finding: *finding, Reason: *reason, CreatedAt: time.Now().UTC(),
+			Findings: []string{*finding}, Reason: *reason, CreatedAt: time.Now().UTC(),
 		})
 		return writeResult(stdout, result, err)
 	case "withdraw":

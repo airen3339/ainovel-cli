@@ -464,7 +464,7 @@ func TestChiefRequirementOnAWaitingDraftRedoesIt(t *testing.T) {
 		t.Fatalf("receipt = %+v", receipt)
 	}
 	redone := driven(t, session, 3)
-	if redone.Err != nil || redone.Result.RunState != model.RunWaitingUser || !strings.HasSuffix(redone.Result.WaitingOperationID, ":r2") {
+	if redone.Err != nil || redone.Result.RunState != model.RunWaitingUser || !strings.HasSuffix(redone.Result.WaitingOperationID, ":redo2") {
 		t.Fatalf("redone = %+v", redone)
 	}
 }
@@ -482,5 +482,42 @@ func TestChiefExplainsAnUnreachableModelService(t *testing.T) {
 	}
 	if thread := settle(t, session); thread.Err != model.FailureModelUnreachable.Explain("") {
 		t.Fatalf("turn error = %q", thread.Err)
+	}
+}
+
+// 用户说某条要求不要了：主编按编号退掉它；编号猜错时报错指回 book_requirements，照着改就成。
+func TestChiefRetiresARequirementByItsNumber(t *testing.T) {
+	var api *testApp
+	retire := func() litellmtest.Reply {
+		snap, err := api.Workbench.WorkbenchSnapshot(context.Background(), "chief-book")
+		if err != nil || len(snap.Directives) != 1 {
+			t.Errorf("directives = %+v, %v", snap.Directives, err)
+			return litellmtest.Text("查不到。")
+		}
+		return chiefCall("retire", "retire_requirement", `{"id":"`+snap.Directives[0].ID+`"}`)
+	}
+	provider := &lazyProvider{replies: []func() litellmtest.Reply{
+		fixed(chiefCall("note", "note_requirement", `{"text":"每章结尾留个钩子"}`)),
+		fixed(litellmtest.Text("记下了。")),
+		fixed(chiefCall("guess", "retire_requirement", `{"id":"1"}`)),
+		retire,
+		fixed(litellmtest.Text("那条不要了。")),
+	}}
+	api = chiefApp(t, provider)
+	ctx := context.Background()
+	session := api.Chief.Open(ctx, "chief-book", "user-1")
+	defer session.Close()
+
+	talk(t, session, "每章结尾留个钩子")
+	thread := talk(t, session, "留钩子那条不要了")
+	guess := slices.IndexFunc(thread.Entries, func(entry chief.Entry) bool { return entry.Tool == "retire_requirement" && entry.Failed })
+	if guess < 0 || !strings.Contains(thread.Entries[guess].Text, "book_requirements") {
+		t.Fatalf("a wrong number must point back to book_requirements: %+v", thread.Entries)
+	}
+	if receipt := lastReceipt(t, thread); receipt.Failed || receipt.Text != "退掉要求 ·「每章结尾留个钩子」" {
+		t.Fatalf("receipt = %+v", receipt)
+	}
+	if snap, err := api.Workbench.WorkbenchSnapshot(ctx, "chief-book"); err != nil || len(snap.Directives) != 0 {
+		t.Fatalf("directives after retire = %+v, %v", snap.Directives, err)
 	}
 }

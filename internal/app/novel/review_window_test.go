@@ -83,11 +83,11 @@ func TestSatisfiedRequirementsFollowTheGate(t *testing.T) {
 	first := []string{"chapter-i", "chapter-ii", "chapter-iii"}
 	last := []string{"chapter-iiii", "chapter-iiiii"}
 	satisfied := SatisfiedRequirements(project, 5, []StoredVerdict{
-		storedTestVerdict("review-a", 1, model.ReviewPass, first, nil,
+		storedTestVerdict("review-a", 1, first, nil,
 			check("intent:required:0", model.CheckSatisfied), check("directive:d-range", model.CheckSatisfied)),
-		storedTestVerdict("review-c", 3, model.ReviewPass, first, nil,
+		storedTestVerdict("review-c", 3, first, nil,
 			check("intent:required:0", model.CheckPending), check("directive:d-range", model.CheckSatisfied)),
-		storedTestVerdict("review-b", 2, model.ReviewPass, last, nil,
+		storedTestVerdict("review-b", 2, last, nil,
 			check("intent:required:0", model.CheckPending), check("directive:d-arc", model.CheckPending)),
 	})
 	if !satisfied["intent:required:0"] || !satisfied["directive:d-range"] || satisfied["directive:d-arc"] || len(satisfied) != 2 {
@@ -136,7 +136,7 @@ func TestReviewWindowSettlesDueRequirements(t *testing.T) {
 		})
 	})
 	t.Run("final window settles what is still open", func(t *testing.T) {
-		evidence := Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, model.ReviewPass, first, nil, firstChecks(model.CheckPending)...)}}
+		evidence := Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, first, nil, firstChecks(model.CheckPending)...)}}
 		next, err := Policy{}.Next(project, run, evidence)
 		if err != nil || next.Work == nil || next.Work.Input.(model.ReviewRangeInput).ChapterIDs[0] != "chapter-iiii" {
 			t.Fatalf("next = %#v, %v", next, err)
@@ -146,7 +146,7 @@ func TestReviewWindowSettlesDueRequirements(t *testing.T) {
 		})
 	})
 	t.Run("already satisfied elsewhere is not forced on the final window", func(t *testing.T) {
-		evidence := Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, model.ReviewPass, first, nil, firstChecks(model.CheckSatisfied)...)}}
+		evidence := Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, first, nil, firstChecks(model.CheckSatisfied)...)}}
 		next, err := Policy{}.Next(project, run, evidence)
 		if err != nil || next.Work == nil {
 			t.Fatalf("next = %#v, %v", next, err)
@@ -162,8 +162,8 @@ func TestReviewWindowSettlesDueRequirements(t *testing.T) {
 	}
 	t.Run("covered but unmet requirement re-reviews its closing window", func(t *testing.T) {
 		evidence := Evidence{Verdicts: []StoredVerdict{
-			storedTestVerdict("review-a", 1, model.ReviewPass, first, nil, firstChecks(model.CheckPending)...),
-			storedTestVerdict("review-b", 2, model.ReviewPass, last, nil, lastChecks...),
+			storedTestVerdict("review-a", 1, first, nil, firstChecks(model.CheckPending)...),
+			storedTestVerdict("review-b", 2, last, nil, lastChecks...),
 		}}
 		next, err := Policy{}.Next(project, run, evidence)
 		if err != nil || next.Work == nil || next.Work.Kind != model.OperationReviewRange {
@@ -189,9 +189,9 @@ func TestReviewWindowSettlesDueRequirements(t *testing.T) {
 	// 复核反例：同窗后来又审出 pending，更早的 satisfied 仍是有效证据（正文未变），不再二次派发末窗。
 	t.Run("satisfied evidence is monotonic", func(t *testing.T) {
 		evidence := Evidence{Verdicts: []StoredVerdict{
-			storedTestVerdict("review-a", 1, model.ReviewPass, first, nil, firstChecks(model.CheckSatisfied)...),
-			storedTestVerdict("review-c", 3, model.ReviewPass, first, nil, firstChecks(model.CheckPending)...),
-			storedTestVerdict("review-b", 2, model.ReviewPass, last, nil, lastChecks...),
+			storedTestVerdict("review-a", 1, first, nil, firstChecks(model.CheckSatisfied)...),
+			storedTestVerdict("review-c", 3, first, nil, firstChecks(model.CheckPending)...),
+			storedTestVerdict("review-b", 2, last, nil, lastChecks...),
 		}}
 		assertStep(t, project, run, evidence, stepWant{done: "全书 5 章完成并通过审阅"})
 	})
@@ -201,7 +201,7 @@ func TestReviewWindowSettlesDueRequirements(t *testing.T) {
 func TestExtendCarriesPendingRequirements(t *testing.T) {
 	project := requirementFixture(t, 3, 3)
 	first := []string{"chapter-i", "chapter-ii", "chapter-iii"}
-	evidence := Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, model.ReviewPass, first, nil,
+	evidence := Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, first, nil,
 		check("intent:required:0", model.CheckPending), check("intent:forbidden:0", model.CheckSatisfied),
 		check("directive:d-arc", model.CheckSatisfied), check("directive:d-range", model.CheckSatisfied),
 	)}}
@@ -313,7 +313,7 @@ func TestReviewWindowsFollowCapacity(t *testing.T) {
 		project.Manuscript[i].Blocks[0].Text = strings.Repeat("字", short)
 	}
 	first := []string{"chapter-i", "chapter-ii", "chapter-iii"}
-	prefix := Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, model.ReviewPass, first, nil)}}
+	prefix := Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, first, nil)}}
 	next, err := Policy{}.Next(project, run, prefix)
 	if err != nil || next.Work == nil || next.Work.Kind != model.OperationReviewRange {
 		t.Fatalf("due requirement step = %#v, %v", next, err)
@@ -323,7 +323,7 @@ func TestReviewWindowsFollowCapacity(t *testing.T) {
 	if !slices.Equal(input.ChapterIDs, first) || !slices.Equal(input.Reviewed, first) || !settled {
 		t.Fatalf("due requirement must re-review its window while the tail stays open: %+v", input)
 	}
-	satisfied := Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, model.ReviewPass, first, nil, check("directive:d-range", model.CheckSatisfied))}}
+	satisfied := Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, first, nil, check("directive:d-range", model.CheckSatisfied))}}
 	assertStep(t, project, run, satisfied, stepWant{kind: model.OperationWriteChapter, id: "run:book:1:chapter:chapter-plan-iiiii"})
 }
 
@@ -335,7 +335,7 @@ func TestExtendCarriesNotesAcrossWindows(t *testing.T) {
 	first := []string{"chapter-i", "chapter-ii", "chapter-iii"}
 	last := []string{"chapter-iiii", "chapter-iiiii", "chapter-iiiiii"}
 	noted := func(key string, at int, chapters []string, note string) StoredVerdict {
-		return storedTestVerdict(key, at, model.ReviewPass, chapters,
+		return storedTestVerdict(key, at, chapters,
 			[]model.ReviewFinding{{ChapterID: chapters[0], Severity: model.FindingNote, Note: note}})
 	}
 	notes := func(want ...string) stepWant {
@@ -386,12 +386,12 @@ func TestReviewWindowsFollowArcs(t *testing.T) {
 
 	spanning := splitArc(t, sizedFixture(t, 4, short, short, short, short), 3)
 	assertStep(t, spanning, run, Evidence{}, reviewOf("chapter-i", "chapter-ii"))
-	firstArc := Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, model.ReviewPass, []string{"chapter-i", "chapter-ii"}, nil)}}
+	firstArc := Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, []string{"chapter-i", "chapter-ii"}, nil)}}
 	assertStep(t, spanning, run, firstArc, reviewOf("chapter-iii", "chapter-iiii"))
 
 	last := []string{"chapter-iiii", "chapter-iiiii", "chapter-iiiiii"}
 	noted := func(key string, at int, chapters []string, note string) StoredVerdict {
-		return storedTestVerdict(key, at, model.ReviewPass, chapters,
+		return storedTestVerdict(key, at, chapters,
 			[]model.ReviewFinding{{ChapterID: chapters[0], Severity: model.FindingNote, Note: note}})
 	}
 	assertStep(t, splitArc(t, novelFixture(t, 6, 6), 4), run,

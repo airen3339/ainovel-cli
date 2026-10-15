@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 )
@@ -112,9 +113,19 @@ func (s story) validateStructure() error {
 			return fmt.Errorf("plan node %q of kind %s cannot have %s parent: %w", node.ID, node.Kind, parent.Kind, ErrStructuralConflict)
 		}
 	}
+	numbers := make(map[string]int)
+	if len(s.chapters) > 0 {
+		for index, plan := range ChapterPlansInOrder(slices.Collect(maps.Values(s.plans))) {
+			numbers[plan.ID] = index + 1
+		}
+	}
 	for _, chapter := range s.chapters {
 		if plan, ok := s.plans[chapter.PlanNodeID]; !ok || plan.Kind != PlanChapter {
 			return fmt.Errorf("chapter %q references missing chapter plan %q: %w", chapter.ID, chapter.PlanNodeID, ErrStructuralConflict)
+		}
+		// 章号是章节计划的位置（D66）：正文里的那份必须与它一致。
+		if number := numbers[chapter.PlanNodeID]; chapter.Number != number {
+			return fmt.Errorf("chapter %q is numbered %d but its plan is chapter %d: %w", chapter.ID, chapter.Number, number, ErrStructuralConflict)
 		}
 	}
 	for _, fact := range s.canon {
@@ -246,6 +257,80 @@ func validateCanonContinuity(previous CanonFact, existed bool, next CanonFact) e
 	return nil
 }
 
+// StatePatches 给出把文档状态从 current 变成 desired 的补丁，按文档键排序：desired 里没有的
+// 删除，内容不同的写入。回滚、撤销与导入共用这一条规则。只追加的文档是历史记录，不参与比较；
+// Canon 的 old_value 按续写规则重写（canonContent）。
+func StatePatches(current, desired DocumentSet) ([]Patch, error) {
+	keys := slices.Sorted(maps.Keys(current))
+	for key := range desired {
+		if _, ok := current[key]; !ok {
+			keys = append(keys, key)
+		}
+	}
+	slices.Sort(keys)
+	var patches []Patch
+	for _, key := range keys {
+		now, inCurrent := current[key]
+		next, inDesired := desired[key]
+		if !inDesired {
+			next.Document = now.Document
+		}
+		if spec, _ := DocumentType(next.Document.Kind); spec.AppendOnly {
+			continue
+		}
+		if !inDesired {
+			patches = append(patches, Patch{Document: now.Document, Operation: PatchDelete})
+			continue
+		}
+		content := next.Content
+		if next.Document.Kind == DocumentCanon {
+			var err error
+			if content, err = canonContent(now.Content, next.Content); err != nil {
+				return nil, err
+			}
+		}
+		if !inCurrent || !bytes.Equal(now.Content, content) {
+			patches = append(patches, Patch{Document: next.Document, Operation: PatchPut, Content: append(json.RawMessage(nil), content...)})
+		}
+	}
+	return patches, nil
+}
+
+// canonContent 是把 Canon 从 current（不存在为 nil）改成 desired 时写入的内容：更新带现值作
+// old_value，新建不带（validateCanonContinuity）；与现存只差 old_value 即是现存内容。
+func canonContent(current, desired json.RawMessage) (json.RawMessage, error) {
+	var fact CanonFact
+	if err := json.Unmarshal(desired, &fact); err != nil {
+		return nil, fmt.Errorf("decode canon: %w", err)
+	}
+	fact.PreviousValue = nil
+	if current != nil {
+		var existing CanonFact
+		if err := json.Unmarshal(current, &existing); err != nil {
+			return nil, fmt.Errorf("decode canon: %w", err)
+		}
+		value := existing.Value
+		existing.PreviousValue = nil
+		left, err := json.Marshal(existing)
+		if err != nil {
+			return nil, fmt.Errorf("encode canon: %w", err)
+		}
+		right, err := json.Marshal(fact)
+		if err != nil {
+			return nil, fmt.Errorf("encode canon: %w", err)
+		}
+		if bytes.Equal(left, right) {
+			return current, nil
+		}
+		fact.PreviousValue = value
+	}
+	content, err := json.Marshal(fact)
+	if err != nil {
+		return nil, fmt.Errorf("encode canon: %w", err)
+	}
+	return content, nil
+}
+
 // validateMachineAuthorship 是 AI/扩展提案的署名与实体规则：章节必须署自己的名、不得
 // 冒认用户（D34）；新实体不得与已有实体的名称或别名相同——有界上下文里看不到旧实体时
 // 不另建同名主体（D61）。用户提案由用户背书，不受此限。
@@ -315,18 +400,11 @@ func validateTaskSubmission(task Operation, base, projected story, patches []Pat
 		if err := requireManuscripts(patches, sameKeys(manuscriptPuts(patches), input.ChapterID), "chapter "+input.ChapterID); err != nil {
 			return err
 		}
-	case *RewriteAffectedInput:
-		if input.BaseRevision != task.Snapshot.BaseRevision {
-			return fmt.Errorf("affected rewrite input does not match its execution snapshot: %w", ErrInvalid)
-		}
-		if err := requireManuscripts(patches, sameKeys(manuscriptPuts(patches), input.ChapterIDs...), fmt.Sprintf("chapters %v", input.ChapterIDs)); err != nil {
-			return err
-		}
 	case *ReviseCanonInput:
 		return validateCanonRevision(*input, projected, patches)
 	}
 	for id := range manuscriptPuts(patches) {
-		if err := checkWordCounts(TaskDirectives(input), projected.chapters[id]); err != nil {
+		if err := checkWordCounts(taskDirectives(input), projected.chapters[id]); err != nil {
 			return err
 		}
 	}

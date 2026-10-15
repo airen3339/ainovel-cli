@@ -49,9 +49,8 @@ func runOperationStart(ctx context.Context, api *bootstrap.App, args []string, s
 	projectID := flags.String("project", "", "Project ID")
 	runID := flags.String("run", "", "内容类任务所属 Creation Run ID")
 	kind := flags.String("kind", "", "Operation kind")
-	worker := flags.String("profile", "", "Worker Profile ID；默认由 Operation kind 决定")
 	inputPath := flags.String("input", "", "任务输入 JSON 文件")
-	policy := flags.String("approval", "manual", "auto、milestone 或 manual；custom 需未来的显式策略契约")
+	policy := flags.String("approval", "manual", "auto、milestone 或 manual")
 	priority := flags.Int("priority", 0, "优先级")
 	var packIDs, profileRefs, dependencyIDs stringValues
 	flags.Var(&packIDs, "pack", "启用 Pack ID；可重复，启动时冻结最新 Revision")
@@ -60,12 +59,8 @@ func runOperationStart(ctx context.Context, api *bootstrap.App, args []string, s
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
-	spec, err := model.KindSpec(model.OperationKind(*kind))
-	if err != nil {
-		return err
-	}
-	if *id == "" || *projectID == "" || *inputPath == "" || (spec.RequiresRun && *runID == "") {
-		return fmt.Errorf("operation start 需要 --id --project --kind --input；内容类任务还需要 --run")
+	if *id == "" || *projectID == "" || *kind == "" || *inputPath == "" || *runID == "" {
+		return fmt.Errorf("operation start 需要 --id --project --kind --input --run")
 	}
 	input, err := os.ReadFile(*inputPath)
 	if err != nil {
@@ -76,11 +71,10 @@ func runOperationStart(ctx context.Context, api *bootstrap.App, args []string, s
 		return err
 	}
 	operation, err := api.Tasks.StartOperation(ctx, task.StartOperationCommand{
-		OperationID: *id, ProjectID: *projectID, Kind: spec.Kind, RunID: *runID,
-		WorkerProfileID: *worker, Priority: *priority, Input: input,
+		OperationID: *id, ProjectID: *projectID, Kind: model.OperationKind(*kind), RunID: *runID,
+		Priority: *priority, Input: input,
 		Packs: packRefs(packIDs), CreatorProfiles: profiles, DependsOn: dependencyIDs,
-		CoreProtocolVersion: "core-v1",
-		ApprovalPolicy:      model.ApprovalPolicy(*policy), CreatedAt: time.Now().UTC(),
+		ApprovalPolicy: model.ApprovalPolicy(*policy), CreatedAt: time.Now().UTC(),
 	})
 	return writeResult(stdout, operation, err)
 }
@@ -89,9 +83,7 @@ func runOperationRestart(ctx context.Context, api *bootstrap.App, args []string,
 	flags := newFlags("operation restart", stderr)
 	fromID := flags.String("from", "", "来源 Operation ID")
 	id := flags.String("id", "", "新 Operation ID")
-	worker := flags.String("profile", "", "新 Worker Profile ID；默认沿用原职责")
 	policy := flags.String("approval", "", "新审批策略；默认沿用")
-	coreVersion := flags.String("core", "", "Core Protocol 版本；默认沿用")
 	var packIDs, profileRefs stringValues
 	flags.Var(&packIDs, "pack", "使用最新 Pack Revision；可重复；不传则沿用旧 Revision")
 	flags.Var(&profileRefs, "creator-profile", "使用最新 id@scope Profile；可重复；不传则沿用旧 Revision")
@@ -115,8 +107,8 @@ func runOperationRestart(ctx context.Context, api *bootstrap.App, args []string,
 		}
 	}
 	operation, err := api.Tasks.RestartOperation(ctx, task.RestartOperationCommand{
-		FromOperationID: *fromID, OperationID: *id, WorkerProfileID: *worker,
-		Packs: packs, CreatorProfiles: profiles, CoreProtocolVersion: *coreVersion,
+		FromOperationID: *fromID, OperationID: *id,
+		Packs: packs, CreatorProfiles: profiles,
 		ApprovalPolicy: model.ApprovalPolicy(*policy), CreatedAt: time.Now().UTC(),
 	})
 	return writeResult(stdout, operation, err)

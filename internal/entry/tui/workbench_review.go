@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/voocel/ainovel-cli/internal/app/workbench"
 	domainmodel "github.com/voocel/ainovel-cli/internal/domain/model"
@@ -15,27 +14,6 @@ import (
 func (m model) reviewing() bool {
 	d := m.bench.decision
 	return d != nil && d.hasProposal && !m.bench.writing
-}
-
-func (m model) directiveScopeLabel(scope string) string {
-	if scope == domainmodel.DirectiveScopeProject {
-		return "全书"
-	}
-	if chapter, ok := strings.CutPrefix(scope, "from_chapter:"); ok {
-		return "第 " + chapter + " 章起"
-	}
-	if chapters, ok := strings.CutPrefix(scope, "chapter_range:"); ok {
-		if from, to, _ := strings.Cut(chapters, "-"); from == to {
-			return "第 " + from + " 章"
-		}
-		return "第 " + chapters + " 章"
-	}
-	for _, entry := range m.bench.snap.Outline {
-		if scope == domainmodel.DirectiveScopePlanNode(entry.Node.ID) {
-			return entry.Node.Title
-		}
-	}
-	return "原选定范围（当前大纲中不可见）"
 }
 
 func (m model) reviewChapters() ([]domainmodel.ManuscriptChapter, error) {
@@ -70,14 +48,6 @@ func (m model) reviewTarget() string {
 	return "创作方案"
 }
 
-func chapterWords(chapter domainmodel.ManuscriptChapter) int {
-	words := 0
-	for _, block := range chapter.Blocks {
-		words += utf8.RuneCountInString(block.Text)
-	}
-	return words
-}
-
 // candidateSummary 决定卡上的一行变更摘要：正文比对字数，其余变更（含改标题）给规模。
 func (m model) candidateSummary() string {
 	d := m.bench.decision
@@ -89,10 +59,10 @@ func (m model) candidateSummary() string {
 	for _, chapter := range chapters {
 		previous, ok := chapterByNumber(m.bench.snap.Manuscript, chapter.Number)
 		if !ok {
-			parts = append(parts, fmt.Sprintf("新稿 %s 字", groupDigits(chapterWords(chapter))))
+			parts = append(parts, fmt.Sprintf("新稿 %s 字", groupDigits(chapter.Runes())))
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("正文 %s → %s 字", groupDigits(chapterWords(previous)), groupDigits(chapterWords(chapter))))
+		parts = append(parts, fmt.Sprintf("正文 %s → %s 字", groupDigits(previous.Runes()), groupDigits(chapter.Runes())))
 	}
 	parts = append(parts, d.view.Summary...)
 	if d.view.Compass != nil {
@@ -116,10 +86,10 @@ func (m model) reviewContent() (string, error) {
 		return "", err
 	}
 	var body strings.Builder
-	section := func(title string) { body.WriteString("\n" + styleTitle.Render(title) + "\n") }
-	body.WriteString(styleTitle.Render("审阅 · "+m.reviewTarget()) + "\n\n" + d.reason + "\n")
+	section := func(title string) { body.WriteString("\n" + benchTheme.Title.Render(title) + "\n") }
+	body.WriteString(benchTheme.Title.Render("审阅 · "+m.reviewTarget()) + "\n\n" + d.reason + "\n")
 	if d.stale {
-		body.WriteString("\n" + styleWarn.Render("此稿基于旧版本，只可提出修改意见重写。") + "\n")
+		body.WriteString("\n" + benchTheme.Warning.Render("此稿基于旧版本，只可提出修改意见重写。") + "\n")
 	}
 	section("概要")
 	body.WriteString(m.candidateSummary() + "\n")
@@ -139,17 +109,17 @@ func (m model) reviewContent() (string, error) {
 	if len(view.Entities) > 0 {
 		section("人物与地点")
 		for _, entity := range view.Entities {
-			line := entity.Name + styleHint.Render("（"+entity.Kind.Noun()+"）")
+			line := entity.Name + benchTheme.Muted.Render("（"+entity.Kind.Noun()+"）")
 			if len(entity.Aliases) > 0 {
-				line += styleHint.Render(" 又名 ") + strings.Join(entity.Aliases, "、")
+				line += benchTheme.Muted.Render(" 又名 ") + strings.Join(entity.Aliases, "、")
 			}
-			body.WriteString(styleHint.Render("· ") + line + "\n")
+			body.WriteString(benchTheme.Muted.Render("· ") + line + "\n")
 		}
 	}
 	if len(view.Facts) > 0 {
 		section("设定")
 		for _, fact := range view.Facts {
-			body.WriteString(styleHint.Render("· ") + factLine(fact) + "\n")
+			body.WriteString(benchTheme.Muted.Render("· ") + factLine(fact) + "\n")
 		}
 	}
 	for _, list := range []struct {
@@ -161,7 +131,7 @@ func (m model) reviewContent() (string, error) {
 		}
 		section(list.title)
 		for _, item := range list.items {
-			body.WriteString(styleHint.Render("· ") + item + "\n")
+			body.WriteString(benchTheme.Muted.Render("· ") + item + "\n")
 		}
 	}
 	if view.Compass != nil {
@@ -170,9 +140,9 @@ func (m model) reviewContent() (string, error) {
 	}
 	for _, chapter := range chapters {
 		section(fmt.Sprintf("第 %d 章 · %s", chapter.Number, m.chapterTitle(chapter.Number)))
-		body.WriteString(styleHint.Render("候选稿 · 尚未入稿") + "\n\n" + chapterText(chapter) + "\n")
+		body.WriteString(benchTheme.Muted.Render("候选稿 · 尚未入稿") + "\n\n" + chapterText(chapter) + "\n")
 	}
-	body.WriteString("\n" + styleHint.Render(m.decisionActions()))
+	body.WriteString("\n" + benchTheme.Muted.Render(m.decisionActions()))
 	return body.String(), nil
 }
 
@@ -180,7 +150,7 @@ func writeOutlineItem(body *strings.Builder, depth int, title, summary string) {
 	indent := strings.Repeat("  ", depth)
 	body.WriteString(indent + title + "\n")
 	if summary = strings.TrimSpace(summary); summary != "" {
-		body.WriteString(styleHint.Render(indent+"  "+oneLine(summary)) + "\n")
+		body.WriteString(benchTheme.Muted.Render(indent+"  "+oneLine(summary)) + "\n")
 	}
 }
 
@@ -260,8 +230,8 @@ func (m model) detailReport() string {
 		title = fmt.Sprintf("第 %d 章详情", number)
 	}
 	var view strings.Builder
-	view.WriteString(styleTitle.Render(title) + "\n")
-	section := func(name string) { view.WriteString("\n" + styleTitle.Render(name) + "\n") }
+	view.WriteString(benchTheme.Title.Render(title) + "\n")
+	section := func(name string) { view.WriteString("\n" + benchTheme.Title.Render(name) + "\n") }
 	if node, ok := m.outlineChapter(number); ok && node.Node.Summary != "" {
 		section("本章规划")
 		view.WriteString(node.Node.Summary + "\n")
@@ -270,7 +240,7 @@ func (m model) detailReport() string {
 	if len(brief.Requirements) > 0 {
 		section("要求")
 		for _, requirement := range brief.Requirements {
-			view.WriteString(checkMark(requirement.Status) + " " + requirementText(requirement) + styleHint.Render("（"+checkWord(requirement.Status)+"）") + "\n")
+			view.WriteString(checkMark(requirement.Status) + " " + requirementText(requirement) + benchTheme.Muted.Render("（"+checkWord(requirement.Status)+"）") + "\n")
 		}
 	}
 	if chapterID := m.selectedChapterID(); chapterID != "" {
@@ -286,16 +256,16 @@ func (m model) detailReport() string {
 			if finding.Severity == domainmodel.FindingBlocking {
 				marker = "! "
 			}
-			view.WriteString(styleHint.Render(marker) + finding.Note + "\n")
+			view.WriteString(benchTheme.Muted.Render(marker) + finding.Note + "\n")
 			findings++
 		}
 	}
 	if len(brief.Facts) > 0 {
 		section("本章设定")
 		for _, fact := range brief.Facts {
-			mark := styleHint.Render("· ")
+			mark := benchTheme.Muted.Render("· ")
 			if fact.Pending {
-				mark = styleWarn.Render("待核验 ")
+				mark = benchTheme.Warning.Render("待核验 ")
 			}
 			view.WriteString(mark + factLine(fact.Fact) + "\n")
 		}
@@ -304,7 +274,7 @@ func (m model) detailReport() string {
 		section("篇幅与终局")
 		view.WriteString(lengthStatus(bench.snap.Length) + "\n")
 		if compass := bench.snap.Length.Compass; compass != nil && compass.Ending != "" {
-			view.WriteString(styleHint.Render("终局 ") + compass.Ending + "\n")
+			view.WriteString(benchTheme.Muted.Render("终局 ") + compass.Ending + "\n")
 		}
 		if len(bench.snap.Cast) > 0 {
 			section(fmt.Sprintf("人物 · %d 位", len(bench.snap.Cast)))
@@ -316,21 +286,21 @@ func (m model) detailReport() string {
 	intent := bench.snap.Intent
 	section("创作意图")
 	if len(intent.Required) > 0 {
-		view.WriteString(styleHint.Render("必须 ") + strings.Join(intent.Required, "、") + "\n")
+		view.WriteString(benchTheme.Muted.Render("必须 ") + strings.Join(intent.Required, "、") + "\n")
 	}
 	if len(intent.Forbidden) > 0 {
-		view.WriteString(styleHint.Render("禁止 ") + strings.Join(intent.Forbidden, "、") + "\n")
+		view.WriteString(benchTheme.Muted.Render("禁止 ") + strings.Join(intent.Forbidden, "、") + "\n")
 	}
 	if intent.EndingDirection != "" {
-		view.WriteString(styleHint.Render("结局 ") + intent.EndingDirection + "\n")
+		view.WriteString(benchTheme.Muted.Render("结局 ") + intent.EndingDirection + "\n")
 	}
 	if len(bench.snap.Ownership) > 0 {
-		view.WriteString(styleHint.Render(fmt.Sprintf("锁定 %d 处", len(bench.snap.Ownership))) + "\n")
+		view.WriteString(benchTheme.Muted.Render(fmt.Sprintf("锁定 %d 处", len(bench.snap.Ownership))) + "\n")
 	}
 	if len(bench.snap.Directives) > 0 {
 		section("创作要求")
 		for _, directive := range bench.snap.Directives {
-			view.WriteString(styleHint.Render("· ") + directive.Text + "（" + m.directiveScopeLabel(directive.Scope) + "）\n")
+			view.WriteString(benchTheme.Muted.Render("· ") + directive.Text + "（" + directive.Where + "）\n")
 		}
 	}
 	return view.String()
@@ -342,7 +312,7 @@ func castLine(member workbench.CastMember) string {
 	if len(member.Aliases) > 0 {
 		line += "（又名 " + strings.Join(member.Aliases, "、") + "）"
 	}
-	return line + styleHint.Render(fmt.Sprintf(" · %d 章 · 最近第 %d 章", member.Chapters, member.Latest))
+	return line + benchTheme.Muted.Render(fmt.Sprintf(" · %d 章 · 最近第 %d 章", member.Chapters, member.Latest))
 }
 
 // heldFindings 是卡住那一章尚未被接受的阻塞意见。

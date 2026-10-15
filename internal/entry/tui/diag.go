@@ -312,11 +312,11 @@ func (m model) viewDiagnostics() string {
 	if d.busy {
 		title += " · 读取中…"
 	}
-	lines := []string{styleTitle.Render(fitLine(title, m.width)), styleHint.Render(fitLine("本地详情可能含私有内容 · e 按异常采集分享报告（不受页码影响）", m.width))}
+	lines := []string{benchTheme.Title.Render(fitLine(title, m.width)), benchTheme.Muted.Render(fitLine("本地详情可能含私有内容 · e 按异常采集分享报告（不受页码影响）", m.width))}
 	lines = append(lines, fitBlock(d.body.View(), m.width, d.body.Height)...)
-	status := styleNotice.Render(d.notice)
+	status := benchTheme.Success.Render(d.notice)
 	if d.err != "" {
-		status = styleErr.Render(d.err)
+		status = benchTheme.Error.Render(d.err)
 	}
 	if d.input != nil {
 		status = "保存到 " + d.input.View()
@@ -326,7 +326,7 @@ func (m model) viewDiagnostics() string {
 	if d.input != nil {
 		help = "仅分享状态、统计与别名证据 · 不含正文/思考/密钥/原始错误 · Enter 保存 · Esc 取消"
 	}
-	lines = append(lines, m.keyHint(styleHint.Render(fitLine(help, m.width))))
+	lines = append(lines, m.keyHint(benchTheme.Muted.Render(fitLine(help, m.width))))
 	return strings.Join(fitBlock(strings.Join(lines, "\n"), max(1, m.width), max(1, m.height)), "\n")
 }
 

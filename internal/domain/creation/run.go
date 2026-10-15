@@ -56,12 +56,6 @@ type Decision struct {
 	Step     Step
 }
 
-type DriveCommand struct {
-	WorkerID      string
-	LeaseDuration time.Duration
-	CreatedAt     time.Time
-}
-
 // Step 是推导结果，恰好一项非空：Work 驱动一个 Operation；Wait 停下等用户；
 // Done 完成并绑定当前 Revision；Fail 是确定性失败，需要人工检查。
 type Step struct {
@@ -142,14 +136,14 @@ func (s *Coordinator) Drive(
 	ctx context.Context,
 	run model.CreationRun,
 	tasks Tasks,
-	command DriveCommand,
+	at time.Time,
 ) (Outcome, error) {
-	clock := &stepClock{now: s.now, last: command.CreatedAt}
+	clock := &stepClock{now: s.now, last: at}
 	recovered, err := s.store.RecoverExpiredOperations(ctx, clock.next())
 	if err != nil {
 		return Outcome{}, err
 	}
-	outcome, err := s.drive(ctx, run, tasks, command, clock)
+	outcome, err := s.drive(ctx, run, tasks, clock)
 	outcome.Recovered = recovered
 	return outcome, err
 }
@@ -158,7 +152,6 @@ func (s *Coordinator) drive(
 	ctx context.Context,
 	run model.CreationRun,
 	tasks Tasks,
-	command DriveCommand,
 	clock *stepClock,
 ) (Outcome, error) {
 	if run.State == model.RunWaitingUser || run.State == model.RunPaused {
@@ -185,15 +178,14 @@ func (s *Coordinator) drive(
 		if err != nil {
 			return Outcome{}, err
 		}
-		decision, decisionErr := deriver.Next(ctx, run)
-		// An application failure is still a decision about observed state.
-		// Infrastructure errors have no decision and leave the run resumable.
-		if decisionErr != nil && decision.Step.Fail == "" {
-			return Outcome{}, decisionErr
+		// 推导出错就没有决定，运行保持可续；应用失败是对所见状态的一个决定（Step.Fail）。
+		decision, err := deriver.Next(ctx, run)
+		if err != nil {
+			return Outcome{}, err
 		}
 		next := decision.Step
 		if err := next.Validate(); err != nil {
-			return Outcome{}, errors.Join(decisionErr, err)
+			return Outcome{}, err
 		}
 		// Goal evaluation can overlap user control and source edits. Decisions
 		// may advance only the revision they actually observed.
@@ -230,12 +222,12 @@ func (s *Coordinator) drive(
 				continue // Source, goal or user control changed before the atomic write.
 			}
 			if err != nil {
-				return Outcome{Run: run, Revision: decision.Revision}, errors.Join(decisionErr, err)
+				return Outcome{Run: run, Revision: decision.Revision}, err
 			}
-			if state == model.RunFailed && decisionErr == nil {
-				decisionErr = fmt.Errorf("%s: %w", reason, model.ErrStateConflict)
+			if state == model.RunFailed {
+				return Outcome{Run: settled, Revision: decision.Revision}, fmt.Errorf("%s: %w", reason, model.ErrStateConflict)
 			}
-			return Outcome{Run: settled, Revision: decision.Revision}, decisionErr
+			return Outcome{Run: settled, Revision: decision.Revision}, nil
 		}
 		work := *next.Work
 		if err := s.supersede(ctx, run.ID, work, clock.next()); err != nil {
@@ -252,7 +244,7 @@ func (s *Coordinator) drive(
 			}
 		}
 		if operation.State == model.OperationQueued {
-			ran, err := tasks.Run(ctx, work, operation, command.WorkerID, command.LeaseDuration, clock.next())
+			ran, err := tasks.Run(ctx, work, operation, clock.next())
 			// 暂停、进程退出等取消不是创作失败：引擎已把任务放回队列，Run 的状态由取消方决定
 			// （暂停已落盘为 paused，退出保持 running），续跑接着写。
 			if err != nil && ctx.Err() != nil {
@@ -358,7 +350,7 @@ func (s *Coordinator) reopenOrWait(
 }
 
 // ensureChainedOperation 解析创作槽位当前有效的 Operation：沿确定性后继链
-// （base、base:r2、base:r3…）找到第一个可用者；失效或被否决的前任由后继继承
+// （base、base:redo2、base:redo3…）找到第一个可用者；失效或被否决的前任由后继继承
 // 工作区（§5.5 安全迁移），failed 在用户显式重新发起时先尝试原地重排。
 func (s *Coordinator) ensureChainedOperation(
 	ctx context.Context,
@@ -416,7 +408,7 @@ func chainID(base string, attempt int) string {
 	if attempt == 1 {
 		return base
 	}
-	return fmt.Sprintf("%s:r%d", base, attempt)
+	return fmt.Sprintf("%s:redo%d", base, attempt)
 }
 
 // inChain 报告 id 是否是槽位 base 后继链上的成员。
@@ -424,7 +416,7 @@ func inChain(base, id string) bool {
 	if id == base {
 		return true
 	}
-	suffix, ok := strings.CutPrefix(id, base+":r")
+	suffix, ok := strings.CutPrefix(id, base+":redo")
 	attempt, err := strconv.Atoi(suffix)
 	return ok && err == nil && chainID(base, attempt) == id && attempt > 1
 }
@@ -480,13 +472,11 @@ func (s *Coordinator) RunOperationIDs(ctx context.Context, runID string) ([]stri
 		if event.Kind != model.RunEventOperationCreated {
 			continue
 		}
-		var payload struct {
-			OperationID string `json:"operation_id"`
+		created, err := event.OperationCreated()
+		if err != nil {
+			return nil, err
 		}
-		if err := json.Unmarshal(event.Payload, &payload); err != nil {
-			return nil, fmt.Errorf("run %q event %d payload is corrupt: %w", runID, event.Sequence, err)
-		}
-		ids = append(ids, payload.OperationID)
+		ids = append(ids, created.OperationID)
 	}
 	return ids, nil
 }
@@ -534,24 +524,6 @@ func (s *Coordinator) settleRun(
 
 func (s *Coordinator) CreationRunEvents(ctx context.Context, runID string) ([]model.CreationRunEvent, error) {
 	return s.store.ListCreationRunEvents(ctx, runID)
-}
-
-// RunOperations 按创建序取一轮创作的全部 Operation。诊断视图靠它下钻：
-// run 事件表只有编排流水，真实的失败原因在 Operation.Error 与各次尝试的摘要。
-func (s *Coordinator) RunOperations(ctx context.Context, runID string) ([]model.Operation, error) {
-	ids, err := s.RunOperationIDs(ctx, runID)
-	if err != nil {
-		return nil, err
-	}
-	operations := make([]model.Operation, 0, len(ids))
-	for _, id := range ids {
-		operation, err := s.store.GetOperation(ctx, id)
-		if err != nil {
-			return nil, err
-		}
-		operations = append(operations, operation)
-	}
-	return operations, nil
 }
 
 type StartCreationRunCommand struct {

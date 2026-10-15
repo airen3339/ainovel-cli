@@ -236,7 +236,7 @@ func toolDetail(tool string, args json.RawMessage) string {
 		case query.Entity != "":
 			return "「" + query.Entity + "」"
 		}
-	case prompt.ToolWorkspaceRead, prompt.ToolWorkspacePutCandidate:
+	case prompt.ToolWorkspacePutCandidate:
 		var input struct {
 			Key string `json:"key"`
 		}
@@ -247,13 +247,9 @@ func toolDetail(tool string, args json.RawMessage) string {
 		var input struct {
 			Chapter model.ManuscriptChapter `json:"chapter"`
 		}
-		if json.Unmarshal(args, &input) != nil {
-			return ""
+		if json.Unmarshal(args, &input) == nil {
+			return fmt.Sprintf("%d 字", input.Chapter.Runes())
 		}
-		if input.Chapter.Number > 0 {
-			return fmt.Sprintf("第 %d 章 · %d 字", input.Chapter.Number, input.Chapter.Runes())
-		}
-		return fmt.Sprintf("%d 字", input.Chapter.Runes())
 	case prompt.ToolWorkspaceReplaceBlock:
 		var input struct {
 			BlockID string `json:"block_id"`

@@ -36,7 +36,6 @@ func (m model) timelineFeed() (activity.Snapshot, bool) {
 // toolActivityLabels 是工具名到创作语言的唯一翻译表。
 var toolActivityLabels = map[string]string{
 	"authority_read":          "查阅设定与前情",
-	"workspace_list":          "清点工作区",
 	"workspace_read":          "翻看工作稿",
 	"workspace_put_chapter":   "落笔章节工作稿",
 	"workspace_replace_block": "修改段落",
@@ -104,7 +103,7 @@ func (m model) stepLine(entry activity.Entry, width int, clock bool) string {
 		body = benchTheme.Warning.Render("! " + label + "遇到问题，模型正在自纠 · " + oneLine(entry.Err))
 		elapsed = entryElapsed(entry)
 	case entry.Done:
-		body = styleNotice.Render("✓ ") + label + benchTheme.Muted.Render(detail)
+		body = benchTheme.Success.Render("✓ ") + label + benchTheme.Muted.Render(detail)
 		elapsed = entryElapsed(entry)
 	case !m.bench.writing:
 		// 创作已停但这次调用没等到收尾（中途取消）：不能再显示为进行中。
@@ -114,7 +113,7 @@ func (m model) stepLine(entry activity.Entry, width int, clock bool) string {
 		if entry.Bytes > 0 {
 			line += " · 已接收 " + formatDataSize(entry.Bytes)
 		}
-		body = styleFocus.Render(line)
+		body = benchTheme.Focus.Render(line)
 		elapsed = entryElapsed(entry)
 	}
 	return alignRight(prefix+body, benchTheme.Muted.Render(elapsed), width)
@@ -129,7 +128,7 @@ func noticeLine(entry activity.Entry) string {
 	case activity.ToneStep:
 		return benchTheme.Accent.Render("→ ") + benchTheme.Title.Render(entry.Text)
 	case activity.ToneDone:
-		return styleNotice.Render("✓ ") + entry.Text
+		return benchTheme.Success.Render("✓ ") + entry.Text
 	case activity.ToneWait:
 		return benchTheme.Warning.Render("◇ " + entry.Text)
 	case activity.ToneFail:
@@ -153,7 +152,7 @@ func waitingText(feed activity.Snapshot) string {
 }
 
 func (m model) waitingLine(feed activity.Snapshot) string {
-	return styleFocus.Render(m.bench.pulse.spinner() + " " + waitingText(feed))
+	return benchTheme.Focus.Render(m.bench.pulse.spinner() + " " + waitingText(feed))
 }
 
 // itemLines 结构化产出一条一行，折行时悬挂缩进两格，条与条一眼分得开。
@@ -195,8 +194,8 @@ func (m model) blockLines(block activity.OutputBlock, width int) []string {
 		task := block.TaskLabel
 		if task == "" {
 			task = "创作任务"
-			if block.Scope.ChapterNumber > 0 {
-				task = fmt.Sprintf("第 %d 章", block.Scope.ChapterNumber)
+			if number := m.planNumber(block.Scope.PlanNodeID); number > 0 {
+				task = fmt.Sprintf("第 %d 章", number)
 			}
 		}
 		if len(block.Scope.ChapterIDs) > 1 {

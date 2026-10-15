@@ -98,45 +98,20 @@ type Entry struct {
 type Snapshot struct {
 	ProjectID     string
 	RunID         string
-	OperationID   string // 最近活动所属的任务
 	Entries       []Entry
 	Output        []OutputBlock
 	Tasks         []Task
 	OutputDropped uint64
 	outputTurn    uint64
 	outputBytes   int
-	// Note 是说明性文字折叠成的辅助行，只保留尾部。
-	Note     string
-	Thinking bool
-	// ThinkingNote 是思考尾部片段（Provider 明确标记的思考文本原样截尾，
-	// 不是摘要，§3：仅在提供时展示，不作可靠解释承诺）。
-	ThinkingNote string
-	// Prose 是当前正文调用已提取正文的尾部有界缓冲（保证合法 UTF-8）。
-	// 用 []byte 而非 string：fold 在锁内、在模型流回调同步路径上执行，
-	// append 摊还 O(增量)；string 拼接是每增量 O(全文) 的隐性平方开销。
-	Prose []byte
-	// ProseCallID 标记 Prose 归属的工具调用；换调用即整体重置，
-	// 重试或二次落笔不残留上一稿。
-	ProseCallID string
 	// Waiting 表示请求已发出、还没收到第一个增量；WaitingSince 是发出时刻。
 	Waiting      bool
 	WaitingSince time.Time
-	// ThinkingSeen 表示本轮创作里 Provider 提供过思考文本。
-	ThinkingSeen bool
 	// Seq 每次变更递增，消费侧可据此跳过重复渲染。
 	Seq uint64
 }
 
-const (
-	maxEntries  = 64
-	maxNoteSize = 120
-	// 思考片段供展开阅读，独立于辅助行保留上限；单位为 rune，仅存于进程内。
-	maxThinkingSize = 4096
-	// maxProseBytes 是正文预览缓冲上界（≈8000 中文字，整章有裕量）；
-	// proseSlack 是摊还裁剪的松弛量：超过 max+slack 才裁回 max，避免每增量搬移。
-	maxProseBytes = 24 << 10
-	proseSlack    = 8 << 10
-)
+const maxEntries = 64
 
 // Hub 保存进程内活动快照并向订阅者发送合并唤醒信号。发布永不阻塞：唤醒
 // channel 容量为 1，满即合并（交付契约 1）；UI 消费停滞不得拖慢创作。
@@ -224,7 +199,6 @@ func (h *Hub) Snapshot(projectID string) (Snapshot, bool) {
 	for i := range copied.Tasks {
 		copied.Tasks[i].Scope = copied.Tasks[i].Scope.clone()
 	}
-	copied.Prose = append([]byte(nil), snapshot.Prose...)
 	copied.Output = append([]OutputBlock(nil), snapshot.Output...)
 	for i := range copied.Output {
 		copied.Output[i].Scope = copied.Output[i].Scope.clone()
@@ -236,15 +210,9 @@ func (h *Hub) Snapshot(projectID string) (Snapshot, bool) {
 func (s *Snapshot) fold(event Event) {
 	s.foldTask(event)
 	s.foldOutput(event)
-	if s.OperationID != event.OperationID {
-		s.OperationID = event.OperationID
-		s.Note, s.Thinking, s.ThinkingNote = "", false, ""
-		s.Prose, s.ProseCallID = nil, ""
-		s.Waiting = false
-	}
 	switch event.Kind {
 	case TaskEnd:
-		s.Thinking, s.Waiting = false, false
+		s.Waiting = false
 		return
 	case TurnStart:
 		s.Waiting, s.WaitingSince = true, event.At
@@ -274,7 +242,6 @@ func (s *Snapshot) fold(event Event) {
 			index = len(s.Entries) - 1
 		}
 		s.Entries[index].Detail = event.Detail
-		s.Thinking = false
 	case ToolDelta:
 		// 参数开始流入即建立进行中条目并按条目累计字节；名字未知的增量
 		// 归属最近的进行中调用，完全无处归属时丢弃（无可展示对象）。
@@ -289,7 +256,6 @@ func (s *Snapshot) fold(event Event) {
 		if index >= 0 {
 			s.Entries[index].Bytes += event.Bytes
 		}
-		s.Thinking = false
 	case ToolEnd:
 		if index := s.openIndex(event); index >= 0 {
 			s.Entries[index].Done, s.Entries[index].Err, s.Entries[index].DoneAt = true, event.Err, event.At
@@ -300,29 +266,12 @@ func (s *Snapshot) fold(event Event) {
 				Detail: event.Detail, Err: event.Err, Done: true, At: event.At, DoneAt: event.At,
 			})
 		}
-	case Prose:
-		if s.ProseCallID != event.CallID {
-			s.ProseCallID, s.Prose = event.CallID, nil
-		}
-		s.Prose = appendProse(s.Prose, event.Text)
-		s.Thinking = false
-	case Item:
-		s.Thinking = false
 	case ProseStall:
 		// 一次性警示条目（同 Retry）：正文直播中断留痕于活动流。
 		s.append(Entry{
 			OperationID: event.OperationID, Kind: ProseStall,
 			Tool: event.Tool, CallID: event.CallID, Done: true, At: event.At,
 		})
-	case Text:
-		s.Note = tail(s.Note+event.Text, maxNoteSize)
-		s.Thinking = false
-	case Thinking:
-		s.Thinking = true
-		if event.Text != "" {
-			s.ThinkingNote = tail(s.ThinkingNote+event.Text, maxThinkingSize)
-			s.ThinkingSeen = true
-		}
 	}
 }
 
@@ -371,26 +320,4 @@ func (s *Snapshot) append(entry Entry) {
 	if len(s.Entries) > maxEntries {
 		s.Entries = s.Entries[len(s.Entries)-maxEntries:]
 	}
-}
-
-// appendProse 摊还地维护正文尾部缓冲：只在越过松弛界时裁回上界，
-// 裁剪点向前跳过 UTF-8 连续字节对齐 rune 边界（输入是合法 UTF-8，最多跳 3 字节）。
-func appendProse(buf []byte, text string) []byte {
-	buf = append(buf, text...)
-	if len(buf) <= maxProseBytes+proseSlack {
-		return buf
-	}
-	cut := len(buf) - maxProseBytes
-	for cut < len(buf) && buf[cut]&0xc0 == 0x80 {
-		cut++
-	}
-	return append(buf[:0], buf[cut:]...)
-}
-
-func tail(text string, limit int) string {
-	runes := []rune(text)
-	if len(runes) <= limit {
-		return text
-	}
-	return string(runes[len(runes)-limit:])
 }

@@ -790,7 +790,7 @@ func TestLongOutlineGroupsAndTruncatesGracefully(t *testing.T) {
 	for i := 1; i <= 120; i++ {
 		flat.bench.snap.Outline = append(flat.bench.snap.Outline, workbench.OutlineNode{Node: domainmodel.PlanNode{ID: fmt.Sprint(i), Kind: domainmodel.PlanChapter, Title: fmt.Sprintf("雨夜来信 %d", i)}, Number: i, State: workbench.ChapterConfirmed})
 	}
-	flat.bench.rowsCache = nil
+	flat.bench.rowsCache = &outlineCache{}
 	requireContains(t, frame(flat), "第 1–50 章", "后面还有")
 }
 
@@ -915,7 +915,7 @@ func BenchmarkLongWorkbenchStreaming(b *testing.B) {
 	m := longWorkbench(b, 500)
 	m.findChapter("500", false)
 	m.bench.snap.Outline[len(m.bench.snap.Outline)-1].State = workbench.ChapterInProgress
-	m.bench.rowsCache = nil
+	m.bench.rowsCache = &outlineCache{}
 	prefix := string(m.bench.activity.Output[1].Text)
 	b.ReportAllocs()
 	b.ResetTimer()

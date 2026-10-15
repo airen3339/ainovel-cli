@@ -25,7 +25,7 @@ type Deps struct {
 	UserID    string
 	// ConfigError 是启动时的配置/绑定失败原因：交互模式降级进向导修复而不是退出。
 	ConfigError string
-	// Verify 供可选的连接测试使用；保存不调用它。nil 仅用于测试。
+	// Verify 供可选的连接测试使用；保存不调用它。
 	Verify func(context.Context, appconfig.Config) error
 	Input  io.Reader
 	Output io.Writer
@@ -43,9 +43,6 @@ type quitExpiredMsg struct{}
 const shutdownGrace = 10 * time.Second
 
 func Run(parent context.Context, deps Deps) error {
-	if deps.API == nil || deps.API.Models == nil {
-		return fmt.Errorf("TUI application is required: %w", domainmodel.ErrInvalid)
-	}
 	// 界面退出即取消在途创作：任务放回队列，下次进入接着写，而不是留着租约让人等。
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
@@ -121,21 +118,16 @@ func (m *model) openBench(projectID string) tea.Cmd {
 	}
 	m.gen++
 	m.bench = newWorkbenchState(projectID, m.gen, m.api.Chief.Open(m.ctx, projectID, m.deps.UserID))
-	// 布局偏好记忆（M3）：恢复本作品的大纲折叠；落点更新不得抹掉其他偏好，
-	// 偏好文件读不出来时不回写（否则等于用空状态覆盖全部偏好）。
-	state, err := appconfig.LoadState(m.deps.ConfigDir)
-	if err != nil {
-		m.bench.notice = "界面偏好文件异常，本次不更新偏好：" + err.Error()
-	} else {
+	// 布局偏好记忆（M3）：恢复本作品的大纲折叠并记下落点。偏好只影响呈现，读写失败
+	// 不阻塞进入，但要让用户知道。
+	if err := appconfig.UpdateState(m.deps.ConfigDir, func(state *appconfig.State) {
 		_, m.bench.directoryInitialized = state.Collapsed[projectID]
 		for _, id := range state.Collapsed[projectID] {
 			m.bench.collapsed[id] = true
 		}
 		state.LastProjectID = projectID
-		if err := appconfig.SaveState(m.deps.ConfigDir, state); err != nil {
-			// 落点/偏好只影响下次启动的呈现，保存失败不阻塞进入，但要让用户知道。
-			m.bench.notice = "界面偏好保存失败：" + err.Error()
-		}
+	}); err != nil {
+		m.bench.notice = "界面偏好未能更新：" + err.Error()
 	}
 	if wake, cancel, ok := m.api.Workbench.SubscribeRunActivity(projectID); ok {
 		m.bench.activityCh, m.bench.activityOff = wake, cancel
@@ -247,17 +239,6 @@ func (m model) View() string {
 // truncate 按显示宽度截断一行文本，避免状态栏与列表溢出。
 func truncate(text string, limit int) string {
 	return ansi.Truncate(strings.ReplaceAll(text, "\n", " "), max(0, limit), "…")
-}
-
-func approvalLabel(policy domainmodel.ApprovalPolicy) string {
-	switch policy {
-	case domainmodel.ApprovalMilestone:
-		return "里程碑确认"
-	case domainmodel.ApprovalManual:
-		return "逐章确认"
-	default:
-		return "自动推进"
-	}
 }
 
 func runStateLabel(state domainmodel.CreationRunState) string {

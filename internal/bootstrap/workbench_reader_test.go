@@ -78,7 +78,7 @@ func BenchmarkWorkbenchReader500Chapters(b *testing.B) {
 		projection.Plan = append(projection.Plan, model.PlanNode{ID: planID, ParentID: "arc", Kind: model.PlanChapter, Title: id, Summary: "雨夜来信", Order: i})
 		projection.Manuscript = append(projection.Manuscript, model.ManuscriptChapter{ID: id, PlanNodeID: planID, Number: i, Author: model.AuthorUser, Blocks: []model.ManuscriptBlock{{ID: fmt.Sprintf("block-%d", i), Text: strings.Repeat("雨停了，屋檐却还在滴水。", 250)}}})
 	}
-	proposal, err := api.Projects.ImportNewProject(ctx, "import-long", "user-1", "benchmark", projection, testTime())
+	proposal, err := api.Projects.ImportProject(ctx, "import-long", "user-1", "benchmark", projection, testTime())
 	if err != nil {
 		b.Fatal(err)
 	}

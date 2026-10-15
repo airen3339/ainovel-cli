@@ -11,15 +11,14 @@ import (
 type OperationKind string
 
 const (
-	OperationDevelopPlan     OperationKind = "develop_plan"
-	OperationWriteChapter    OperationKind = "write_chapter"
-	OperationRevisePlan      OperationKind = "revise_plan"
-	OperationReviseCanon     OperationKind = "revise_canon"
-	OperationRewriteChapter  OperationKind = "rewrite_chapter"
-	OperationRewriteAffected OperationKind = "rewrite_affected"
-	OperationReviewRange     OperationKind = "review_range"
-	OperationGenerateAsset   OperationKind = "generate_asset"
-	OperationInspectAsset    OperationKind = "inspect_asset"
+	OperationDevelopPlan    OperationKind = "develop_plan"
+	OperationWriteChapter   OperationKind = "write_chapter"
+	OperationRevisePlan     OperationKind = "revise_plan"
+	OperationReviseCanon    OperationKind = "revise_canon"
+	OperationRewriteChapter OperationKind = "rewrite_chapter"
+	OperationReviewRange    OperationKind = "review_range"
+	OperationGenerateAsset  OperationKind = "generate_asset"
+	OperationInspectAsset   OperationKind = "inspect_asset"
 )
 
 type OperationState string
@@ -148,11 +147,9 @@ const (
 	ApprovalAuto      ApprovalPolicy = "auto"
 	ApprovalMilestone ApprovalPolicy = "milestone"
 	ApprovalManual    ApprovalPolicy = "manual"
-	ApprovalCustom    ApprovalPolicy = "custom"
 )
 
-// StricterApproval 取两份策略中更严格的一方（D23）：`auto < milestone < manual`；
-// custom 依赖显式契约，视为最严格，绝不被静默降级。
+// StricterApproval 取两份策略中更严格的一方（D23）：`auto < milestone < manual`。
 func StricterApproval(left, right ApprovalPolicy) ApprovalPolicy {
 	rank := func(policy ApprovalPolicy) int {
 		switch policy {
@@ -160,8 +157,6 @@ func StricterApproval(left, right ApprovalPolicy) ApprovalPolicy {
 			return 1
 		case ApprovalManual:
 			return 2
-		case ApprovalCustom:
-			return 3
 		default:
 			return 0
 		}
@@ -192,7 +187,7 @@ func (s ExecutionSnapshot) Validate() error {
 		return fmt.Errorf("snapshot base revision cannot be negative: %w", ErrInvalid)
 	}
 	switch s.ApprovalPolicy {
-	case ApprovalAuto, ApprovalMilestone, ApprovalManual, ApprovalCustom:
+	case ApprovalAuto, ApprovalMilestone, ApprovalManual:
 	default:
 		return fmt.Errorf("unknown approval policy %q: %w", s.ApprovalPolicy, ErrInvalid)
 	}
@@ -255,8 +250,8 @@ type Operation struct {
 	Priority  int             `json:"priority"`
 	State     OperationState  `json:"state"`
 	Attempt   int             `json:"attempt"`
-	// RunID 是创作血统归属（§6.3）：影响故事内容的 AI Operation 必须归属唯一
-	// CreationRun；纯维护类 Operation 留空。RunPolicyVersion 由存储层在创建
+	// RunID 是创作血统归属（§6.3）：每个 Operation 都影响故事内容，必须归属唯一
+	// CreationRun（D27）。RunPolicyVersion 由存储层在创建
 	// 事务内解析为当时最近一次策略事件的序号，调用方不填。
 	RunID            string            `json:"run_id,omitempty"`
 	RunPolicyVersion int64             `json:"run_policy_version,omitempty"`

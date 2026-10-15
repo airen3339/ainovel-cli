@@ -46,7 +46,7 @@ func TestReviewBasisPinsJudgedInputsAndScopes(t *testing.T) {
 	if got := basisKeys(basis); !slices.Equal(got, want) {
 		t.Fatalf("basis documents = %v, want %v", got, want)
 	}
-	if len(basis.Scopes) != 1 || basis.Scopes[0].Kind != model.ScopeDirective ||
+	if len(basis.Scopes) != 1 ||
 		basis.Scopes[0].Target.ChapterNumber != 1 ||
 		!slices.Equal(basis.Scopes[0].Target.PlanNodeIDs, []string{"chapter-plan-1", "arc-1", "volume-1"}) ||
 		basis.Scopes[0].Digest != model.ScopeDigest(nil) {
@@ -118,7 +118,7 @@ func TestEvidenceValidityDetectsDocumentScopeAndArtifactDrift(t *testing.T) {
 			Document: model.DocumentRef{Kind: model.DocumentPlan, ID: "chapter-plan-1"}, Operation: model.PatchPut, Content: node,
 		}},
 		ApprovalState: model.ApprovalPending, CreatedAt: testTime().Add(3 * time.Hour),
-	}, testTime().Add(3*time.Hour)); err != nil {
+	}); err != nil {
 		t.Fatalf("edit plan: %v", err)
 	}
 	edited, err := api.Projects.Project(ctx, command.ProjectID, 0)

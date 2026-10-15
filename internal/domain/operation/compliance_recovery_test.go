@@ -36,7 +36,7 @@ func TestRecoveryRechecksComplianceAfterConstraintChange(t *testing.T) {
 			defer s.Close()
 			target := model.AuthorityTarget{Kind: model.AuthorityProject, ID: "recovery"}
 			seedConstrainedProject(t, ctx, s, target, now)
-			input := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1","chapter_number":1}`)
+			input := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1"}`)
 			op := model.Operation{ID: "write", Kind: model.OperationWriteChapter, Target: target, State: model.OperationQueued, RunID: createEngineTestRun(t, ctx, s, target.ID, now), Snapshot: engineSnapshot(input, 1, model.ApprovalAuto), Input: input, CreatedAt: now, UpdatedAt: now}
 			if _, err = s.CreateOperation(ctx, op); err != nil {
 				t.Fatal(err)
@@ -74,7 +74,7 @@ func TestRecoveryRechecksComplianceAfterConstraintChange(t *testing.T) {
 				t.Fatal(err)
 			}
 			executor := &recoveryAnalyzer{}
-			result, err := engine.RunNextWithExecutors(ctx, []Executor{executor}, "recovery", time.Minute, now.Add(3*time.Minute))
+			result, err := engine.RunNext(ctx, []Executor{executor}, "recovery", time.Minute, now.Add(3*time.Minute))
 			if err != nil {
 				t.Fatal(err)
 			}

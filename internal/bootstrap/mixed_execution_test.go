@@ -116,7 +116,7 @@ func TestMixedNovelGenerationAndInspectionUseOneApplication(t *testing.T) {
 		t.Fatalf("novel: %+v %v", result, err)
 	}
 	run := startRenderingRun(t, api, 2, testTime().Add(time.Hour))
-	result, err := api.Runs.Drive(ctx, run, renderingTasks(api), renderingCommand(testTime().Add(time.Hour)))
+	result, err := api.Runs.Drive(ctx, run, renderingTasks(api), testTime().Add(time.Hour))
 	if err != nil || result.Run.State != model.RunCompleted {
 		t.Fatalf("rendering: %+v %v", result, err)
 	}
@@ -156,7 +156,7 @@ func TestMixedNovelGenerationAndInspectionUseOneApplication(t *testing.T) {
 		t.Fatalf("stale check survived: %v %v", checks, err)
 	}
 	run = startRenderingRun(t, api, 3, testTime().Add(3*time.Hour))
-	result, err = api.Runs.Drive(ctx, run, renderingTasks(api), renderingCommand(testTime().Add(3*time.Hour)))
+	result, err = api.Runs.Drive(ctx, run, renderingTasks(api), testTime().Add(3*time.Hour))
 	if err != nil || result.Run.State != model.RunCompleted || external.calls != 2 || external.checks != 2 {
 		t.Fatalf("regeneration: %+v calls=%d checks=%d err=%v", result, external.calls, external.checks, err)
 	}
@@ -173,7 +173,7 @@ func TestMediaEvidenceRecoversWithoutReexecutingInspector(t *testing.T) {
 	external := &inspectingExecutor{externalGenerationExecutor: generator}
 	api = newMediaApp(api.store, tasks.ExecutorSet{External: external}, renderingDeriver{}, inspectionContract(external))
 	run := startRenderingRun(t, api, 1, testTime())
-	if _, err := api.Runs.Drive(ctx, run, renderingTasks(api), renderingCommand(testTime())); err != nil {
+	if _, err := api.Runs.Drive(ctx, run, renderingTasks(api), testTime()); err != nil {
 		t.Fatal(err)
 	}
 	project, err := api.Projects.Project(ctx, renderingProject, 0)
@@ -218,7 +218,7 @@ func TestMediaEvidenceRecoversWithoutReexecutingInspector(t *testing.T) {
 	if _, err = api.Tasks.RecoverOperations(ctx, at.Add(2*time.Minute)); err != nil {
 		t.Fatal(err)
 	}
-	result, err := api.Runs.Drive(ctx, run, renderingTasks(api), renderingCommand(at.Add(3*time.Minute)))
+	result, err := api.Runs.Drive(ctx, run, renderingTasks(api), at.Add(3*time.Minute))
 	if err != nil || result.Run.State != model.RunCompleted || external.checks != 3 {
 		t.Fatalf("inspection recovery: %+v checks=%d err=%v", result, external.checks, err)
 	}

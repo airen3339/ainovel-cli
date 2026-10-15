@@ -20,7 +20,6 @@ func runPrompt(ctx context.Context, api *bootstrap.App, args []string, stdout, s
 		flags := newFlags("prompt reload", stderr)
 		projectID := flags.String("project", "", "Project ID")
 		kind := flags.String("kind", "", "Operation kind，用于构建对应故事上下文")
-		worker := flags.String("profile", "", "Worker Profile ID；默认由 Operation kind 决定")
 		inputPath := flags.String("input", "", "任务输入 JSON 文件")
 		var packIDs, profileRefs stringValues
 		flags.Var(&packIDs, "pack", "启用 Pack ID；可重复，编译时冻结最新 Revision")
@@ -40,9 +39,8 @@ func runPrompt(ctx context.Context, api *bootstrap.App, args []string, stdout, s
 			return err
 		}
 		result, err := api.Prompts.ReloadPrompt(ctx, profile.ReloadPromptCommand{
-			ProjectID: *projectID, Kind: model.OperationKind(*kind), WorkerProfileID: *worker, Input: input,
-			Packs: packRefs(packIDs), CreatorProfiles: profiles, CoreProtocolVersion: "core-v1",
-			CreatedAt: time.Now().UTC(),
+			ProjectID: *projectID, Kind: model.OperationKind(*kind), Input: input,
+			Packs: packRefs(packIDs), CreatorProfiles: profiles, CreatedAt: time.Now().UTC(),
 		})
 		return writeResult(stdout, result, err)
 	}

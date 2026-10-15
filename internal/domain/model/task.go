@@ -22,35 +22,31 @@ type TaskInput interface {
 	Validate() error
 }
 
-// OperationKindSpec 是一种 Operation 的登记项：装配层按它判断执行族、Run 归属、
-// 预算计数与进行中的呈现文案；新增种类只在这里登记一次。
+// OperationKindSpec 是一种 Operation 的登记项：装配层按它判断执行族与进行中的呈现文案；
+// 新增种类只在这里登记一次。
 type OperationKindSpec struct {
-	Kind        OperationKind
-	Executor    ExecutorFamily
-	RequiresRun bool   // 影响故事内容，必须归属唯一 CreationRun（D27）
-	Repair      bool   // 自动修订：消耗 RunStrategy 的修订预算
-	Label       string // 进行中的创作语言
-	NewInput    func() TaskInput
+	Kind     OperationKind
+	Executor ExecutorFamily
+	Label    string // 进行中的创作语言
+	NewInput func() TaskInput
 }
 
 var operationKinds = []OperationKindSpec{
-	{Kind: OperationDevelopPlan, Executor: ExecutorLLM, RequiresRun: true, Label: "正在规划故事蓝图",
+	{Kind: OperationDevelopPlan, Executor: ExecutorLLM, Label: "正在规划故事蓝图",
 		NewInput: func() TaskInput { return &DevelopPlanInput{} }},
-	{Kind: OperationRevisePlan, Executor: ExecutorLLM, RequiresRun: true, Label: "正在规划故事蓝图",
+	{Kind: OperationRevisePlan, Executor: ExecutorLLM, Label: "正在规划故事蓝图",
 		NewInput: func() TaskInput { return &RevisePlanInput{} }},
-	{Kind: OperationReviseCanon, Executor: ExecutorLLM, RequiresRun: true, Label: "正在修订已确认事实",
+	{Kind: OperationReviseCanon, Executor: ExecutorLLM, Label: "正在修订已确认事实",
 		NewInput: func() TaskInput { return &ReviseCanonInput{} }},
-	{Kind: OperationWriteChapter, Executor: ExecutorLLM, RequiresRun: true, Label: "正在落笔新章节",
+	{Kind: OperationWriteChapter, Executor: ExecutorLLM, Label: "正在落笔新章节",
 		NewInput: func() TaskInput { return &WriteChapterInput{} }},
-	{Kind: OperationRewriteChapter, Executor: ExecutorLLM, RequiresRun: true, Repair: true, Label: "正在按意见重写章节",
+	{Kind: OperationRewriteChapter, Executor: ExecutorLLM, Label: "正在按意见重写章节",
 		NewInput: func() TaskInput { return &RewriteChapterInput{} }},
-	{Kind: OperationRewriteAffected, Executor: ExecutorLLM, RequiresRun: true, Label: "正在同步修订受影响章节",
-		NewInput: func() TaskInput { return &RewriteAffectedInput{} }},
-	{Kind: OperationReviewRange, Executor: ExecutorLLM, RequiresRun: true, Label: "正在审阅已完成章节",
+	{Kind: OperationReviewRange, Executor: ExecutorLLM, Label: "正在审阅已完成章节",
 		NewInput: func() TaskInput { return &ReviewRangeInput{} }},
-	{Kind: OperationGenerateAsset, Executor: ExecutorExternal, RequiresRun: true, Label: "正在生成衍生资产",
+	{Kind: OperationGenerateAsset, Executor: ExecutorExternal, Label: "正在生成衍生资产",
 		NewInput: func() TaskInput { return &GenerateAssetInput{} }},
-	{Kind: OperationInspectAsset, Executor: ExecutorExternal, RequiresRun: true, Label: "正在核验衍生资产",
+	{Kind: OperationInspectAsset, Executor: ExecutorExternal, Label: "正在核验衍生资产",
 		NewInput: func() TaskInput { return &InspectAssetInput{} }},
 }
 
@@ -159,18 +155,18 @@ func (v ReviseCanonInput) Validate() error {
 }
 
 // 章节任务的 Basis 只钉住本章的要求作用域（D51）：相干要求变化使在途任务失效，
-// 不相干的用户专属变化（锁定、审批、其他章的要求）只让提案重定位。
+// 不相干的用户专属变化（锁定、审批、其他章的要求）只让提案重定位。章号是章节计划的位置
+// （D66），不在任务输入里另存一份。
 type WriteChapterInput struct {
 	ChapterPlanID string        `json:"chapter_plan_id"`
-	ChapterNumber int           `json:"chapter_number"`
 	Directives    []Directive   `json:"directives,omitempty"`
 	Basis         EvidenceBasis `json:"basis,omitzero"`
 	Goal          string        `json:"goal,omitempty"`
 }
 
 func (v WriteChapterInput) Validate() error {
-	if strings.TrimSpace(v.ChapterPlanID) == "" || v.ChapterNumber <= 0 {
-		return fmt.Errorf("chapter plan and positive chapter number are required: %w", ErrInvalid)
+	if strings.TrimSpace(v.ChapterPlanID) == "" {
+		return fmt.Errorf("chapter plan is required: %w", ErrInvalid)
 	}
 	if err := validateTaskDirectives(v.Directives); err != nil {
 		return err
@@ -184,7 +180,6 @@ func (v WriteChapterInput) Validate() error {
 type RewriteChapterInput struct {
 	ChapterID     string        `json:"chapter_id"`
 	ChapterPlanID string        `json:"chapter_plan_id"`
-	ChapterNumber int           `json:"chapter_number"`
 	Findings      []string      `json:"findings,omitempty"`
 	Rework        bool          `json:"rework,omitempty"`
 	Directives    []Directive   `json:"directives,omitempty"`
@@ -193,8 +188,8 @@ type RewriteChapterInput struct {
 }
 
 func (v RewriteChapterInput) Validate() error {
-	if strings.TrimSpace(v.ChapterID) == "" || strings.TrimSpace(v.ChapterPlanID) == "" || v.ChapterNumber <= 0 {
-		return fmt.Errorf("chapter, plan and number are required: %w", ErrInvalid)
+	if strings.TrimSpace(v.ChapterID) == "" || strings.TrimSpace(v.ChapterPlanID) == "" {
+		return fmt.Errorf("chapter and plan are required: %w", ErrInvalid)
 	}
 	reworks := slices.ContainsFunc(v.Directives, func(directive Directive) bool { return directive.Rework })
 	if v.Rework != (len(v.Findings) == 0) || v.Rework && !reworks {
@@ -204,20 +199,6 @@ func (v RewriteChapterInput) Validate() error {
 		return err
 	}
 	return v.Basis.Validate()
-}
-
-type RewriteAffectedInput struct {
-	ChapterIDs           []string `json:"chapter_ids"`
-	BaseRevision         Revision `json:"base_revision"`
-	ResolutionProposalID string   `json:"resolution_proposal_id"`
-	Reason               string   `json:"reason"`
-}
-
-func (v RewriteAffectedInput) Validate() error {
-	if v.BaseRevision <= InitialRevision || strings.TrimSpace(v.ResolutionProposalID) == "" || strings.TrimSpace(v.Reason) == "" {
-		return fmt.Errorf("base revision, resolution proposal and reason are required: %w", ErrInvalid)
-	}
-	return validateDistinctStrings("affected chapters", v.ChapterIDs)
 }
 
 // ReviewRangeInput 的 Basis 由装配层构造：裁定继承它，有效性按基线判定（D48）。
@@ -344,8 +325,8 @@ func validateEvidenceBasis(name string, basis EvidenceBasis) error {
 	return basis.Validate()
 }
 
-// TaskDirectives 返回任务输入携带的用户要求（§4.9）；不装配要求的种类返回空。
-func TaskDirectives(input TaskInput) []Directive {
+// taskDirectives 返回任务输入携带的用户要求（§4.9）；不装配要求的种类返回空。
+func taskDirectives(input TaskInput) []Directive {
 	switch value := input.(type) {
 	case *WriteChapterInput:
 		return value.Directives
@@ -356,7 +337,7 @@ func TaskDirectives(input TaskInput) []Directive {
 	}
 }
 
-// RepairChapters 返回自动修订任务（KindSpec.Repair）针对的章节，修订预算按章计（D63）。
+// RepairChapters 返回自动修订任务针对的章节，修订预算按章计（D63）。
 // 用户点名的返工不是自动修订，不计入（D78）。
 func RepairChapters(input TaskInput) []string {
 	if value, ok := input.(*RewriteChapterInput); ok && !value.Rework {
@@ -365,9 +346,9 @@ func RepairChapters(input TaskInput) []string {
 	return nil
 }
 
-// TaskBasis 返回任务输入携带的证据基线（D48/D51）：不带基线的种类返回零值，
+// taskBasis 返回任务输入携带的证据基线（D48/D51）：不带基线的种类返回零值，
 // 零值基线在任何 Revision 上都成立。
-func TaskBasis(input TaskInput) EvidenceBasis {
+func taskBasis(input TaskInput) EvidenceBasis {
 	switch value := input.(type) {
 	case *WriteChapterInput:
 		return value.Basis
@@ -392,7 +373,7 @@ func OperationBasis(operation Operation) (EvidenceBasis, error) {
 	if err != nil {
 		return EvidenceBasis{}, err
 	}
-	return TaskBasis(input), nil
+	return taskBasis(input), nil
 }
 
 func validateTaskDirectives(directives []Directive) error {

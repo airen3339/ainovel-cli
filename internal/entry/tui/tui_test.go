@@ -97,7 +97,8 @@ func assemble(tb testing.TB, executor *testExecutor, chiefModels chief.Models) (
 			tb.Fatalf("bind test model: %v", err)
 		}
 	}
-	return Deps{API: api, ConfigDir: configDir, UserID: "tester"}, api
+	verify := func(context.Context, appconfig.Config) error { return nil }
+	return Deps{API: api, ConfigDir: configDir, UserID: "tester", Verify: verify}, api
 }
 
 func testConfig() appconfig.Config {
@@ -330,7 +331,7 @@ func TestLibraryDeleteRequiresDoubleConfirm(t *testing.T) {
 	if message.err != nil || message.projectID != "book-del" {
 		t.Fatalf("delete result = %#v", message)
 	}
-	if projects, err := api.Projects.ListProjects(context.Background()); err != nil || len(projects) != 0 {
+	if projects, err := api.Workbench.Library(context.Background()); err != nil || len(projects) != 0 {
 		t.Fatalf("projects after delete = %#v, %v", projects, err)
 	}
 	updated, refreshCmd := m.Update(message)
@@ -386,7 +387,7 @@ func TestOpenWaitingProjectRestoresDecisionCard(t *testing.T) {
 			ProjectID: "book-1", Run: &waiting,
 			Decision: &workbench.PendingDecision{
 				Reason:   "第 1 章等你确认",
-				Proposal: domainmodel.Proposal{ID: "p-1", Reason: "第一章候选"}, HasProposal: true,
+				Proposal: domainmodel.Proposal{ID: "p-1", OperationID: "op-1", Reason: "第一章候选"}, HasProposal: true,
 			},
 		},
 	})
@@ -510,7 +511,10 @@ func TestHomeImportEntryImportsProjectionAndApprovesViaDecisionCard(t *testing.T
 	}
 	m = typeText(t, m, path)
 	m, cmd := press(t, m, tea.KeyEnter)
-	updated, _ := m.Update(findMsg[importDoneMsg](t, cmd))
+	updated, cmd := m.Update(findMsg[importDoneMsg](t, cmd))
+	m = updated.(model)
+	// 决定卡随快照而来：离开工作台再回来也还在。
+	updated, _ = m.Update(findMsg[benchRefreshedMsg](t, cmd))
 	m = updated.(model)
 	decision := m.bench.decision
 	if m.page != pageWorkbench || m.bench.projectID != "copied-book" ||
@@ -1169,7 +1173,7 @@ func TestActivityFeedScrollPausesFollowAndResumes(t *testing.T) {
 	publish := func(kind activity.Kind, callID string) {
 		hub.Publish(activity.Event{
 			ProjectID: "book-scroll", RunID: "run-1", OperationID: "op-1",
-			Kind: kind, Tool: "workspace_list", CallID: callID, At: time.Now().UTC(),
+			Kind: kind, Tool: "workspace_read", CallID: callID, At: time.Now().UTC(),
 		})
 	}
 	for i := 0; i < 40; i++ {

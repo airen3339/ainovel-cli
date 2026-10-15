@@ -68,7 +68,7 @@ func TestDriveCreationRunSettlesByStepKind(t *testing.T) {
 			}
 			runID := "run:" + projectID + ":1"
 			api = newTestApp(api.store, bootstrap.Options{Executors: tasks.ExecutorSet{LLM: executor}, Now: testTime, Goals: map[model.GoalKind]runs.Goal{"stub": &stubDeriver{store: api.store, steps: tc.steps(runID)}}})
-			strategy := model.CreationRunStrategy{ReviewCadence: model.ReviewPerPlanWindow, AutoRepairBudget: 1}
+			strategy := model.CreationRunStrategy{AutoRepairBudget: 1}
 			preset, err := model.NewCreationRunPreset("test", model.ApprovalAuto, strategy)
 			if err != nil {
 				t.Fatalf("preset: %v", err)
@@ -80,9 +80,7 @@ func TestDriveCreationRunSettlesByStepKind(t *testing.T) {
 			if err != nil {
 				t.Fatalf("start run: %v", err)
 			}
-			outcome, err := api.Runs.Drive(ctx, run, api.Tasks.ForCreation(tasks.StartOperationCommand{ProjectID: projectID, CoreProtocolVersion: "core-v1"}), runs.DriveCommand{
-				WorkerID: "worker", LeaseDuration: time.Minute, CreatedAt: testTime(),
-			})
+			outcome, err := api.Runs.Drive(ctx, run, api.Tasks.ForCreation(tasks.StartOperationCommand{ProjectID: projectID}, "worker", time.Minute), testTime())
 			if (err != nil) != tc.wantErr || outcome.Run.State != tc.state || outcome.Run.StateReason != tc.reason || executor.calls != tc.calls {
 				t.Fatalf("outcome = %#v, err = %v, executor calls = %d", outcome.Run, err, executor.calls)
 			}

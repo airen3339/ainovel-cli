@@ -8,30 +8,26 @@ import (
 
 // TestSubmissionSchemaExposesOnlyUsableParameters 钉住实跑教训：写新章也公开确认参数，模型
 // 每章都去确认前文全部事实；工作稿版本可选，模型就把整章正文抄进提交。每个 Worker 只公开
-// 有合法用途的参数，正文只经工作稿版本提交，参数里没有任何文档 ID（D66）。
+// 有合法用途的参数，正文由宿主取本章工作稿装配（D86），参数里没有任何文档 ID（D66）。
 func TestSubmissionSchemaExposesOnlyUsableParameters(t *testing.T) {
 	planning := []string{"compass", "volumes", "arcs", "chapters"}
 	redeclare := []string{"confirm_facts", "remove_facts"}
+	drafts := []string{"workspace_key", "workspace_version", "workspace_versions"}
 	cases := map[string]struct {
 		required, present, absent []string
-		factChapter               bool
 	}{
 		"architect.design": {
 			required: []string{"reason"}, present: append(append([]string{"entities", "facts"}, planning...), redeclare...),
 			// 创作意图只装用户的原话（D70），任何 Worker 都不能提交它。
-			absent: []string{"intent", "workspace_key", "workspace_version", "workspace_versions"},
+			absent: append([]string{"intent"}, drafts...),
 		},
 		"writer.compose": {
-			required: []string{"reason", "workspace_key", "workspace_version", "facts"}, present: []string{"entities"},
-			absent: append(append([]string{"workspace_versions"}, planning...), redeclare...),
+			required: []string{"reason", "facts"}, present: []string{"entities"},
+			absent: append(append(slices.Clone(drafts), planning...), redeclare...),
 		},
 		"writer.revise": {
-			required: []string{"reason", "workspace_key", "workspace_version"}, present: append([]string{"entities", "facts"}, redeclare...),
-			absent: append([]string{"workspace_versions"}, planning...),
-		},
-		"writer.revise_affected": {
-			required: []string{"reason", "workspace_versions"}, present: append([]string{"entities", "facts"}, redeclare...),
-			absent: append([]string{"workspace_key", "workspace_version"}, planning...), factChapter: true,
+			required: []string{"reason"}, present: append([]string{"entities", "facts"}, redeclare...),
+			absent: append(slices.Clone(drafts), planning...),
 		},
 	}
 	for id, want := range cases {
@@ -74,8 +70,9 @@ func TestSubmissionSchemaExposesOnlyUsableParameters(t *testing.T) {
 			if err := json.Unmarshal(schema.Properties["facts"], &facts); err != nil {
 				t.Fatal(err)
 			}
-			if slices.Contains(facts.Items.Required, "chapter") != want.factChapter {
-				t.Fatalf("fact chapter required = %v, want %v", !want.factChapter, want.factChapter)
+			// 来源章由宿主按任务填。
+			if slices.Contains(facts.Items.Required, "chapter") {
+				t.Fatal("fact chapter must not be required")
 			}
 		})
 	}

@@ -47,16 +47,15 @@ var allowedImports = map[string][]string{
 	// The driver cannot depend on application snapshots, evidence interpretation,
 	// novel policies, presentation queries, or application assembly.
 	"domain/creation": {"domain/model"},
-	"app/evidence":    {"domain/model", "infra/store", "domain/change", "domain/operation"},
 	"app/novel":       {"domain/model", "domain/narrative", "domain/derive", "infra/store", "domain/change", "domain/creation", "app/project", "app/resource", "app/task", "infra/export"},
-	"app/decision":    {"domain/model", "infra/store", "domain/change", "app/project", "app/resource", "app/task"},
+	"app/decision":    {"domain/model", "infra/store", "domain/change", "app/project"},
 	"app/workbench":   {"infra/activity", "domain/model", "domain/narrative", "infra/store", "domain/creation", "app/decision", "app/novel", "app/project"},
 	// 主编（D74）经各具名用例改书与推进，经 capability 跑会话；不碰引擎。
 	"app/chief": {"domain/model", "domain/narrative", "domain/creation", "infra/store", "infra/capability", "infra/capability/prompt", "infra/llm/models",
 		"app/decision", "app/novel", "app/profile", "app/project", "app/workbench"},
 	// 模型绑定用例只认配置与模型适配器，不认任务与作品。
 	"app/binding":    {"infra/config", "infra/llm", "infra/llm/models", "infra/capability/prompt"},
-	"bootstrap":      {"assets", "app/binding", "app/chief", "app/diag", "domain/model", "infra/store", "domain/change", "domain/creation", "app/decision", "app/evidence", "app/novel", "domain/operation", "app/profile", "app/project", "app/resource", "app/task", "app/workbench", "infra/activity", "infra/capability"},
+	"bootstrap":      {"assets", "app/binding", "app/chief", "app/diag", "domain/model", "infra/store", "domain/change", "domain/creation", "app/decision", "app/novel", "domain/operation", "app/profile", "app/project", "app/resource", "app/task", "app/workbench", "infra/activity", "infra/capability"},
 	"infra/config":   {},
 	"entry/headless": {"app/binding", "app/diag", "domain/model", "bootstrap", "domain/creation", "app/decision", "app/novel", "app/profile", "app/project", "app/resource", "app/task", "infra/jsonc"},
 	"entry/tui":      {"app/binding", "app/chief", "app/diag", "infra/activity", "domain/model", "bootstrap", "app/decision", "app/novel", "app/project", "app/workbench", "infra/config", "infra/jsonc"},
@@ -65,8 +64,10 @@ var allowedImports = map[string][]string{
 // Tests may open a real store for assembly; entry production code may not.
 var allowedTestImports = map[string][]string{
 	// 机制守护用运行时登记表核对它从源码推导的禁止集合（D64）。
-	"archtest":         {"domain/model"},
-	"app/task":         {"domain/change"},
+	"archtest": {"domain/model"},
+	"app/task": {"domain/change"},
+	// 装配作品仓库要官方包。
+	"app/decision":     {"app/resource"},
 	"domain/change":    {"infra/store"},
 	"domain/operation": {"infra/store"},
 	"domain/creation":  {"infra/store"},
@@ -111,7 +112,6 @@ func TestInternalPackagesRespectDependencyDirection(t *testing.T) {
 		visited[name] = true
 
 		checkImports(t, name, pkg.Imports, allowed, "生产代码")
-		checkLayerDirection(t, name, pkg.Imports)
 		testAllowed := slices.Concat(allowed, allowedTestImports[name])
 		checkImports(t, name, slices.Concat(pkg.TestImports, pkg.XTestImports), testAllowed, "测试代码")
 		return nil
@@ -140,42 +140,20 @@ func checkImports(t *testing.T, name string, imports, allowed []string, kind str
 	}
 }
 
-// TestModelHasNoInternalDependencies 单独钉住地基：model 是所有层的共同依赖，
-// 一旦它反向依赖任何包，整张依赖图立刻失去方向。
-func TestModelHasNoInternalDependencies(t *testing.T) {
-	pkg, err := build.ImportDir(filepath.Join("..", "domain", "model"), 0)
-	if err != nil {
-		t.Fatalf("import domain/model: %v", err)
-	}
-	for _, imported := range slices.Concat(pkg.Imports, pkg.TestImports, pkg.XTestImports) {
-		if strings.HasPrefix(imported, modulePath+"/") {
-			t.Errorf("domain/model 必须零内部依赖，实际依赖 %s", imported)
-		}
-	}
-}
-
-// Layer restrictions remain independent of package allowlists so a new entry
-// cannot silently reverse the architecture's direction.
-func checkLayerDirection(t *testing.T, name string, imports []string) {
-	t.Helper()
-	layer, _, _ := strings.Cut(name, "/")
-	for _, imported := range imports {
-		dependency, internal := strings.CutPrefix(imported, modulePath+"/internal/")
-		if !internal {
+// TestAllowlistRespectsLayers 守白名单本身：domain 只依赖 domain，infra 不依赖 app 与
+// 入口，app 不依赖入口与装配。白名单改动即使漏审，也不能悄悄反转层的方向。
+func TestAllowlistRespectsLayers(t *testing.T) {
+	below := map[string][]string{"domain": {"domain"}, "infra": {"domain", "infra"}, "app": {"domain", "infra", "app"}}
+	for name, dependencies := range allowedImports {
+		layer, _, _ := strings.Cut(name, "/")
+		allowed, restricted := below[layer]
+		if !restricted {
 			continue
 		}
-		target, _, _ := strings.Cut(dependency, "/")
-		forbidden := false
-		switch layer {
-		case "domain":
-			forbidden = target != "domain"
-		case "infra":
-			forbidden = target != "domain" && target != "infra"
-		case "app":
-			forbidden = target != "domain" && target != "infra" && target != "app"
-		}
-		if forbidden {
-			t.Errorf("包 %s 不得依赖 %s：违反 %s 层的生产依赖方向", name, dependency, layer)
+		for _, dependency := range dependencies {
+			if target, _, _ := strings.Cut(dependency, "/"); !slices.Contains(allowed, target) {
+				t.Errorf("包 %s 不得依赖 %s：违反 %s 层的依赖方向", name, dependency, layer)
+			}
 		}
 	}
 }

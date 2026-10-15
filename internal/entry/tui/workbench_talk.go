@@ -140,9 +140,9 @@ func (m model) talkLines(width int) []string {
 	case thread.Reply != "":
 		add(styledLines(thread.Reply, width, benchTheme.Text)...)
 	case thread.Busy && thread.Thinking:
-		add(styleFocus.Render(m.bench.pulse.spinner() + " 主编在想"))
+		add(benchTheme.Focus.Render(m.bench.pulse.spinner() + " 主编在想"))
 	case thread.Busy:
-		add(styleFocus.Render(m.bench.pulse.spinner() + " 主编在看"))
+		add(benchTheme.Focus.Render(m.bench.pulse.spinner() + " 主编在看"))
 	}
 	if thread.Err != "" {
 		add(styledLines("! "+oneLine(thread.Err), width, benchTheme.Error)...)
@@ -157,7 +157,7 @@ func (m model) talkLines(width int) []string {
 
 // milestoneLine 是一件生产里程碑：记号按结果着色，文字压低，与对话区分开。
 func milestoneLine(milestone workbench.Milestone, width int) string {
-	mark := styleNotice
+	mark := benchTheme.Success
 	switch milestone.Tone {
 	case workbench.MilestoneWait:
 		mark = benchTheme.Warning
@@ -214,11 +214,11 @@ func (m model) actionLine(entry chief.Entry) string {
 	case entry.Failed:
 		return benchTheme.Error.Render("✗ " + entry.Text)
 	case entry.Change:
-		return styleNotice.Render("✓ ") + benchTheme.Text.Render(entry.Text)
+		return benchTheme.Success.Render("✓ ") + benchTheme.Text.Render(entry.Text)
 	case entry.Done:
 		return benchTheme.Muted.Render("· " + entry.Text)
 	case m.bench.thread.Busy:
-		return styleFocus.Render(m.bench.pulse.spinner() + " " + entry.Text)
+		return benchTheme.Focus.Render(m.bench.pulse.spinner() + " " + entry.Text)
 	default:
 		return benchTheme.Muted.Render("◦ " + entry.Text + " · 未完成")
 	}

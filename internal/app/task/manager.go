@@ -25,12 +25,6 @@ func New(s *store.Store, engine *operationengine.Engine, executors ExecutorSet, 
 	return &Manager{store: s, operations: engine, executors: executors, profiles: profiles}
 }
 func (s *Manager) HasLLM() bool { return s.executors.LLM != nil && ready(s.executors.LLM) }
-func (s *Manager) ExternalConfigDigest() string {
-	if configured, ok := s.executors.External.(interface{ ConfigDigest() string }); ok {
-		return configured.ConfigDigest()
-	}
-	return ""
-}
 
 type ExecutorSet struct {
 	LLM      operationengine.Executor

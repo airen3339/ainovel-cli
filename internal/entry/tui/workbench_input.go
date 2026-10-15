@@ -269,17 +269,17 @@ func (m model) approve() (tea.Model, tea.Cmd) {
 		// 过时的稿件不能直接通过（会撞版本冲突）：续跑时由后继按现在的内容重写（§5.5 第 4 条）。
 		bench.notice = "这份稿件完成后书又有了新变化，不能直接通过；回车按现在的内容重写"
 	default:
-		return m.decideCmd(true, "")
+		return m.approveCmd()
 	}
 	return m, nil
 }
 
 // benchCommand 是底栏 `/` 命令：唯一前缀匹配，命令面板与帮助共用同一张表。启停创作、
 // 看稿用按键，提要求、退稿、调篇幅跟主编说，这里只留与书的内容无关的事。
-// idleOnly 的命令在创作进行中屏蔽，以免并发驱动；quiet 的不进 `/` 总览。
+// quiet 的不进 `/` 总览。
 type benchCommand struct {
 	name, usage, label string
-	idleOnly, quiet    bool
+	quiet              bool
 	run                func(m model, arg string) (tea.Model, tea.Cmd)
 }
 
@@ -335,10 +335,6 @@ func (m model) runCommand(text string) (tea.Model, tea.Cmd) {
 		name = "help"
 	}
 	if command, ok := matchCommand(name); ok {
-		if command.idleOnly && m.bench.writing {
-			m.bench.notice = "创作进行中，先按 Esc 暂停"
-			return m, nil
-		}
 		return command.run(m, strings.TrimSpace(arg))
 	}
 	var matches []string

@@ -1,15 +1,13 @@
 package project
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"time"
 
-	"github.com/voocel/ainovel-cli/internal/domain/change"
 	"github.com/voocel/ainovel-cli/internal/domain/model"
 )
 
@@ -36,14 +34,21 @@ func (s *Repository) ExportProject(ctx context.Context, projectID string, revisi
 	if err != nil {
 		return ProjectProjection{}, err
 	}
+	return projectionOf(project), nil
+}
+
+// projectionOf 是快照的投影：导出与导入比较差异共用。
+func projectionOf(project Snapshot) ProjectProjection {
 	return ProjectProjection{
 		ProjectID: project.ID, BaseRevision: project.Revision,
 		Intent: project.Intent, Compass: project.Compass, Plan: project.Plan, Entities: project.Entities, Attachments: project.Attachments, Canon: project.Canon,
 		Manuscript: project.Manuscript, Ownership: project.Ownership, Directives: project.Directives,
 		Approval: project.Approval, Overlay: project.Overlay, Assets: project.Assets,
-	}, nil
+	}
 }
 
+// ImportProject 把作品文件作为一份待批准草案导入：库中已有的作品按差异导入；还没有的先以
+// 投影的 Intent/Approval 建出权威流，其余内容作为草案，用户批准后成书。
 func (s *Repository) ImportProject(
 	ctx context.Context,
 	changeID, userID, reason string,
@@ -62,36 +67,6 @@ func (s *Repository) ImportProjectWithSemantic(
 	return s.importProject(ctx, changeID, userID, reason, projection, createdAt, true)
 }
 
-// ImportNewProject 从投影建立全新作品：先以投影的 Intent/Approval 初始化
-// 权威流，再把其余内容作为一份待批准草案导入，用户批准后成书。
-func (s *Repository) ImportNewProject(
-	ctx context.Context,
-	changeID, userID, reason string,
-	projection ProjectProjection,
-	createdAt time.Time,
-) (model.Proposal, error) {
-	if err := s.validateProjectionArtifacts(ctx, projection); err != nil {
-		return model.Proposal{}, err
-	}
-	approval := projection.Approval
-	if approval == "" {
-		approval = model.ApprovalAuto
-	}
-	project, err := s.CreateProject(ctx, CreateProjectCommand{
-		ProjectID: projection.ProjectID,
-		ChangeID:  changeID + ":create",
-		UserID:    userID,
-		Reason:    reason,
-		Draft:     ProjectDraft{Intent: projection.Intent, Approval: approval},
-		CreatedAt: createdAt,
-	})
-	if err != nil {
-		return model.Proposal{}, err
-	}
-	projection.BaseRevision = project.Revision
-	return s.importProject(ctx, changeID, userID, reason, projection, createdAt, false)
-}
-
 func (s *Repository) importProject(
 	ctx context.Context,
 	changeID, userID, reason string,
@@ -99,17 +74,31 @@ func (s *Repository) importProject(
 	createdAt time.Time,
 	analyzeSemantic bool,
 ) (model.Proposal, error) {
-	if strings.TrimSpace(projection.ProjectID) == "" || projection.BaseRevision <= model.InitialRevision {
-		return model.Proposal{}, fmt.Errorf("project projection identity and base revision are required: %w", model.ErrInvalid)
+	if strings.TrimSpace(projection.ProjectID) == "" {
+		return model.Proposal{}, fmt.Errorf("project projection identity is required: %w", model.ErrInvalid)
 	}
 	if err := s.validateProjectionArtifacts(ctx, projection); err != nil {
 		return model.Proposal{}, err
+	}
+	if _, err := s.Project(ctx, projection.ProjectID, 0); errors.Is(err, model.ErrNotFound) {
+		created, err := s.CreateProject(ctx, CreateProjectCommand{
+			ProjectID: projection.ProjectID, ChangeID: changeID + ":create", UserID: userID, Reason: reason,
+			Draft: ProjectDraft{Intent: projection.Intent, Approval: projection.Approval}, CreatedAt: createdAt,
+		})
+		if err != nil {
+			return model.Proposal{}, err
+		}
+		projection.BaseRevision = created.Revision
+	} else if err != nil {
+		return model.Proposal{}, err
+	} else if projection.BaseRevision <= model.InitialRevision {
+		return model.Proposal{}, fmt.Errorf("importing into an existing project requires its base revision: %w", model.ErrInvalid)
 	}
 	base, err := s.Project(ctx, projection.ProjectID, projection.BaseRevision)
 	if err != nil {
 		return model.Proposal{}, err
 	}
-	currentDocuments, err := snapshotDocuments(base)
+	currentDocuments, err := projectionDocuments(projectionOf(base))
 	if err != nil {
 		return model.Proposal{}, err
 	}
@@ -117,40 +106,12 @@ func (s *Repository) importProject(
 	if err != nil {
 		return model.Proposal{}, err
 	}
-	keys := make([]string, 0, len(currentDocuments)+len(desiredDocuments))
-	seen := make(map[string]struct{}, len(currentDocuments)+len(desiredDocuments))
-	for key := range currentDocuments {
-		keys = append(keys, key)
-		seen[key] = struct{}{}
-	}
-	for key := range desiredDocuments {
-		if _, exists := seen[key]; !exists {
-			keys = append(keys, key)
-		}
-	}
-	slices.Sort(keys)
-	patches := make([]model.Patch, 0, len(keys))
-	for _, key := range keys {
-		current, inCurrent := currentDocuments[key]
-		desired, inDesired := desiredDocuments[key]
-		if inDesired && desired.ref.Kind == model.DocumentCanon {
-			desired, err = normalizeProjectedCanon(current, inCurrent, desired)
-			if err != nil {
-				return model.Proposal{}, err
-			}
-		}
-		switch {
-		case !inDesired:
-			patches = append(patches, model.Patch{Document: current.ref, Operation: model.PatchDelete})
-		case !inCurrent || !bytes.Equal(current.content, desired.content):
-			patches = append(patches, model.Patch{
-				Document: desired.ref, Operation: model.PatchPut,
-				Content: append(json.RawMessage(nil), desired.content...),
-			})
-		}
+	patches, err := model.StatePatches(currentDocuments, desiredDocuments)
+	if err != nil {
+		return model.Proposal{}, err
 	}
 	if len(patches) == 0 {
-		return model.Proposal{}, fmt.Errorf("project projection contains no changes: %w", change.ErrInvalidState)
+		return model.Proposal{}, fmt.Errorf("project projection contains no changes: %w", model.ErrInvalid)
 	}
 	proposal := model.Proposal{
 		ID:           changeID,
@@ -182,56 +143,8 @@ func (s *Repository) validateProjectionArtifacts(ctx context.Context, projection
 	return nil
 }
 
-func normalizeProjectedCanon(current projectionDocument, inCurrent bool, desired projectionDocument) (projectionDocument, error) {
-	var fact model.CanonFact
-	if err := json.Unmarshal(desired.content, &fact); err != nil {
-		return projectionDocument{}, fmt.Errorf("decode projected canon %q: %w", desired.ref.ID, err)
-	}
-	fact.PreviousValue = nil
-	if inCurrent {
-		var previous model.CanonFact
-		if err := json.Unmarshal(current.content, &previous); err != nil {
-			return projectionDocument{}, fmt.Errorf("decode base canon %q: %w", desired.ref.ID, err)
-		}
-		previous.PreviousValue = nil
-		desiredComparable, err := json.Marshal(fact)
-		if err != nil {
-			return projectionDocument{}, fmt.Errorf("encode projected canon %q for comparison: %w", desired.ref.ID, err)
-		}
-		currentComparable, err := json.Marshal(previous)
-		if err != nil {
-			return projectionDocument{}, fmt.Errorf("encode base canon %q for comparison: %w", desired.ref.ID, err)
-		}
-		if bytes.Equal(desiredComparable, currentComparable) {
-			desired.content = append(json.RawMessage(nil), current.content...)
-			return desired, nil
-		}
-		fact.PreviousValue = append(json.RawMessage(nil), previous.Value...)
-	}
-	content, err := json.Marshal(fact)
-	if err != nil {
-		return projectionDocument{}, fmt.Errorf("encode projected canon %q: %w", desired.ref.ID, err)
-	}
-	desired.content = content
-	return desired, nil
-}
-
-type projectionDocument struct {
-	ref     model.DocumentRef
-	content json.RawMessage
-}
-
-func snapshotDocuments(project Snapshot) (map[string]projectionDocument, error) {
-	return projectionDocuments(ProjectProjection{
-		ProjectID: project.ID, BaseRevision: project.Revision,
-		Intent: project.Intent, Compass: project.Compass, Plan: project.Plan, Entities: project.Entities, Attachments: project.Attachments, Canon: project.Canon,
-		Manuscript: project.Manuscript, Ownership: project.Ownership, Directives: project.Directives,
-		Approval: project.Approval, Overlay: project.Overlay, Assets: project.Assets,
-	})
-}
-
-func projectionDocuments(projection ProjectProjection) (map[string]projectionDocument, error) {
-	documents := make(map[string]projectionDocument)
+func projectionDocuments(projection ProjectProjection) (model.DocumentSet, error) {
+	documents := make(model.DocumentSet)
 	add := func(ref model.DocumentRef, value any) error {
 		if _, exists := documents[ref.Key()]; exists {
 			return fmt.Errorf("duplicate projected document %q: %w", ref.Key(), model.ErrInvalid)
@@ -240,14 +153,14 @@ func projectionDocuments(projection ProjectProjection) (map[string]projectionDoc
 		if err != nil {
 			return fmt.Errorf("encode projected document %q: %w", ref.Key(), err)
 		}
-		documents[ref.Key()] = projectionDocument{ref: ref, content: content}
+		documents[ref.Key()] = model.DocumentVersion{Document: ref, Content: content}
 		return nil
 	}
-	if err := add(model.DocumentRef{Kind: model.DocumentIntent, ID: "root"}, projection.Intent); err != nil {
+	if err := add(model.DocumentRef{Kind: model.DocumentIntent, ID: model.SingletonDocumentID}, projection.Intent); err != nil {
 		return nil, err
 	}
 	if projection.Compass != nil {
-		if err := add(model.DocumentRef{Kind: model.DocumentCompass, ID: "root"}, *projection.Compass); err != nil {
+		if err := add(model.DocumentRef{Kind: model.DocumentCompass, ID: model.SingletonDocumentID}, *projection.Compass); err != nil {
 			return nil, err
 		}
 	}
@@ -288,18 +201,18 @@ func projectionDocuments(projection ProjectProjection) (map[string]projectionDoc
 	}
 	if projection.Approval != "" {
 		setting := model.ApprovalSetting{Policy: projection.Approval}
-		if err := add(model.DocumentRef{Kind: model.DocumentApproval, ID: "root"}, setting); err != nil {
+		if err := add(model.DocumentRef{Kind: model.DocumentApproval, ID: model.SingletonDocumentID}, setting); err != nil {
 			return nil, err
 		}
 	}
 	if len(projection.Overlay) > 0 {
 		overlay := model.ProjectOverlay{Rules: projection.Overlay}
-		if err := add(model.DocumentRef{Kind: model.DocumentOverlay, ID: "root"}, overlay); err != nil {
+		if err := add(model.DocumentRef{Kind: model.DocumentOverlay, ID: model.SingletonDocumentID}, overlay); err != nil {
 			return nil, err
 		}
 	}
 	if projection.Assets != nil {
-		if err := add(model.DocumentRef{Kind: model.DocumentAssets, ID: "root"}, *projection.Assets); err != nil {
+		if err := add(model.DocumentRef{Kind: model.DocumentAssets, ID: model.SingletonDocumentID}, *projection.Assets); err != nil {
 			return nil, err
 		}
 	}

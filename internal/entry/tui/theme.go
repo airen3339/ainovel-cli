@@ -25,9 +25,9 @@ var benchColors = struct {
 }
 
 type benchStyles struct {
-	Text, Muted, Border, Accent lipgloss.Style
-	Selected, Warning, Error    lipgloss.Style
-	Title, Thought              lipgloss.Style
+	Text, Muted, Border, Accent, Focus lipgloss.Style
+	Selected, Warning, Error, Success  lipgloss.Style
+	Title, Thought                     lipgloss.Style
 }
 
 var benchTheme = newBenchStyles()
@@ -38,9 +38,11 @@ func newBenchStyles() benchStyles {
 		Muted:    lipgloss.NewStyle().Foreground(benchColors.Muted),
 		Border:   lipgloss.NewStyle().Foreground(benchColors.Border),
 		Accent:   lipgloss.NewStyle().Foreground(benchColors.Accent),
+		Focus:    lipgloss.NewStyle().Foreground(benchColors.Accent).Bold(true),
 		Selected: lipgloss.NewStyle().Foreground(benchColors.SelectedText).Background(benchColors.SelectedBackground).Bold(true),
 		Warning:  lipgloss.NewStyle().Foreground(benchColors.Warning).Bold(true),
 		Error:    lipgloss.NewStyle().Foreground(benchColors.Error).Bold(true),
+		Success:  lipgloss.NewStyle().Foreground(benchColors.Success),
 		Title:    lipgloss.NewStyle().Foreground(benchColors.Text).Bold(true),
 		// 模型的思考是过程不是产出：比说明再淡一层、斜体，让大纲、设定、正文站在前面。
 		Thought: lipgloss.NewStyle().Foreground(benchColors.Faint).Italic(true),

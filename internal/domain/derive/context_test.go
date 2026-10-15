@@ -56,7 +56,7 @@ func TestWriteContextMeetsMinimumWritingContract(t *testing.T) {
 			{ID: "chapter-2", PlanNodeID: "chapter-plan-2", Number: 2, Author: model.AuthorAI, Blocks: []model.ManuscriptBlock{{ID: "block-1", Text: "上一章结尾必须可见"}}},
 		},
 		Ownership: []model.OwnershipRule{{Target: locked, Control: model.ControlLocked}},
-	}, model.OperationWriteChapter, json.RawMessage(`{"chapter_plan_id":"chapter-plan-3","chapter_number":3}`))
+	}, model.OperationWriteChapter, json.RawMessage(`{"chapter_plan_id":"chapter-plan-3"}`))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}
@@ -120,7 +120,7 @@ func documentKeys(context selection) []string {
 	return keys
 }
 
-const rewriteChapter2Task = `{"chapter_ids":["chapter-2"],"base_revision":3,"resolution_proposal_id":"p-1","reason":"底线改变"}`
+const rewriteChapter2Task = `{"chapter_id":"chapter-2","chapter_plan_id":"chapter-plan-2","findings":["底线改变"]}`
 
 func TestBuildStoryContextSelectsDocumentsByOperation(t *testing.T) {
 	allStructural := []string{
@@ -144,12 +144,6 @@ func TestBuildStoryContextSelectsDocumentsByOperation(t *testing.T) {
 		want []string
 	}{
 		{
-			// 直接依赖（正文→计划节点）、传递依赖（章→弧→卷、计划→事实→实体）、实体引用（事实 depends_on）。
-			name: "rewrite_affected follows the dependency closure",
-			kind: model.OperationRewriteAffected, task: rewriteChapter2Task,
-			want: []string{"canon:hero-location", "entity:ferry", "entity:hero", "manuscript:chapter-2", "plan:arc-1", "plan:chapter-plan-2", "plan:volume-1"},
-		},
-		{
 			// 窗口审阅（D62）：锚在窗口首章走有界装配，衔接章（上一章正文）随固定段进入。
 			name: "review_range anchors at the window with the seam chapter",
 			kind: model.OperationReviewRange,
@@ -159,32 +153,32 @@ func TestBuildStoryContextSelectsDocumentsByOperation(t *testing.T) {
 		},
 		{
 			name: "write_chapter includes previous chapter manuscript only",
-			kind: model.OperationWriteChapter, task: `{"chapter_plan_id":"chapter-plan-3","chapter_number":3}`,
+			kind: model.OperationWriteChapter, task: `{"chapter_plan_id":"chapter-plan-3"}`,
 			want: withManuscript("chapter-2"),
 		},
 		{
 			// 上一章没有正文时回退到更早的一章。
 			name: "write_chapter skips unwritten previous chapter",
-			kind: model.OperationWriteChapter, task: `{"chapter_plan_id":"chapter-plan-3","chapter_number":3}`,
+			kind: model.OperationWriteChapter, task: `{"chapter_plan_id":"chapter-plan-3"}`,
 			edit: func(content *ProjectContent) { content.Manuscript = content.Manuscript[:1] },
 			want: withManuscript("chapter-1"),
 		},
 		{
 			name: "write_chapter of the first chapter has no previous manuscript",
-			kind: model.OperationWriteChapter, task: `{"chapter_plan_id":"chapter-plan-1","chapter_number":1}`,
+			kind: model.OperationWriteChapter, task: `{"chapter_plan_id":"chapter-plan-1"}`,
 			want: withManuscript(),
 		},
 		{
 			name: "rewrite_chapter includes own and previous manuscript",
 			kind: model.OperationRewriteChapter,
-			task: `{"chapter_id":"chapter-2","chapter_plan_id":"chapter-plan-2","chapter_number":2,"findings":["节奏拖沓"]}`,
+			task: `{"chapter_id":"chapter-2","chapter_plan_id":"chapter-plan-2","findings":["节奏拖沓"]}`,
 			want: withManuscript("chapter-1", "chapter-2"),
 		},
 		{
 			// 重写要与后文衔接（D68）：已写的下一章正文一并装入。
 			name: "rewrite_chapter includes the next written manuscript",
 			kind: model.OperationRewriteChapter,
-			task: `{"chapter_id":"chapter-1","chapter_plan_id":"chapter-plan-1","chapter_number":1,"findings":["左右手写反"]}`,
+			task: `{"chapter_id":"chapter-1","chapter_plan_id":"chapter-plan-1","findings":["左右手写反"]}`,
 			want: withManuscript("chapter-1", "chapter-2"),
 		},
 		{
@@ -223,9 +217,9 @@ func TestStoryContextCarriesTheCompass(t *testing.T) {
 	compass := model.DocumentRef{Kind: model.DocumentCompass, ID: model.SingletonDocumentID}.Key()
 	for kind, task := range map[model.OperationKind]string{
 		model.OperationDevelopPlan:    `{"intent":"凡人远行"}`,
-		model.OperationWriteChapter:   `{"chapter_plan_id":"chapter-plan-2","chapter_number":2}`,
+		model.OperationWriteChapter:   `{"chapter_plan_id":"chapter-plan-2"}`,
 		model.OperationReviseCanon:    `{"chapter_id":"chapter-1","reason":"核验事实"}`,
-		model.OperationRewriteChapter: `{"chapter_id":"chapter-2","chapter_plan_id":"chapter-plan-2","chapter_number":2,"findings":["节奏慢"]}`,
+		model.OperationRewriteChapter: `{"chapter_id":"chapter-2","chapter_plan_id":"chapter-plan-2","findings":["节奏慢"]}`,
 	} {
 		context, err := selectContext(content, kind, json.RawMessage(task))
 		if err != nil {
@@ -241,15 +235,15 @@ func TestStoryContextCarriesTheCompass(t *testing.T) {
 func TestModelViewRendersStoryLanguage(t *testing.T) {
 	content := contextFixture()
 	content.Ownership = []model.OwnershipRule{{Target: model.DocumentRef{Kind: model.DocumentManuscript, ID: "chapter-1"}, Control: model.ControlLocked}}
-	view, err := BuildModelView(content, model.OperationRewriteAffected, json.RawMessage(rewriteChapter2Task))
+	view, err := BuildModelView(content, model.OperationRewriteChapter, json.RawMessage(rewriteChapter2Task))
 	if err != nil {
 		t.Fatalf("build view: %v", err)
 	}
-	// 锁定的第 1 章随受影响重写进入上下文，与目标章一起按章号渲染。
+	// 上一章与目标章一起按章号渲染。
 	if chapters := view.Context.Chapters; len(chapters) != 2 || chapters[1].Chapter != 2 || chapters[1].Text != "荒村正文\n夜话" {
 		t.Fatalf("chapters = %#v", chapters)
 	}
-	if string(view.Task) != `{"chapters":[2],"reason":"底线改变"}` {
+	if string(view.Task) != `{"chapter":2,"findings":["底线改变"]}` {
 		t.Fatalf("task = %s", view.Task)
 	}
 	if len(view.Ownership) != 1 || view.Ownership[0].Target != "第 1 章《第一章》的正文" {
@@ -263,28 +257,10 @@ func TestModelViewRendersStoryLanguage(t *testing.T) {
 	}
 }
 
-func TestBuildStoryContextIncludesLockedAndGuidedOwnershipTargets(t *testing.T) {
-	content := contextFixture()
-	content.Ownership = []model.OwnershipRule{
-		{Target: model.DocumentRef{Kind: model.DocumentManuscript, ID: "chapter-1"}, Control: model.ControlOpen},
-		{Target: model.DocumentRef{Kind: model.DocumentEntity, ID: "villain"}, Control: model.ControlGuided, Guidance: []string{"反派不能脸谱化"}},
-		{Target: model.DocumentRef{Kind: model.DocumentCanon, ID: "hero-bottom-line"}, Control: model.ControlLocked},
-	}
-	context, err := selectContext(content, model.OperationRewriteAffected, json.RawMessage(rewriteChapter2Task))
-	if err != nil {
-		t.Fatalf("build context: %v", err)
-	}
-	// 范围型任务：locked/guided 目标进入上下文，open 目标不进；规则本身在 project_rules 层。
-	want := []string{"canon:hero-bottom-line", "canon:hero-location", "entity:ferry", "entity:hero", "entity:villain", "manuscript:chapter-2", "plan:arc-1", "plan:chapter-plan-2", "plan:volume-1"}
-	if got := documentKeys(context); !slices.Equal(got, want) {
-		t.Fatalf("documents = %v, want %v", got, want)
-	}
-}
-
 func TestBuildStoryContextSkipsIntentDependencyWithoutDocument(t *testing.T) {
 	content := contextFixture()
 	content.Plan[0].DependsOn = []model.DocumentRef{{Kind: model.DocumentIntent, ID: model.SingletonDocumentID}}
-	context, err := selectContext(content, model.OperationRewriteAffected, json.RawMessage(rewriteChapter2Task))
+	context, err := selectContext(content, model.OperationRewriteChapter, json.RawMessage(rewriteChapter2Task))
 	if err != nil {
 		t.Fatalf("build context: %v", err)
 	}
@@ -308,28 +284,20 @@ func TestBuildStoryContextRejectsMissingDependencies(t *testing.T) {
 			edit: func(content *ProjectContent) {
 				content.Plan[3].DependsOn = []model.DocumentRef{{Kind: model.DocumentCanon, ID: "missing"}}
 			},
-			kind: model.OperationRewriteAffected, task: rewriteChapter2Task,
+			kind: model.OperationRewriteChapter, task: rewriteChapter2Task,
 			want: `context dependency "canon:missing" does not exist`,
 		},
 		{
 			name: "canon subject entity is absent",
 			edit: func(content *ProjectContent) { content.Entities = content.Entities[1:] },
-			kind: model.OperationRewriteAffected, task: rewriteChapter2Task,
+			kind: model.OperationRewriteChapter, task: rewriteChapter2Task,
 			want: `context dependency "entity:hero" does not exist`,
 		},
 		{
 			name: "task references an absent manuscript",
-			kind: model.OperationRewriteAffected,
-			task: `{"chapter_ids":["chapter-9"],"base_revision":3,"resolution_proposal_id":"p-1","reason":"底线改变"}`,
+			kind: model.OperationRewriteChapter,
+			task: `{"chapter_id":"chapter-9","chapter_plan_id":"chapter-plan-2","findings":["底线改变"]}`,
 			want: `context dependency "manuscript:chapter-9" does not exist`,
-		},
-		{
-			name: "locked ownership targets an absent document",
-			edit: func(content *ProjectContent) {
-				content.Ownership = []model.OwnershipRule{{Target: model.DocumentRef{Kind: model.DocumentPlan, ID: "ending"}, Control: model.ControlLocked}}
-			},
-			kind: model.OperationRewriteAffected, task: rewriteChapter2Task,
-			want: `context dependency "plan:ending" does not exist`,
 		},
 	}
 	for _, tc := range cases {
@@ -358,7 +326,7 @@ func TestBuildStoryContextRejectsInvalidInput(t *testing.T) {
 		{name: "initial revision", edit: func(c *ProjectContent) { c.Revision = 0 }, kind: model.OperationDevelopPlan, task: `{"intent":"x","fixed_chapters":1}`, want: "positive revision and task are required"},
 		{name: "empty task", kind: model.OperationDevelopPlan, task: ``, want: "positive revision and task are required"},
 		{name: "malformed task", kind: model.OperationDevelopPlan, task: `{"intent":`, want: "positive revision and task are required"},
-		{name: "invalid task input", kind: model.OperationWriteChapter, task: `{"chapter_plan_id":"chapter-plan-1","chapter_number":0}`, want: "write_chapter task input"},
+		{name: "invalid task input", kind: model.OperationWriteChapter, task: `{"chapter_plan_id":" "}`, want: "write_chapter task input"},
 		{name: "invalid ownership rule", edit: func(c *ProjectContent) {
 			c.Ownership = []model.OwnershipRule{{Target: model.DocumentRef{Kind: model.DocumentEntity, ID: "hero"}, Control: model.ControlGuided}}
 		}, kind: model.OperationDevelopPlan, task: `{"intent":"x","fixed_chapters":1}`, want: "guided ownership requires guidance"},
@@ -388,14 +356,15 @@ func TestContextKeyIsCanonicalAndBoundToKindAndVersion(t *testing.T) {
 		}
 		return value
 	}
-	base := key(model.OperationWriteChapter, `{"chapter_plan_id":"c","chapter_number":9007199254740993,"directives":[]}`)
-	if base != key(model.OperationWriteChapter, "\n{ \"directives\" : [ ],\n \"chapter_number\":9007199254740993, \"chapter_plan_id\":\"c\" }") {
+	base := key(model.OperationWriteChapter, `{"chapter_plan_id":"c","directives":[]}`)
+	if base != key(model.OperationWriteChapter, "\n{ \"directives\" : [ ],\n \"chapter_plan_id\":\"c\" }") {
 		t.Fatal("key order and whitespace changed the context key")
 	}
-	if base == key(model.OperationWriteChapter, `{"chapter_plan_id":"c","chapter_number":9007199254740992,"directives":[]}`) {
+	if key(model.OperationRevisePlan, `{"intent":"x","existing_chapters":9007199254740993}`) ==
+		key(model.OperationRevisePlan, `{"intent":"x","existing_chapters":9007199254740992}`) {
 		t.Fatal("large integers lost precision in the context key")
 	}
-	if base == key(model.OperationRewriteChapter, `{"chapter_plan_id":"c","chapter_number":9007199254740993,"directives":[]}`) {
+	if base == key(model.OperationRewriteChapter, `{"chapter_plan_id":"c","directives":[]}`) {
 		t.Fatal("operation kind is not part of the context key")
 	}
 	if ViewKind != "model_view.v1" {

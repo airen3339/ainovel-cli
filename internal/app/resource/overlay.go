@@ -40,7 +40,7 @@ func (s *Catalog) SetProjectOverlay(ctx context.Context, command SetProjectOverl
 	if err != nil {
 		return ProjectOverlayResult{}, err
 	}
-	ref := model.DocumentRef{Kind: model.DocumentOverlay, ID: "root"}
+	ref := model.DocumentRef{Kind: model.DocumentOverlay, ID: model.SingletonDocumentID}
 	existing, err := s.store.GetDocument(ctx, target, ref, revision)
 	if err != nil && !errors.Is(err, model.ErrNotFound) {
 		return ProjectOverlayResult{}, err
@@ -79,7 +79,7 @@ func (s *Catalog) SetProjectOverlay(ctx context.Context, command SetProjectOverl
 		Author: model.Author{Kind: model.AuthorUser, ID: command.UserID},
 		Reason: command.Reason, Patches: []model.Patch{patch},
 		ApprovalState: model.ApprovalPending, CreatedAt: command.CreatedAt,
-	}, command.CreatedAt)
+	})
 	if err != nil {
 		return ProjectOverlayResult{}, err
 	}
@@ -143,7 +143,7 @@ func (s *Catalog) SetProjectAssets(ctx context.Context, command SetProjectAssets
 	if err != nil {
 		return ProjectAssetsResult{}, err
 	}
-	docRef := model.DocumentRef{Kind: model.DocumentAssets, ID: "root"}
+	docRef := model.DocumentRef{Kind: model.DocumentAssets, ID: model.SingletonDocumentID}
 	existing, err := s.store.GetDocument(ctx, target, docRef, revision)
 	if err != nil && !errors.Is(err, model.ErrNotFound) {
 		return ProjectAssetsResult{}, err
@@ -175,7 +175,7 @@ func (s *Catalog) SetProjectAssets(ctx context.Context, command SetProjectAssets
 		Author: model.Author{Kind: model.AuthorUser, ID: command.UserID},
 		Reason: command.Reason, Patches: []model.Patch{patch},
 		ApprovalState: model.ApprovalPending, CreatedAt: command.CreatedAt,
-	}, command.CreatedAt)
+	})
 	if err != nil {
 		return ProjectAssetsResult{}, err
 	}

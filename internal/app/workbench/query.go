@@ -16,11 +16,12 @@ import (
 	projectdoc "github.com/voocel/ainovel-cli/internal/app/project"
 	"github.com/voocel/ainovel-cli/internal/domain/creation"
 	"github.com/voocel/ainovel-cli/internal/domain/model"
+	"github.com/voocel/ainovel-cli/internal/infra/activity"
 	"github.com/voocel/ainovel-cli/internal/infra/store"
 )
 
 type Query struct {
-	activity  ActivityFeed
+	activity  *activity.Hub
 	store     *store.Store
 	projects  *projectdoc.Repository
 	runs      *creation.Coordinator
@@ -79,6 +80,21 @@ type PendingDecision struct {
 	Held string `json:"held,omitempty"`
 }
 
+// Directive 是一条生效的创作要求；Where 是它作用域的故事语言描述（D66），界面直接呈现。
+type Directive struct {
+	model.Directive
+	Where string `json:"where"`
+}
+
+func directiveViews(project projectdoc.Snapshot) []Directive {
+	story := storyOf(project)
+	var views []Directive
+	for _, directive := range model.ActiveDirectives(project.Directives) {
+		views = append(views, Directive{Directive: directive, Where: story.DescribeScope(directive)})
+	}
+	return views
+}
+
 type WorkbenchSnapshot struct {
 	ProjectID string                `json:"project_id"`
 	Revision  model.Revision        `json:"revision"`
@@ -86,10 +102,12 @@ type WorkbenchSnapshot struct {
 	Approval  model.ApprovalPolicy  `json:"approval,omitempty"`
 	Ownership []model.OwnershipRule `json:"ownership,omitempty"`
 	// Directives 只呈现 active 的用户创作要求（§4.9）。
-	Directives []model.Directive         `json:"directives,omitempty"`
+	Directives []Directive               `json:"directives,omitempty"`
 	Manuscript []model.ManuscriptChapter `json:"manuscript,omitempty"`
-	Outline    []OutlineNode             `json:"outline"`
-	Candidates []ChapterCandidate        `json:"candidates,omitempty"`
+	// Words 是全书正文字数。
+	Words      int                `json:"words"`
+	Outline    []OutlineNode      `json:"outline"`
+	Candidates []ChapterCandidate `json:"candidates,omitempty"`
 	// Run 是最近一轮创作（含终态，落点呈现）；nil 表示还没开始过。
 	Run *model.CreationRun `json:"run,omitempty"`
 	// Usage 是创作团队在这本书上的累计用量与用时（从落盘的执行记录汇总）。
@@ -126,8 +144,11 @@ func (s *Query) snapshotFromProject(ctx context.Context, project projectdoc.Snap
 	snapshot := WorkbenchSnapshot{
 		ProjectID: project.ID, Revision: project.Revision,
 		Intent: project.Intent, Approval: project.Approval, Ownership: project.Ownership,
-		Directives: model.ActiveDirectives(project.Directives),
+		Directives: directiveViews(project),
 		Manuscript: project.Manuscript,
+	}
+	for _, chapter := range project.Manuscript {
+		snapshot.Words += chapter.Runes()
 	}
 
 	run, hasRun, err := s.runs.LatestCreationRun(ctx, projectID)
@@ -156,6 +177,15 @@ func (s *Query) snapshotFromProject(ctx context.Context, project projectdoc.Snap
 			return WorkbenchSnapshot{}, err
 		}
 		if snapshot.CurrentPhase, writingPlanID, err = s.workbenchPhase(ctx, run, project); err != nil {
+			return WorkbenchSnapshot{}, err
+		}
+	}
+	// 用户自己的草案（导入、回滚）是他刚做的事，先于创作的等待呈现。
+	if draft, ok, err := s.decisions.PendingDraft(ctx, projectID); err != nil {
+		return WorkbenchSnapshot{}, err
+	} else if ok {
+		snapshot.Candidates = nil
+		if snapshot.Decision, err = draftDecision(project, draft); err != nil {
 			return WorkbenchSnapshot{}, err
 		}
 	}
@@ -191,7 +221,19 @@ func (s *Query) snapshotFromProject(ctx context.Context, project projectdoc.Snap
 	return snapshot, nil
 }
 
-// DescribeProposal 用故事语言描述运行之外的稿件（如导入草案）相对作品当前内容的变更。
+// draftDecision 是用户草案的决定卡：照实描述它改了什么；基线已不是当前版本时过期。
+func draftDecision(project projectdoc.Snapshot, draft model.Proposal) (*PendingDecision, error) {
+	view, err := proposalView(project, draft.Patches)
+	if err != nil {
+		return nil, err
+	}
+	return &PendingDecision{
+		Reason: draft.Reason + "，等你批准", Proposal: draft, HasProposal: true, View: view,
+		Stale: draft.BaseRevision != project.Revision,
+	}, nil
+}
+
+// DescribeProposal 用故事语言描述运行之外的稿件（如主编的修改）相对作品当前内容的变更。
 func (s *Query) DescribeProposal(ctx context.Context, projectID string, proposal model.Proposal) (ProposalView, error) {
 	project, err := s.projects.Project(ctx, projectID, model.InitialRevision)
 	if err != nil {
@@ -200,7 +242,8 @@ func (s *Query) DescribeProposal(ctx context.Context, projectID string, proposal
 	return proposalView(project, proposal.Patches)
 }
 
-// workbenchDecision 提取待确认候选与决定卡：Run 等待用户时才有。
+// workbenchDecision 提取待确认候选与决定卡：Run 等待用户时才有。用户自己的草案另由
+// draftDecision 呈现。
 func (s *Query) workbenchDecision(
 	ctx context.Context, run model.CreationRun, project projectdoc.Snapshot,
 ) ([]ChapterCandidate, *PendingDecision, error) {
@@ -289,7 +332,8 @@ func operationPhase(operation model.Operation, project projectdoc.Snapshot) (str
 	}
 	switch input := input.(type) {
 	case *model.WriteChapterInput:
-		return fmt.Sprintf("正在落笔第 %d 章", input.ChapterNumber), input.ChapterPlanID
+		number := slices.IndexFunc(model.ChapterPlansInOrder(project.Plan), func(node model.PlanNode) bool { return node.ID == input.ChapterPlanID }) + 1
+		return fmt.Sprintf("正在落笔第 %d 章", number), input.ChapterPlanID
 	case *model.RewriteChapterInput:
 		for _, chapter := range project.Manuscript {
 			if chapter.ID != input.ChapterID {

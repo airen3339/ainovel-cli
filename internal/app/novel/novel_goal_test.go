@@ -103,9 +103,9 @@ func TestCanonGapsFollowRevisions(t *testing.T) {
 }
 
 // storedTestVerdict 构造一份有效裁定：key 区分不同审阅，at 决定新旧（越大越新）。
-func storedTestVerdict(key string, at int, status string, chapters []string, findings []model.ReviewFinding, checks ...model.RequirementCheck) StoredVerdict {
+func storedTestVerdict(key string, at int, chapters []string, findings []model.ReviewFinding, checks ...model.RequirementCheck) StoredVerdict {
 	verdict := model.ReviewVerdict{
-		Status: status, Revision: 2, ChapterIDs: chapters, ReviewKey: "review", Findings: findings, Checks: checks,
+		Revision: 2, ChapterIDs: chapters, ReviewKey: "review", Findings: findings, Checks: checks,
 		Basis: model.EvidenceBasis{Documents: []model.DocumentBasis{{Ref: model.DocumentRef{Kind: model.DocumentIntent, ID: "root"}, Revision: 1}}},
 	}
 	if findings == nil {
@@ -127,7 +127,7 @@ func testRun(target, budget int) model.CreationRun {
 	return model.CreationRun{
 		ID: "run:book:1", ProjectID: "book",
 		Goal:     model.NovelGoal{Premise: "故事", TargetChapters: target}.Goal(),
-		Strategy: model.CreationRunStrategy{ReviewCadence: model.ReviewPerPlanWindow, AutoRepairBudget: budget},
+		Strategy: model.CreationRunStrategy{AutoRepairBudget: budget},
 	}
 }
 
@@ -138,7 +138,7 @@ func TestNovelDeriverNextFollowsNovelRules(t *testing.T) {
 	blocking := []model.ReviewFinding{{ChapterID: "chapter-ii", Severity: model.FindingBlocking, Note: "第二章崩了"}}
 	lastBlocking := []model.ReviewFinding{{ChapterID: "chapter-iiii", Severity: model.FindingBlocking, Note: "第四章崩了"}}
 	note := []model.ReviewFinding{{ChapterID: "chapter-iii", Severity: model.FindingNote, Note: "动机要更明确"}}
-	firstPass := storedTestVerdict("review-a", 1, model.ReviewPass, first, nil)
+	firstPass := storedTestVerdict("review-a", 1, first, nil)
 	cases := []struct {
 		name     string
 		plans    int
@@ -170,7 +170,7 @@ func TestNovelDeriverNextFollowsNovelRules(t *testing.T) {
 			evidence: Evidence{Verdicts: []StoredVerdict{firstPass}},
 			wantKind: model.OperationWriteChapter, wantID: "run:book:1:chapter:chapter-plan-iiii"},
 		{name: "reviewed window extends with notes", plans: 3, written: 3,
-			evidence: Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, model.ReviewPass, first, note)}},
+			evidence: Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, first, note)}},
 			wantKind: model.OperationRevisePlan, wantID: "run:book:1:plan:extend:3:f5:s0:e0",
 			check: func(t *testing.T, work creation.WorkItem) {
 				input := work.Input.(model.RevisePlanInput)
@@ -179,14 +179,14 @@ func TestNovelDeriverNextFollowsNovelRules(t *testing.T) {
 				}
 			}},
 		{name: "blocked window rewrites within budget", plans: 3, written: 3,
-			evidence: Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, model.ReviewBlocked, first, blocking)}},
+			evidence: Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, first, blocking)}},
 			wantKind: model.OperationRewriteChapter, wantID: "run:book:1:rewrite:chapter-ii:r2"},
 		{name: "exhausted budget waits", plans: 3, written: 3,
-			evidence: Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, model.ReviewBlocked, first, blocking)}, Repairs: map[string]int{"chapter-ii": 1}},
+			evidence: Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, first, blocking)}, Repairs: map[string]int{"chapter-ii": 1}},
 			wantWait: "第 2 章《第一一章》自动修订了 1 次仍有阻塞意见"},
 		// 预算按章计（D63）：别的章用过的重写次数不挤占本章。
 		{name: "budget is per chapter", plans: 5, written: 5,
-			evidence: Evidence{Verdicts: []StoredVerdict{firstPass, storedTestVerdict("review-b", 2, model.ReviewBlocked, last, lastBlocking)}, Repairs: map[string]int{"chapter-ii": 1}},
+			evidence: Evidence{Verdicts: []StoredVerdict{firstPass, storedTestVerdict("review-b", 2, last, lastBlocking)}, Repairs: map[string]int{"chapter-ii": 1}},
 			wantKind: model.OperationRewriteChapter, wantID: "run:book:1:rewrite:chapter-iiii:r2"},
 		// 完成时只审尚未覆盖的窗口，不再累计重审全书。
 		{name: "complete manuscript reviews the uncovered window", plans: 5, written: 5,
@@ -198,25 +198,25 @@ func TestNovelDeriverNextFollowsNovelRules(t *testing.T) {
 				}
 			}},
 		{name: "every chapter covered completes", plans: 5, written: 5,
-			evidence: Evidence{Verdicts: []StoredVerdict{firstPass, storedTestVerdict("review-b", 2, model.ReviewPass, last, nil)}},
+			evidence: Evidence{Verdicts: []StoredVerdict{firstPass, storedTestVerdict("review-b", 2, last, nil)}},
 			wantDone: "全书 5 章完成并通过审阅"},
 		{name: "later blocked window rewrites its chapter", plans: 5, written: 5,
-			evidence: Evidence{Verdicts: []StoredVerdict{firstPass, storedTestVerdict("review-b", 2, model.ReviewBlocked, last, lastBlocking)}},
+			evidence: Evidence{Verdicts: []StoredVerdict{firstPass, storedTestVerdict("review-b", 2, last, lastBlocking)}},
 			wantKind: model.OperationRewriteChapter, wantID: "run:book:1:rewrite:chapter-iiii:r2"},
 		// 同一窗口审过多次时以最新的有效裁定为准。
 		{name: "newest verdict of a window wins", plans: 3, written: 3,
 			evidence: Evidence{Verdicts: []StoredVerdict{
-				storedTestVerdict("review-a", 1, model.ReviewBlocked, first, blocking), storedTestVerdict("review-b", 2, model.ReviewPass, first, nil),
+				storedTestVerdict("review-a", 1, first, blocking), storedTestVerdict("review-b", 2, first, nil),
 			}},
 			wantKind: model.OperationRevisePlan, wantID: "run:book:1:plan:extend:3:f5:s0:e0"},
 		{name: "accepted blocking finding passes the window", plans: 3, written: 3,
-			evidence: Evidence{Verdicts: []StoredVerdict{acceptedVerdict(storedTestVerdict("review-a", 1, model.ReviewBlocked, first, blocking), "review-a/0")}},
+			evidence: Evidence{Verdicts: []StoredVerdict{acceptedVerdict(storedTestVerdict("review-a", 1, first, blocking), "review-a/0")}},
 			wantKind: model.OperationRevisePlan, wantID: "run:book:1:plan:extend:3:f5:s0:e0"},
 		{name: "accepted final finding completes", plans: 5, written: 5,
-			evidence: Evidence{Verdicts: []StoredVerdict{firstPass, acceptedVerdict(storedTestVerdict("review-b", 2, model.ReviewBlocked, last, lastBlocking), "review-b/0")}},
+			evidence: Evidence{Verdicts: []StoredVerdict{firstPass, acceptedVerdict(storedTestVerdict("review-b", 2, last, lastBlocking), "review-b/0")}},
 			wantDone: "全书 5 章完成并通过审阅"},
 		{name: "edited chapter verifies its facts before anything else", plans: 3, written: 3,
-			evidence: Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, model.ReviewBlocked, first, blocking)}},
+			evidence: Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, first, blocking)}},
 			edit:     func(project *projectdoc.Snapshot) { editChapter(project, "chapter-ii", 3) },
 			wantKind: model.OperationReviseCanon, wantID: "run:book:1:canon:chapter-ii:r3",
 			check: func(t *testing.T, work creation.WorkItem) {
@@ -237,15 +237,6 @@ func TestNovelDeriverNextFollowsNovelRules(t *testing.T) {
 		// 主编提出的修改等用户确认时不往下写（D77）：写下去的内容可能要按它改。
 		{name: "pending chief change waits", plans: 3, written: 1, evidence: Evidence{Change: true},
 			wantWait: "主编提出的修改等你确认"},
-		// 用户在语义影响处置里选了重写受影响章（S4）：先于审阅与续写排进运行。
-		{name: "requested affected rewrite comes first", plans: 3, written: 3,
-			evidence: Evidence{Requested: []model.Operation{affectedRewrite(t, "change-1", "chapter-i", "chapter-ii")}},
-			wantKind: model.OperationRewriteAffected, wantID: "change-1:rewrite-affected",
-			check: func(t *testing.T, work creation.WorkItem) {
-				if input := work.Input.(model.RewriteAffectedInput); len(input.ChapterIDs) != 2 || input.ResolutionProposalID != "change-1" {
-					t.Fatalf("affected input = %#v", input)
-				}
-			}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -256,17 +247,6 @@ func TestNovelDeriverNextFollowsNovelRules(t *testing.T) {
 			assertStep(t, project, run, tc.evidence, stepWant{kind: tc.wantKind, id: tc.wantID, wait: tc.wantWait, done: tc.wantDone, fail: tc.wantFail, check: tc.check})
 		})
 	}
-}
-
-func affectedRewrite(t *testing.T, proposalID string, chapters ...string) model.Operation {
-	t.Helper()
-	input, err := json.Marshal(model.RewriteAffectedInput{
-		ChapterIDs: chapters, BaseRevision: 4, ResolutionProposalID: proposalID, Reason: "同步改过的设定",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return model.Operation{ID: proposalID + ":rewrite-affected", Kind: model.OperationRewriteAffected, Input: input}
 }
 
 type stepWant struct {

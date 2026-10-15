@@ -26,7 +26,7 @@ func TestDiagnosticsReadOnlyLocalDetailsAndShare(t *testing.T) {
 		t.Fatal(err)
 	}
 	runID := ensureTestRun(t, ctx, s, project.ID, now)
-	input := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1","chapter_number":1}`)
+	input := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1"}`)
 	op := model.Operation{ID: secret + "-task", RunID: runID, Target: model.AuthorityTarget{Kind: model.AuthorityProject, ID: project.ID}, Kind: model.OperationWriteChapter, State: model.OperationQueued,
 		Snapshot: model.ExecutionSnapshot{Executor: "llm.agent@1", BaseRevision: project.Revision, InputDigest: model.Digest(input), ConfigDigest: secret, ApprovalPolicy: model.ApprovalManual}, Input: input, CreatedAt: now, UpdatedAt: now}
 	if _, err := s.CreateOperation(ctx, op); err != nil {
@@ -186,7 +186,7 @@ func TestDiagnosticsRaiseToolErrorsOnlyWhenRepeated(t *testing.T) {
 		t.Fatal(err)
 	}
 	runID := ensureTestRun(t, ctx, s, project.ID, now)
-	input := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1","chapter_number":1}`)
+	input := json.RawMessage(`{"chapter_plan_id":"chapter-plan-1"}`)
 	seed := func(id string, toolErrors int) {
 		t.Helper()
 		op := model.Operation{ID: id, RunID: runID, Target: model.AuthorityTarget{Kind: model.AuthorityProject, ID: project.ID},

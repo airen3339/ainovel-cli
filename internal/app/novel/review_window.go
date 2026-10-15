@@ -260,7 +260,7 @@ func (l reviewLedger) gate(through int, canRepair func(chapterID string) bool) g
 			ids, _ := l.chunk(i, len(chapters))
 			return l.recheck(i, ids, canRepair)
 		}
-		if verdict := l.effective[stored.Key]; verdict.Status != model.ReviewPass {
+		if verdict := l.effective[stored.Key]; verdict.Blocking() > 0 {
 			return gateStep{blocked: &verdict}
 		}
 	}
