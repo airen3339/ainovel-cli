@@ -16,7 +16,7 @@ import (
 func TestOperationPhaseNamesChaptersInFlight(t *testing.T) {
 	project := projectdoc.Snapshot{
 		Plan: []model.PlanNode{
-			{ID: "p1", Kind: model.PlanChapter, Order: 1}, {ID: "p2", Kind: model.PlanChapter, Order: 2}, {ID: "p3", Kind: model.PlanChapter, Order: 3},
+			{ID: "p1", Kind: model.PlanChapter, Turn: "转折", Order: 1}, {ID: "p2", Kind: model.PlanChapter, Turn: "转折", Order: 2}, {ID: "p3", Kind: model.PlanChapter, Turn: "转折", Order: 3},
 		},
 		Manuscript: []model.ManuscriptChapter{
 			{ID: "c1", PlanNodeID: "p1", Number: 1}, {ID: "c2", PlanNodeID: "p2", Number: 2}, {ID: "c3", PlanNodeID: "p3", Number: 3},
@@ -51,7 +51,7 @@ func TestPendingProposalReadsAsStoryAndPreviewsInOutline(t *testing.T) {
 	}
 	volume := model.PlanNode{ID: "plan-volume-1", Kind: model.PlanVolume, Order: 1, Title: "雨城", Summary: "旧案重启"}
 	arc := model.PlanNode{ID: "plan-arc-1", Kind: model.PlanArc, ParentID: volume.ID, Order: 1, Title: "来信", Summary: "无名信"}
-	chapter := model.PlanNode{ID: "plan-chapter-1", Kind: model.PlanChapter, ParentID: arc.ID, Order: 1, Title: "来信", Summary: "陈渡收到信"}
+	chapter := model.PlanNode{ID: "plan-chapter-1", Kind: model.PlanChapter, Turn: "转折", ParentID: arc.ID, Order: 1, Title: "来信", Summary: "陈渡收到信"}
 	project := projectdoc.Snapshot{
 		Plan:       []model.PlanNode{volume, arc, chapter},
 		Entities:   []model.Entity{{ID: "entity-hero", Kind: model.EntityCharacter, Name: "陈渡"}},
@@ -63,8 +63,8 @@ func TestPendingProposalReadsAsStoryAndPreviewsInOutline(t *testing.T) {
 	proposal := model.Proposal{Patches: []model.Patch{
 		put(model.DocumentPlan, revised.ID, revised),
 		put(model.DocumentPlan, newArc.ID, newArc),
-		put(model.DocumentPlan, "plan-chapter-2", model.PlanNode{ID: "plan-chapter-2", Kind: model.PlanChapter, ParentID: newArc.ID, Order: 2, Title: "门后", Summary: "声音"}),
-		put(model.DocumentPlan, "plan-chapter-3", model.PlanNode{ID: "plan-chapter-3", Kind: model.PlanChapter, ParentID: newArc.ID, Order: 3, Title: "旧友", Summary: "相认"}),
+		put(model.DocumentPlan, "plan-chapter-2", model.PlanNode{ID: "plan-chapter-2", Kind: model.PlanChapter, Turn: "转折", ParentID: newArc.ID, Order: 2, Title: "门后", Summary: "声音"}),
+		put(model.DocumentPlan, "plan-chapter-3", model.PlanNode{ID: "plan-chapter-3", Kind: model.PlanChapter, Turn: "转折", ParentID: newArc.ID, Order: 3, Title: "旧友", Summary: "相认"}),
 		put(model.DocumentEntity, "entity-su", model.Entity{ID: "entity-su", Kind: model.EntityCharacter, Name: "苏晚", Aliases: []string{"晚晚"}}),
 		put(model.DocumentCanon, "fact-su", model.CanonFact{ID: "fact-su", Kind: model.CanonState, SubjectID: "entity-su", Predicate: "state.identity", Value: json.RawMessage(`"陈渡的旧友"`)}),
 		put(model.DocumentCompass, model.SingletonDocumentID, model.Compass{ScaleMax: 60, Ending: "真相大白"}),
@@ -121,16 +121,21 @@ func TestPendingProposalReadsAsStoryAndPreviewsInOutline(t *testing.T) {
 	}
 }
 
-// 一章的依据：覆盖它的要求（意图、全书与本章要求）带着当前裁定的结论，没审过的章没有
-// 结论；正文写在返工要求之前的章标出要按它重写；这一章记下的设定用故事语言，正文改过的
-// 标待核验。
+// 一章的依据：它推进的长线与答在这一章的长线；覆盖它的要求（意图、全书与本章要求）带着
+// 当前裁定的结论，没审过的章没有结论；正文写在返工要求之前的章标出要按它重写；这一章记下
+// 的设定用故事语言，正文改过的标待核验。
 func TestChapterBriefsCarryCoveringRequirementsAndChecks(t *testing.T) {
 	plan := []model.PlanNode{{ID: "v", Kind: model.PlanVolume, Order: 1, Title: "雨城"}}
 	for i := 1; i <= 3; i++ {
-		plan = append(plan, model.PlanNode{ID: fmt.Sprint("p", i), Kind: model.PlanChapter, ParentID: "v", Order: i, Title: fmt.Sprint("第", i, "章")})
+		plan = append(plan, model.PlanNode{ID: fmt.Sprint("p", i), Kind: model.PlanChapter, Turn: "转折", ParentID: "v", Order: i, Title: fmt.Sprint("第", i, "章")})
 	}
+	plan[2].Threads = []string{"t2", "t1"}
 	project := projectdoc.Snapshot{
-		Plan:     plan,
+		Plan: plan,
+		Compass: &model.Compass{Ending: "找到姐姐", Threads: []model.StoryThread{
+			{ID: "t1", Name: "姐姐", Question: "姐姐为何失踪", Answer: "p3"},
+			{ID: "t2", Name: "钥匙", Question: "钥匙开哪扇门"},
+		}},
 		Intent:   model.Intent{Required: []string{"保持悬疑"}, Forbidden: []string{"主角死亡"}},
 		Entities: []model.Entity{{ID: "hero", Kind: model.EntityCharacter, Name: "陈渡"}},
 		Directives: []model.Directive{
@@ -153,13 +158,23 @@ func TestChapterBriefsCarryCoveringRequirementsAndChecks(t *testing.T) {
 			model.DocumentRef{Kind: model.DocumentDirective, ID: "d3"}.Key():  {Revision: 4},
 		},
 	}
+	var required string // 意图条目的核验项 ID 带原文摘要
+	for _, r := range novel.RequirementsByChapter(project, 0)[1] {
+		if r.Text == "保持悬疑" {
+			required = r.ID
+		}
+	}
 	window := &novel.StoredVerdict{Key: "review-1", Verdict: model.ReviewVerdict{ChapterIDs: []string{"c1", "c2"}, Checks: []model.RequirementCheck{
-		{ID: "intent:required:0", Status: model.CheckSatisfied},
+		{ID: required, Status: model.CheckSatisfied},
 		{ID: "directive:d1", Status: model.CheckPending},
 		{ID: "directive:d2", Status: model.CheckViolated},
 	}}}
 	current := map[string]*novel.StoredVerdict{"c1": window, "c2": window}
 	briefs := chapterBriefs(project, 0, current, nil)
+	if want := []BriefThread{{Name: "姐姐"}, {Name: "钥匙"}}; !slices.Equal(briefs[2].Threads, want) ||
+		!slices.Equal(briefs[3].Threads, []BriefThread{{Name: "姐姐", Answer: true}}) || briefs[1].Threads != nil {
+		t.Fatalf("threads = %+v / %+v / %+v", briefs[1].Threads, briefs[2].Threads, briefs[3].Threads)
+	}
 
 	line := func(r BriefRequirement) string {
 		return fmt.Sprintf("%s|%s|%t|%s|%t", r.Text, r.Scope, r.Forbidden, r.Status, r.Rework)

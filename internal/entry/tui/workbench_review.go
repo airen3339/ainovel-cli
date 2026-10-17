@@ -196,6 +196,25 @@ func compassSummary(current *domainmodel.Compass, next domainmodel.Compass) stri
 	if before.Ending != next.Ending {
 		parts = append(parts, "终局："+oneLine(next.Ending))
 	}
+	var added, answered []string
+	for _, thread := range next.Threads {
+		old, ok := before.Thread(thread.ID)
+		switch {
+		case !ok:
+			added = append(added, thread.Name)
+		case old.Question != thread.Question:
+			parts = append(parts, "长线「"+thread.Name+"」改问："+oneLine(thread.Question))
+		}
+		if thread.Answer != "" && old.Answer != thread.Answer {
+			answered = append(answered, thread.Name)
+		}
+	}
+	if len(added) > 0 {
+		parts = append(parts, "新立长线："+strings.Join(added, "、"))
+	}
+	if len(answered) > 0 {
+		parts = append(parts, "定下作答章："+strings.Join(answered, "、"))
+	}
 	if len(parts) == 0 {
 		return "故事罗盘未变"
 	}
@@ -235,6 +254,9 @@ func (m model) detailReport() string {
 	if node, ok := m.outlineChapter(number); ok && node.Node.Summary != "" {
 		section("本章规划")
 		view.WriteString(node.Node.Summary + "\n")
+		if node.Node.Turn != "" {
+			view.WriteString(benchTheme.Muted.Render("转折 ") + node.Node.Turn + "\n")
+		}
 	}
 	brief := bench.snap.Briefs[number]
 	if len(brief.Requirements) > 0 {
@@ -276,6 +298,12 @@ func (m model) detailReport() string {
 		if compass := bench.snap.Length.Compass; compass != nil && compass.Ending != "" {
 			view.WriteString(benchTheme.Muted.Render("终局 ") + compass.Ending + "\n")
 		}
+		if len(bench.snap.Threads) > 0 {
+			section(fmt.Sprintf("长线 · %d 条", len(bench.snap.Threads)))
+			for _, thread := range bench.snap.Threads {
+				view.WriteString(threadLine(thread) + "\n")
+			}
+		}
 		if len(bench.snap.Cast) > 0 {
 			section(fmt.Sprintf("人物 · %d 位", len(bench.snap.Cast)))
 			for _, member := range bench.snap.Cast {
@@ -304,6 +332,29 @@ func (m model) detailReport() string {
 		}
 	}
 	return view.String()
+}
+
+// threadLine 一条长线：短名、追问的问题，最近推进的章、停了几章、下一次推进与作答的章。
+func threadLine(thread workbench.Thread) string {
+	var notes []string
+	if thread.Advanced > 0 {
+		notes = append(notes, fmt.Sprintf("最近第 %d 章推进", thread.Advanced))
+	}
+	if thread.Quiet > 0 {
+		notes = append(notes, fmt.Sprintf("停了 %d 章", thread.Quiet))
+	}
+	if thread.Next > 0 && !thread.Answered {
+		notes = append(notes, fmt.Sprintf("下次第 %d 章", thread.Next))
+	}
+	switch {
+	case thread.Answered:
+		notes = append(notes, fmt.Sprintf("第 %d 章已作答", thread.Answer))
+	case thread.Answer > 0:
+		notes = append(notes, fmt.Sprintf("第 %d 章作答", thread.Answer))
+	default:
+		notes = append(notes, "作答章未定")
+	}
+	return thread.Name + "：" + thread.Question + benchTheme.Muted.Render(" · "+strings.Join(notes, " · "))
 }
 
 // castLine 一位人物：名字、别名，涉及的已写章数与最近一章。

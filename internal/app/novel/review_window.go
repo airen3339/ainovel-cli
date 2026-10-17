@@ -41,10 +41,10 @@ func requirements(project projectdoc.Snapshot, final int) (list []requirement, d
 		}
 	}
 	for i, text := range project.Intent.Required {
-		add(requirement{Requirement: model.Requirement{ID: "intent:required:" + strconv.Itoa(i), Text: text}, covers: whole, end: final})
+		add(requirement{Requirement: model.Requirement{ID: intentRequirementID("required", i, text), Text: text}, covers: whole, end: final})
 	}
 	for i, text := range project.Intent.Forbidden {
-		add(requirement{Requirement: model.Requirement{ID: "intent:forbidden:" + strconv.Itoa(i), Text: text}, covers: whole, end: final, universal: true})
+		add(requirement{Requirement: model.Requirement{ID: intentRequirementID("forbidden", i, text), Text: text}, covers: whole, end: final, universal: true})
 	}
 	if final > 0 {
 		add(finaleRequirement(project, final))
@@ -87,6 +87,12 @@ func requirements(project projectdoc.Snapshot, final int) (list []requirement, d
 	return list, dropped
 }
 
+// intentRequirementID 带原文摘要：意图条目改了就是新的要求，上一份裁定的“满足”不再算数
+// （用户要求的原文不可改，收官要求的 ID 同样带摘要）。
+func intentRequirementID(kind string, index int, text string) string {
+	return fmt.Sprintf("intent:%s:%d:%s", kind, index, model.Digest([]byte(text))[:8])
+}
+
 // DirectiveRequirementID 是用户要求在审阅核验项里的 ID。
 func DirectiveRequirementID(directiveID string) string { return "directive:" + directiveID }
 
@@ -125,12 +131,12 @@ func SatisfiedRequirements(project projectdoc.Snapshot, final int, verdicts []St
 	return satisfied
 }
 
-// finalePrefix 是收官要求 ID 的前缀，后缀是终局与伏笔集合的摘要。
+// finalePrefix 是收官要求 ID 的前缀，后缀是终局、长线与伏笔集合的摘要。
 const finalePrefix = "book:finale:"
 
-// finaleRequirement 是收官要求（D63）：终局方向加当前未回收的伏笔，由末章所在窗口
-// 下结论——这是对"草草收尾"的确定性拦截，宿主给清单，审阅判断结局是否收束。
-// ID 带清单摘要：之后新增或回收伏笔，旧的"满足"不再算数。
+// finaleRequirement 是收官要求（D63）：终局方向、还没有作答章的长线（D91）与当前未回收的
+// 伏笔，由末章所在窗口下结论——这是对"草草收尾"的确定性拦截，宿主给清单，审阅判断结局
+// 是否收束。ID 带清单摘要：之后长线作答、伏笔新增或回收，旧的"满足"不再算数。
 func finaleRequirement(project projectdoc.Snapshot, final int) requirement {
 	ending := project.Intent.EndingDirection
 	if strings.TrimSpace(ending) == "" && project.Compass != nil {
@@ -141,7 +147,15 @@ func finaleRequirement(project projectdoc.Snapshot, final int) requirement {
 		fmt.Fprintf(&text, "全书在第 %d 章收官，结局落到终局方向：%s", final, ending)
 	}
 	fmt.Fprintf(&identity, "%s\x00", ending)
-	var threads []string
+	var open, threads []string
+	if project.Compass != nil {
+		for _, thread := range project.Compass.Threads {
+			if thread.Answer == "" {
+				open = append(open, "「"+thread.Name+"」（"+thread.Question+"）")
+				fmt.Fprintf(&identity, "%s\x00%s\x00", thread.ID, thread.Question)
+			}
+		}
+	}
 	story := storyOf(project)
 	for _, fact := range project.Canon {
 		if fact.Kind == model.CanonForeshadow && !fact.Resolved {
@@ -149,12 +163,16 @@ func finaleRequirement(project projectdoc.Snapshot, final int) requirement {
 			fmt.Fprintf(&identity, "%s\x00", fact.ID)
 		}
 	}
+	if text.Len() == 0 && (len(open) > 0 || len(threads) > 0) {
+		fmt.Fprintf(&text, "全书在第 %d 章收官", final)
+	}
+	if len(open) > 0 {
+		fmt.Fprintf(&text, "；以下长线还没有作答的章，结局须回答：%s", strings.Join(open, "、"))
+	}
 	if len(threads) > 0 {
-		if text.Len() == 0 {
-			fmt.Fprintf(&text, "全书在第 %d 章收官", final)
-		}
 		fmt.Fprintf(&text, "；以下伏笔尚未回收，结局须回收或明确交代：%s", strings.Join(threads, "、"))
-	} else if text.Len() == 0 {
+	}
+	if text.Len() == 0 {
 		return requirement{}
 	}
 	return requirement{
@@ -238,14 +256,16 @@ func (l reviewLedger) withPrior(prior []StoredVerdict) reviewLedger {
 	return l
 }
 
-// gateStep 是审阅闸门的结论：送审 review（reviewed 只作上下文，prior 是焦点章上一轮
-// 的阻塞意见），或按 blocked 重写（chapter 为空时取它的第一个阻塞章）。都为空表示闸门已过。
+// gateStep 是审阅闸门的结论：送审 review（reviewed 只作上下文，satisfied 是它们上一份
+// 裁定已判满足的要求，prior 是焦点章上一轮的阻塞意见），或按 blocked 重写（chapter 为空
+// 时取它的第一个阻塞章）。都为空表示闸门已过。
 type gateStep struct {
-	review   []string
-	reviewed []string
-	prior    []model.ReviewFinding
-	blocked  *model.ReviewVerdict
-	chapter  string
+	review    []string
+	reviewed  []string
+	satisfied []string
+	prior     []model.ReviewFinding
+	blocked   *model.ReviewVerdict
+	chapter   string
 }
 
 // gate 推导第 1..through 章的审阅闸门：按章节顺序，未覆盖的章节起一块（见 chunk、
@@ -268,8 +288,8 @@ func (l reviewLedger) gate(through int, canRepair func(chapterID string) bool) g
 	slices.SortFunc(due, func(a, b requirement) int { return cmp.Or(cmp.Compare(a.end, b.end), strings.Compare(a.ID, b.ID)) })
 	for _, r := range due {
 		if r.end != 0 && r.end <= len(chapters) && !l.satisfied(r) {
-			ids := l.current[chapters[r.end-1].ID].Verdict.ChapterIDs
-			return gateStep{review: ids, reviewed: ids}
+			verdict := l.current[chapters[r.end-1].ID].Verdict
+			return gateStep{review: verdict.ChapterIDs, reviewed: verdict.ChapterIDs, satisfied: satisfiedChecks(verdict)}
 		}
 	}
 	return gateStep{}
@@ -297,7 +317,26 @@ func (l reviewLedger) recheck(start int, ids []string, canRepair func(chapterID 
 			step.prior = append(step.prior, blocking...)
 		}
 	}
+	// 要求的结论按窗口给出：reviewed 章各自的上一份裁定都判满足的，才算它们已满足。
+	for i, id := range step.reviewed {
+		satisfied := satisfiedChecks(l.prior[id].Verdict)
+		if i == 0 {
+			step.satisfied = satisfied
+			continue
+		}
+		step.satisfied = slices.DeleteFunc(step.satisfied, func(r string) bool { return !slices.Contains(satisfied, r) })
+	}
 	return step
+}
+
+func satisfiedChecks(verdict model.ReviewVerdict) []string {
+	var ids []string
+	for _, check := range verdict.Checks {
+		if check.Status == model.CheckSatisfied {
+			ids = append(ids, check.ID)
+		}
+	}
+	return ids
 }
 
 // unchanged：第 i+1 章在它最近的上一轮裁定里正文未变。
@@ -489,6 +528,9 @@ func reviewOperationID(runID string, revision model.Revision, input model.Review
 	}
 	for _, id := range input.Reviewed {
 		fmt.Fprintf(&identity, "reviewed\x00%s\x00", id)
+	}
+	for _, id := range input.Satisfied {
+		fmt.Fprintf(&identity, "satisfied\x00%s\x00", id)
 	}
 	for _, finding := range input.PriorFindings {
 		fmt.Fprintf(&identity, "prior\x00%s\x00%s\x00", finding.ChapterID, finding.Note)

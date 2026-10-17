@@ -16,6 +16,7 @@ import (
 // Content 是构建故事索引所需的权威文档。
 type Content struct {
 	Intent     model.Intent
+	Compass    *model.Compass // 尚未规划时为 nil
 	Plan       []model.PlanNode
 	Entities   []model.Entity
 	Canon      []model.CanonFact
@@ -183,7 +184,7 @@ func (s *Story) Apply(patches []model.Patch) (*Story, error) {
 	entities := byID(s.content.Entities, func(v model.Entity) string { return v.ID })
 	canon := byID(s.content.Canon, func(v model.CanonFact) string { return v.ID })
 	manuscript := byID(s.content.Manuscript, func(v model.ManuscriptChapter) string { return v.ID })
-	intent := s.content.Intent
+	intent, compass := s.content.Intent, s.content.Compass
 	for _, patch := range patches {
 		var err error
 		switch patch.Document.Kind {
@@ -191,6 +192,12 @@ func (s *Story) Apply(patches []model.Patch) (*Story, error) {
 			var next model.Intent
 			err = json.Unmarshal(patch.Content, &next)
 			intent = next
+		case model.DocumentCompass:
+			compass = nil
+			if patch.Operation == model.PatchPut {
+				compass = new(model.Compass)
+				err = json.Unmarshal(patch.Content, compass)
+			}
 		case model.DocumentPlan:
 			err = applyPatch(plan, patch)
 		case model.DocumentEntity:
@@ -204,7 +211,7 @@ func (s *Story) Apply(patches []model.Patch) (*Story, error) {
 			return nil, fmt.Errorf("apply %s: %w", patch.Document.Key(), err)
 		}
 	}
-	next := New(Content{Intent: intent, Plan: values(plan), Entities: values(entities), Canon: values(canon), Manuscript: values(manuscript)})
+	next := New(Content{Intent: intent, Compass: compass, Plan: values(plan), Entities: values(entities), Canon: values(canon), Manuscript: values(manuscript)})
 	next.parent = s
 	return next, nil
 }
@@ -287,6 +294,7 @@ const (
 	chapterPrefix = "c"
 	entityPrefix  = "e"
 	factPrefix    = "f"
+	threadPrefix  = "t"
 )
 
 func planPrefix(kind model.PlanNodeKind) string {
@@ -316,6 +324,11 @@ func (s *Story) allocator() *idAllocator {
 	for _, fact := range s.content.Canon {
 		a.reserve(factPrefix, fact.ID)
 	}
+	if s.content.Compass != nil {
+		for _, thread := range s.content.Compass.Threads {
+			a.reserve(threadPrefix, thread.ID)
+		}
+	}
 	return a
 }
 
@@ -325,4 +338,24 @@ func entityNames(entities []model.Entity) string {
 		names = append(names, "「"+entity.Name+"」")
 	}
 	return strings.Join(names, "、")
+}
+
+// threads 是罗盘里的长线；尚未规划时为空。
+func (s *Story) threads() []model.StoryThread {
+	if s.content.Compass == nil {
+		return nil
+	}
+	return s.content.Compass.Threads
+}
+
+// threadName 用短名指称长线；被删除的长线回退到基线。
+func (s *Story) threadName(id string) string {
+	for story := s; story != nil; story = story.parent {
+		for _, thread := range story.threads() {
+			if thread.ID == id {
+				return thread.Name
+			}
+		}
+	}
+	return id
 }

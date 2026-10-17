@@ -9,9 +9,10 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain/model"
 )
 
-// Edit 是主编提出的修改（D77）：Worker 提交的同一份故事语言（不含正文、罗盘与事实
-// 确认），加上作品方向、锁定与审批三段。
+// Edit 是主编提出的修改（D77）：Worker 提交的同一份故事语言（不含正文、罗盘的终局与篇幅、
+// 事实确认），加上作品方向、锁定与审批三段。长线可以改（D91）：用户点名要追的问题。
 type Edit struct {
+	Threads  []ThreadEdit         `json:"threads,omitempty"`
 	Volumes  []VolumeEdit         `json:"volumes,omitempty"`
 	Arcs     []ArcEdit            `json:"arcs,omitempty"`
 	Chapters []ChapterEdit        `json:"chapters,omitempty"`
@@ -54,7 +55,7 @@ type Settings struct {
 func (s *Story) ResolveEdit(edit Edit, current Settings) ([]model.Patch, *model.Intent, error) {
 	r := s.resolver(true)
 	submission := Submission{
-		Volumes: edit.Volumes, Arcs: edit.Arcs, Chapters: edit.Chapters, Entities: edit.Entities, Facts: edit.Facts, Remove: edit.Remove,
+		Threads: edit.Threads, Volumes: edit.Volumes, Arcs: edit.Arcs, Chapters: edit.Chapters, Entities: edit.Entities, Facts: edit.Facts, Remove: edit.Remove,
 	}
 	if err := r.submission(nil, submission, nil); err != nil {
 		return nil, nil, err

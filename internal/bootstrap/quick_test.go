@@ -810,21 +810,22 @@ func newQuickTestApp(t *testing.T, executor *scriptedQuickExecutor) *testApp {
 
 func (e *scriptedQuickExecutor) Identity() string { return prompt.ExecutorIdentity }
 
-// planCompass 返回本次规划的末章与罗盘补丁；固定篇幅时不写罗盘。章数由"模型"自定
-// （D67）：每次追加 batch 章，不越过固定篇幅与启动时的预计篇幅，至少追加一章；蓝图
-// 够到 finale 章时声明收官。
+// planCompass 返回本次规划的末章与罗盘补丁：罗盘总带一条长线（D91），固定篇幅时只写终局。
+// 章数由"模型"自定（D67）：每次追加 batch 章，不越过固定篇幅与启动时的预计篇幅，至少追加
+// 一章；蓝图够到 finale 章时声明收官。
 func (e *scriptedQuickExecutor) planCompass(fixed, existing int, extending bool) (int, []model.Patch, error) {
 	batch := cmp.Or(e.batch, 3)
-	if fixed > 0 {
-		return min(existing+batch, fixed), nil, nil
-	}
-	compass := model.Compass{ScaleMax: cmp.Or(e.scaleMax, 50), Ending: "送完最后一封信"}
-	last := max(existing+1, min(existing+batch, compass.ScaleMax))
-	if extending && e.raiseTo > 0 {
-		compass.ScaleMax = e.raiseTo
-	}
-	if e.finale > 0 && last >= e.finale {
-		last, compass.Final = e.finale, e.finale
+	compass := model.Compass{Ending: "送完最后一封信", Threads: []model.StoryThread{{ID: "t1", Name: "信", Question: "最后一封信能否送到"}}}
+	last := min(existing+batch, fixed)
+	if fixed == 0 {
+		compass.ScaleMax = cmp.Or(e.scaleMax, 50)
+		last = max(existing+1, min(existing+batch, compass.ScaleMax))
+		if extending && e.raiseTo > 0 {
+			compass.ScaleMax = e.raiseTo
+		}
+		if e.finale > 0 && last >= e.finale {
+			last, compass.Final = e.finale, e.finale
+		}
 	}
 	content, err := json.Marshal(compass)
 	if err != nil {
@@ -866,7 +867,7 @@ func (e *scriptedQuickExecutor) Execute(ctx context.Context, operation model.Ope
 		patches = append(patches, compass...)
 		for number := 1; number <= last; number++ {
 			values = append(values, model.PlanNode{
-				ID: fmt.Sprintf("chapter-plan-%d", number), Kind: model.PlanChapter,
+				ID: fmt.Sprintf("chapter-plan-%d", number), Kind: model.PlanChapter, Turn: "转折",
 				ParentID: "arc-1", Order: number, Title: fmt.Sprintf("第%d章", number),
 				Summary: fmt.Sprintf("送出第%d封关键书信", number),
 			})
@@ -893,7 +894,7 @@ func (e *scriptedQuickExecutor) Execute(ctx context.Context, operation model.Ope
 		patches = append(patches, compass...)
 		for number := input.ExistingChapters + 1; number <= last; number++ {
 			node := model.PlanNode{
-				ID: fmt.Sprintf("chapter-plan-%d", number), Kind: model.PlanChapter,
+				ID: fmt.Sprintf("chapter-plan-%d", number), Kind: model.PlanChapter, Turn: "转折",
 				ParentID: "arc-1", Order: number, Title: fmt.Sprintf("第%d章", number),
 				Summary: fmt.Sprintf("送出第%d封关键书信", number),
 			}

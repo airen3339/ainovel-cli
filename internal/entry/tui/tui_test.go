@@ -548,8 +548,8 @@ func TestWorkbenchTwoPaneOutlineDetailAndCandidateReading(t *testing.T) {
 		Outline: []workbench.OutlineNode{
 			{Node: domainmodel.PlanNode{ID: "v1", Kind: domainmodel.PlanVolume, Title: "卷一"}},
 			{Node: domainmodel.PlanNode{ID: "a1", Kind: domainmodel.PlanArc, ParentID: "v1", Title: "弧一"}},
-			{Node: domainmodel.PlanNode{ID: "c1", Kind: domainmodel.PlanChapter, ParentID: "a1", Title: "第一章"}, Number: 1, State: workbench.ChapterConfirmed},
-			{Node: domainmodel.PlanNode{ID: "c2", Kind: domainmodel.PlanChapter, ParentID: "a1", Title: "第二章"}, Number: 2, State: workbench.ChapterPending},
+			{Node: domainmodel.PlanNode{ID: "c1", Kind: domainmodel.PlanChapter, Turn: "转折", ParentID: "a1", Title: "第一章"}, Number: 1, State: workbench.ChapterConfirmed},
+			{Node: domainmodel.PlanNode{ID: "c2", Kind: domainmodel.PlanChapter, Turn: "转折", ParentID: "a1", Title: "第二章"}, Number: 2, State: workbench.ChapterPending},
 		},
 		Manuscript: []domainmodel.ManuscriptChapter{{
 			ID: "chapter-1", PlanNodeID: "c1", Number: 1,
@@ -602,11 +602,11 @@ func TestOutlineFoldingCollapsesSubtreeAndAnchorsCursor(t *testing.T) {
 	outline := []workbench.OutlineNode{
 		{Node: domainmodel.PlanNode{ID: "v1", Kind: domainmodel.PlanVolume, Title: "卷一"}},
 		{Node: domainmodel.PlanNode{ID: "a1", Kind: domainmodel.PlanArc, ParentID: "v1", Title: "弧一"}},
-		{Node: domainmodel.PlanNode{ID: "c1", Kind: domainmodel.PlanChapter, ParentID: "a1", Title: "第一章"}, Number: 1, State: workbench.ChapterConfirmed},
-		{Node: domainmodel.PlanNode{ID: "c2", Kind: domainmodel.PlanChapter, ParentID: "a1", Title: "第二章"}, Number: 2, State: workbench.ChapterPending},
+		{Node: domainmodel.PlanNode{ID: "c1", Kind: domainmodel.PlanChapter, Turn: "转折", ParentID: "a1", Title: "第一章"}, Number: 1, State: workbench.ChapterConfirmed},
+		{Node: domainmodel.PlanNode{ID: "c2", Kind: domainmodel.PlanChapter, Turn: "转折", ParentID: "a1", Title: "第二章"}, Number: 2, State: workbench.ChapterPending},
 		{Node: domainmodel.PlanNode{ID: "v2", Kind: domainmodel.PlanVolume, Title: "卷二"}},
 		{Node: domainmodel.PlanNode{ID: "a2", Kind: domainmodel.PlanArc, ParentID: "v2", Title: "弧二"}},
-		{Node: domainmodel.PlanNode{ID: "c3", Kind: domainmodel.PlanChapter, ParentID: "a2", Title: "第三章"}, Number: 3, State: workbench.ChapterPlanned},
+		{Node: domainmodel.PlanNode{ID: "c3", Kind: domainmodel.PlanChapter, Turn: "转折", ParentID: "a2", Title: "第三章"}, Number: 3, State: workbench.ChapterPlanned},
 	}
 	m.bench.snap = workbench.WorkbenchSnapshot{
 		ProjectID: "book-fold", Intent: domainmodel.Intent{Premise: "折叠"}, Length: novel.Length{Fixed: 5, Final: 5},
@@ -669,8 +669,8 @@ func TestOutlineHierarchyAndUnexpandedArcs(t *testing.T) {
 		Outline: []workbench.OutlineNode{
 			{Node: domainmodel.PlanNode{ID: "v1", Kind: domainmodel.PlanVolume, Title: "漏根"}, Volume: 1},
 			{Node: domainmodel.PlanNode{ID: "a1", Kind: domainmodel.PlanArc, ParentID: "v1", Title: "残页"}},
-			{Node: domainmodel.PlanNode{ID: "c1", Kind: domainmodel.PlanChapter, ParentID: "a1", Title: "第一章"}, Number: 1, State: workbench.ChapterConfirmed},
-			{Node: domainmodel.PlanNode{ID: "c2", Kind: domainmodel.PlanChapter, ParentID: "a1", Title: "第二章"}, Number: 2, State: workbench.ChapterInProgress},
+			{Node: domainmodel.PlanNode{ID: "c1", Kind: domainmodel.PlanChapter, Turn: "转折", ParentID: "a1", Title: "第一章"}, Number: 1, State: workbench.ChapterConfirmed},
+			{Node: domainmodel.PlanNode{ID: "c2", Kind: domainmodel.PlanChapter, Turn: "转折", ParentID: "a1", Title: "第二章"}, Number: 2, State: workbench.ChapterInProgress},
 			{Node: domainmodel.PlanNode{ID: "a2", Kind: domainmodel.PlanArc, ParentID: "v1", Title: "清辉楼"}},
 			{Node: domainmodel.PlanNode{ID: "v2", Kind: domainmodel.PlanVolume, Title: "入山"}, Volume: 2},
 			{Node: domainmodel.PlanNode{ID: "a3", Kind: domainmodel.PlanArc, ParentID: "v2", Title: "云麓外门"}},
@@ -745,7 +745,7 @@ func TestFoldPreferencePersistsAcrossReopen(t *testing.T) {
 		Outline: []workbench.OutlineNode{
 			{Node: domainmodel.PlanNode{ID: "v1", Kind: domainmodel.PlanVolume, Title: "卷一"}},
 			{Node: domainmodel.PlanNode{ID: "a1", Kind: domainmodel.PlanArc, ParentID: "v1", Title: "弧一"}},
-			{Node: domainmodel.PlanNode{ID: "c1", Kind: domainmodel.PlanChapter, ParentID: "a1", Title: "第一章"}, Number: 1},
+			{Node: domainmodel.PlanNode{ID: "c1", Kind: domainmodel.PlanChapter, Turn: "转折", ParentID: "a1", Title: "第一章"}, Number: 1},
 		},
 	}
 	m.bench.cursor, m.bench.pane = 1, benchPaneOutline // 卷一头行（行 0 是全书）
@@ -782,11 +782,11 @@ func TestMouseWheelScrollsAndClickSelectsOutline(t *testing.T) {
 		Outline: []workbench.OutlineNode{
 			{Node: domainmodel.PlanNode{ID: "v1", Kind: domainmodel.PlanVolume, Title: "卷一"}},
 			{Node: domainmodel.PlanNode{ID: "a1", Kind: domainmodel.PlanArc, ParentID: "v1", Title: "弧一"}},
-			{Node: domainmodel.PlanNode{ID: "c1", Kind: domainmodel.PlanChapter, ParentID: "a1", Title: "第一章"}, Number: 1, State: workbench.ChapterConfirmed},
-			{Node: domainmodel.PlanNode{ID: "c2", Kind: domainmodel.PlanChapter, ParentID: "a1", Title: "第二章"}, Number: 2, State: workbench.ChapterConfirmed},
+			{Node: domainmodel.PlanNode{ID: "c1", Kind: domainmodel.PlanChapter, Turn: "转折", ParentID: "a1", Title: "第一章"}, Number: 1, State: workbench.ChapterConfirmed},
+			{Node: domainmodel.PlanNode{ID: "c2", Kind: domainmodel.PlanChapter, Turn: "转折", ParentID: "a1", Title: "第二章"}, Number: 2, State: workbench.ChapterConfirmed},
 			{Node: domainmodel.PlanNode{ID: "v2", Kind: domainmodel.PlanVolume, Title: "卷二"}},
 			{Node: domainmodel.PlanNode{ID: "a2", Kind: domainmodel.PlanArc, ParentID: "v2", Title: "弧二"}},
-			{Node: domainmodel.PlanNode{ID: "c3", Kind: domainmodel.PlanChapter, ParentID: "a2", Title: "第三章"}, Number: 3, State: workbench.ChapterPlanned},
+			{Node: domainmodel.PlanNode{ID: "c3", Kind: domainmodel.PlanChapter, Turn: "转折", ParentID: "a2", Title: "第三章"}, Number: 3, State: workbench.ChapterPlanned},
 		},
 	}
 	m.bench.cursor = anchorOutlineCursor(m.outlineRows(), "", 0) // c1，行 3（行 0 是全书）
@@ -876,6 +876,7 @@ func TestProgressLabelFollowsLength(t *testing.T) {
 // 罗盘只有终局方向，不出现「预计 0 章」。
 func TestCompassSummaryDescribesTheChange(t *testing.T) {
 	current := &domainmodel.Compass{ScaleMax: 60, Ending: "称帝"}
+	threaded := &domainmodel.Compass{ScaleMax: 60, Ending: "称帝", Threads: []domainmodel.StoryThread{{ID: "t1", Name: "王位", Question: "能否称帝"}}}
 	for _, c := range []struct {
 		current *domainmodel.Compass
 		next    domainmodel.Compass
@@ -888,6 +889,12 @@ func TestCompassSummaryDescribesTheChange(t *testing.T) {
 		{current, domainmodel.Compass{Ending: "归隐"}, "取消预计篇幅（原 60 章） · 终局：归隐"},
 		{&domainmodel.Compass{ScaleMax: 60, Ending: "称帝", Final: 40}, domainmodel.Compass{ScaleMax: 60, Ending: "称帝"}, "撤回收官（原 40 章）"},
 		{current, *current, "故事罗盘未变"},
+		// 长线（D91）：新立的、改了问题的、定下或改了作答章的。
+		{threaded, domainmodel.Compass{ScaleMax: 60, Ending: "称帝", Threads: []domainmodel.StoryThread{
+			{ID: "t1", Name: "王位", Question: "能否守住王位", Answer: "plan-9"},
+			{ID: "t2", Name: "旧债", Question: "父仇谁报"},
+		}}, "长线「王位」改问：能否守住王位 · 新立长线：旧债 · 定下作答章：王位"},
+		{threaded, *threaded, "故事罗盘未变"},
 	} {
 		if got := compassSummary(c.current, c.next); got != c.want {
 			t.Fatalf("compass summary = %q; want %q", got, c.want)
@@ -907,7 +914,7 @@ func TestTypingTalksToTheChief(t *testing.T) {
 	plan := []domainmodel.PlanNode{
 		{ID: "volume-1", Kind: domainmodel.PlanVolume, Title: "第一卷", Summary: "入道"},
 		{ID: "arc-1", Kind: domainmodel.PlanArc, ParentID: "volume-1", Title: "山门", Summary: "入门"},
-		{ID: "chapter-plan-1", Kind: domainmodel.PlanChapter, ParentID: "arc-1", Title: "第一章", Summary: "抵达"},
+		{ID: "chapter-plan-1", Kind: domainmodel.PlanChapter, Turn: "转折", ParentID: "arc-1", Title: "第一章", Summary: "抵达"},
 	}
 	if _, err := api.Projects.CreateProject(ctx, projectdoc.CreateProjectCommand{
 		ProjectID: "book-1", ChangeID: "create", UserID: "tester", Reason: "创建",
@@ -1111,7 +1118,7 @@ func TestRewriteCandidateTakesPrecedenceOverOldAuthorityChapter(t *testing.T) {
 	m.bench.snap = workbench.WorkbenchSnapshot{
 		ProjectID: "book-rw", Revision: 3,
 		Outline: []workbench.OutlineNode{{
-			Node: domainmodel.PlanNode{ID: "c1", Kind: domainmodel.PlanChapter, Title: "重写稿"}, Number: 1, State: workbench.ChapterPending,
+			Node: domainmodel.PlanNode{ID: "c1", Kind: domainmodel.PlanChapter, Turn: "转折", Title: "重写稿"}, Number: 1, State: workbench.ChapterPending,
 		}},
 		Manuscript: []domainmodel.ManuscriptChapter{{
 			ID: "ch-1", Number: 1,
@@ -1247,7 +1254,7 @@ func TestOutlineViewportFollowsCursorAndPaneFocusCycles(t *testing.T) {
 	})
 	for i := 1; i <= 30; i++ {
 		snap.Outline = append(snap.Outline, workbench.OutlineNode{
-			Node:   domainmodel.PlanNode{ID: fmt.Sprintf("c%d", i), Kind: domainmodel.PlanChapter, Title: fmt.Sprintf("第%d回", i)},
+			Node:   domainmodel.PlanNode{ID: fmt.Sprintf("c%d", i), Kind: domainmodel.PlanChapter, Turn: "转折", Title: fmt.Sprintf("第%d回", i)},
 			Number: i, State: workbench.ChapterConfirmed,
 		})
 	}
@@ -1288,8 +1295,8 @@ func TestManualSelectionPinsMainPaneDuringWriting(t *testing.T) {
 	m.bench.snap = workbench.WorkbenchSnapshot{
 		ProjectID: "book-pin", Revision: 2,
 		Outline: []workbench.OutlineNode{
-			{Node: domainmodel.PlanNode{ID: "c1", Kind: domainmodel.PlanChapter, Title: "开端"}, Number: 1, State: workbench.ChapterConfirmed},
-			{Node: domainmodel.PlanNode{ID: "c2", Kind: domainmodel.PlanChapter, Title: "转折"}, Number: 2, State: workbench.ChapterConfirmed},
+			{Node: domainmodel.PlanNode{ID: "c1", Kind: domainmodel.PlanChapter, Turn: "转折", Title: "开端"}, Number: 1, State: workbench.ChapterConfirmed},
+			{Node: domainmodel.PlanNode{ID: "c2", Kind: domainmodel.PlanChapter, Turn: "转折", Title: "转折"}, Number: 2, State: workbench.ChapterConfirmed},
 		},
 		Manuscript: []domainmodel.ManuscriptChapter{
 			{ID: "ch-1", Number: 1, Blocks: []domainmodel.ManuscriptBlock{{ID: "b1", Text: "第一章内容"}}},

@@ -25,7 +25,7 @@ func novelFixture(t *testing.T, plans, written int) projectdoc.Snapshot {
 	}
 	for number := 1; number <= plans; number++ {
 		project.Plan = append(project.Plan, model.PlanNode{
-			ID: "chapter-plan-" + strings.Repeat("i", number), Kind: model.PlanChapter, ParentID: "arc-1",
+			ID: "chapter-plan-" + strings.Repeat("i", number), Kind: model.PlanChapter, Turn: "转折", ParentID: "arc-1",
 			Order: number, Title: "第" + strings.Repeat("一", number) + "章", Summary: "推进",
 		})
 	}

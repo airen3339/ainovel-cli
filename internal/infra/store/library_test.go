@@ -22,8 +22,8 @@ func TestLibrarySummaryCountsLatestLiveChapters(t *testing.T) {
 		{Document: compassRef, Operation: model.PatchPut, Content: compass},
 		// 已规划章数只数 chapter 节点：卷弧不算。
 		{Document: model.DocumentRef{Kind: model.DocumentPlan, ID: "arc-1"}, Operation: model.PatchPut, Content: json.RawMessage(`{"id":"arc-1","kind":"arc","parent_id":"v","order":1,"title":"弧","summary":"s"}`)},
-		{Document: model.DocumentRef{Kind: model.DocumentPlan, ID: "c-1"}, Operation: model.PatchPut, Content: json.RawMessage(`{"id":"c-1","kind":"chapter","parent_id":"arc-1","order":1,"title":"章","summary":"s"}`)},
-		{Document: model.DocumentRef{Kind: model.DocumentPlan, ID: "c-2"}, Operation: model.PatchPut, Content: json.RawMessage(`{"id":"c-2","kind":"chapter","parent_id":"arc-1","order":2,"title":"章","summary":"s"}`)},
+		{Document: model.DocumentRef{Kind: model.DocumentPlan, ID: "c-1"}, Operation: model.PatchPut, Content: json.RawMessage(`{"id":"c-1","kind":"chapter","turn":"转折","parent_id":"arc-1","order":1,"title":"章","summary":"s"}`)},
+		{Document: model.DocumentRef{Kind: model.DocumentPlan, ID: "c-2"}, Operation: model.PatchPut, Content: json.RawMessage(`{"id":"c-2","kind":"chapter","turn":"转折","parent_id":"arc-1","order":2,"title":"章","summary":"s"}`)},
 	}
 	body, _ := json.Marshal(map[string]string{"text": strings.Repeat("雨夜来信", 500)})
 	for i := 1; i <= 500; i++ {

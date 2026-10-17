@@ -10,7 +10,7 @@ func TestIsMilestone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal volume: %v", err)
 	}
-	chapter, err := json.Marshal(PlanNode{ID: "chapter-plan-2", Kind: PlanChapter, ParentID: "arc-1", Title: "第二章", Summary: "继续前行"})
+	chapter, err := json.Marshal(PlanNode{ID: "chapter-plan-2", Kind: PlanChapter, Turn: "转折", ParentID: "arc-1", Title: "第二章", Summary: "继续前行"})
 	if err != nil {
 		t.Fatalf("marshal chapter: %v", err)
 	}

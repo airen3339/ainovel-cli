@@ -142,3 +142,28 @@ func TestRecheckSeamAndRequirementChanges(t *testing.T) {
 		t.Fatalf("requirement recheck input = %+v", input)
 	}
 }
+
+// 复审时上一份裁定已判满足的要求随输入列出（D68）：没改过的章不能再借它阻塞，后加的要求
+// 不在其中。完本后返工一章时，没改过的末章不会因同一条收官要求被重新判定。
+func TestRecheckKeepsSatisfiedRequirementsClosed(t *testing.T) {
+	project := novelFixture(t, 5, 3)
+	project.Directives = []model.Directive{{ID: "d-rain", Scope: "chapter_range:1-3", Text: "前三章都下雨", Status: model.DirectiveActive}}
+	prior := staleVerdict(t, project, "review-a", 1, firstWindow)
+	prior.Verdict.Checks = []model.RequirementCheck{{ID: "directive:d-rain", Status: model.CheckSatisfied}}
+	project.Directives = append(project.Directives, model.Directive{ID: "d-wind", Scope: "chapter_range:1-3", Text: "前三章都刮风", Status: model.DirectiveActive})
+	rewriteChapter(&project, "chapter-ii", 3)
+	next, err := Policy{}.Next(project, testRun(5, 2), Evidence{Prior: []StoredVerdict{prior}})
+	if err != nil || next.Work == nil || next.Work.Kind != model.OperationReviewRange {
+		t.Fatalf("recheck = %#v, %v", next, err)
+	}
+	input := next.Work.Input.(model.ReviewRangeInput)
+	if !slices.Equal(input.Reviewed, []string{"chapter-i", "chapter-iii"}) || !slices.Equal(input.Satisfied, []string{"directive:d-rain"}) {
+		t.Fatalf("recheck input = %+v", input)
+	}
+	if err := input.AdmitsFinding(model.ReviewFinding{ChapterID: "chapter-iii", Severity: model.FindingBlocking, Note: "没下雨", Requirement: "directive:d-rain"}); err == nil {
+		t.Fatal("a satisfied requirement reopened on an unchanged chapter")
+	}
+	if err := input.AdmitsFinding(model.ReviewFinding{ChapterID: "chapter-iii", Severity: model.FindingBlocking, Note: "没刮风", Requirement: "directive:d-wind"}); err != nil {
+		t.Fatalf("a new requirement must still block unchanged chapters: %v", err)
+	}
+}

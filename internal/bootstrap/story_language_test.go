@@ -29,9 +29,9 @@ func TestCompiledPromptsCarryNoDocumentIDs(t *testing.T) {
 			Plan: []model.PlanNode{
 				{ID: "vol-x", Kind: model.PlanVolume, Order: 1, Title: "入山", Summary: "拜入宗门"},
 				{ID: "arc-x", Kind: model.PlanArc, ParentID: "vol-x", Order: 1, Title: "外门", Summary: "外门试炼"},
-				{ID: "ch-x1", Kind: model.PlanChapter, ParentID: "arc-x", Order: 1, Title: "山门", Summary: "拜师"},
-				{ID: "ch-x2", Kind: model.PlanChapter, ParentID: "arc-x", Order: 2, Title: "立誓", Summary: "立誓"},
-				{ID: "ch-x3", Kind: model.PlanChapter, ParentID: "arc-x", Order: 3, Title: "下山", Summary: "下山"},
+				{ID: "ch-x1", Kind: model.PlanChapter, Turn: "转折", ParentID: "arc-x", Order: 1, Title: "山门", Summary: "拜师"},
+				{ID: "ch-x2", Kind: model.PlanChapter, Turn: "转折", ParentID: "arc-x", Order: 2, Title: "立誓", Summary: "立誓"},
+				{ID: "ch-x3", Kind: model.PlanChapter, Turn: "转折", ParentID: "arc-x", Order: 3, Title: "下山", Summary: "下山"},
 			},
 			Entities: []model.Entity{
 				{ID: "ent-hero", Kind: model.EntityCharacter, Name: "林凡"},

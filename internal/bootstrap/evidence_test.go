@@ -109,7 +109,7 @@ func TestEvidenceValidityDetectsDocumentScopeAndArtifactDrift(t *testing.T) {
 
 	// 基线内的文档改版（本章计划节点）使证据失效。
 	node, _ := json.Marshal(model.PlanNode{
-		ID: "chapter-plan-1", Kind: model.PlanChapter, ParentID: "arc-1", Order: 1, Title: "第1章", Summary: "改写后的章节摘要",
+		ID: "chapter-plan-1", Kind: model.PlanChapter, Turn: "转折", ParentID: "arc-1", Order: 1, Title: "第1章", Summary: "改写后的章节摘要",
 	})
 	if _, err := api.changes.CommitUser(ctx, model.Proposal{
 		ID: "edit-plan", Target: model.AuthorityTarget{Kind: model.AuthorityProject, ID: command.ProjectID},

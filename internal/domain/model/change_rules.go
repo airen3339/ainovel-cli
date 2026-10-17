@@ -135,7 +135,39 @@ func (s story) validateStructure() error {
 			}
 		}
 	}
+	return s.validateThreadRefs()
+}
+
+// validateThreadRefs：章节计划推进的长线都在罗盘里，长线的作答章都是章节计划（D91）。
+func (s story) validateThreadRefs() error {
+	for _, node := range s.plans {
+		for _, id := range node.Threads {
+			if s.compass == nil {
+				return fmt.Errorf("plan node %q advances thread %q but there is no compass: %w", node.ID, id, ErrStructuralConflict)
+			}
+			if _, ok := s.compass.Thread(id); !ok {
+				return fmt.Errorf("plan node %q advances missing thread %q: %w", node.ID, id, ErrStructuralConflict)
+			}
+		}
+	}
+	if s.compass == nil {
+		return nil
+	}
+	for _, thread := range s.compass.Threads {
+		if plan, ok := s.plans[thread.Answer]; thread.Answer != "" && (!ok || plan.Kind != PlanChapter) {
+			return fmt.Errorf("thread %q is answered in missing chapter plan %q: %w", thread.ID, thread.Answer, ErrStructuralConflict)
+		}
+	}
 	return nil
+}
+
+// writtenPlans 是已有正文的章节计划 ID。
+func (s story) writtenPlans() map[string]bool {
+	written := make(map[string]bool, len(s.chapters))
+	for _, chapter := range s.chapters {
+		written[chapter.PlanNodeID] = true
+	}
+	return written
 }
 
 func validPlanParent(child, parent PlanNodeKind) bool {
@@ -388,6 +420,9 @@ func validateTaskSubmission(task Operation, base, projected story, patches []Pat
 	if err := validatePlanEdits(input, base, projected, patches); err != nil {
 		return err
 	}
+	if err := validateThreads(input, base, projected); err != nil {
+		return err
+	}
 	switch input := input.(type) {
 	case *WriteChapterInput:
 		written := manuscriptPuts(patches)
@@ -464,24 +499,59 @@ func validateBlueprint(input TaskInput, base, projected story, patches []Patch) 
 	return nil
 }
 
-// validatePlanEdits：大纲归规划任务。已写章的章题与章纲描述的是它的正文，返工改变了正文
-// 写的事，就随正文一起改本章的这两项（D87）；其余任务照大纲写，不碰大纲。
+// validatePlanEdits：大纲归规划任务，但已写章的大纲描述的是它的正文：规划不改它，返工改变
+// 了正文写的事，就随正文一起改本章的章题、章纲与转折（D87、D92）；其余任务照大纲写，不碰大纲。已写章
+// 推进的长线因此不变，长线停了几章才有据可查（D91）。
 func validatePlanEdits(input TaskInput, base, projected story, patches []Patch) error {
-	if _, planning := planRequest(input); planning {
-		return nil
-	}
+	_, planning := planRequest(input)
 	var own string
 	if rework, ok := input.(*ReworkChapterInput); ok {
 		own = rework.ChapterPlanID
 	}
+	written := projected.writtenPlans()
 	for _, patch := range patches {
 		if patch.Document.Kind != DocumentPlan {
 			continue
 		}
-		before, after := base.plans[patch.Document.ID], projected.plans[patch.Document.ID]
-		if patch.Document.ID != own || patch.Operation != PatchPut || after.Kind != before.Kind ||
-			after.ParentID != before.ParentID || after.Order != before.Order || !slices.Equal(after.DependsOn, before.DependsOn) {
-			return fmt.Errorf("only planning tasks edit the plan; a rework changes only the title and summary of its own chapter: %w", ErrInvalid)
+		id := patch.Document.ID
+		before, after := base.plans[id], projected.plans[id]
+		switch {
+		case planning && written[id] && !samePlan(before, after):
+			return fmt.Errorf("planning may not edit chapter %q: it is written, and its outline describes the text: %w", id, ErrInvalid)
+		case planning:
+		case id != own || patch.Operation != PatchPut || after.Kind != before.Kind || after.ParentID != before.ParentID ||
+			after.Order != before.Order || !slices.Equal(after.Threads, before.Threads) || !slices.Equal(after.DependsOn, before.DependsOn):
+			return fmt.Errorf("only planning tasks edit the plan; a rework changes only the title, summary and turn of its own chapter: %w", ErrInvalid)
+		}
+	}
+	return nil
+}
+
+func samePlan(left, right PlanNode) bool {
+	return left.ID == right.ID && left.Kind == right.Kind && left.ParentID == right.ParentID && left.Order == right.Order &&
+		left.Title == right.Title && left.Summary == right.Summary && left.Turn == right.Turn &&
+		slices.Equal(left.Threads, right.Threads) && slices.Equal(left.DependsOn, right.DependsOn)
+}
+
+// validateThreads：规划任务必须立起长线（D91），全书追问的问题是蓝图的一部分；已在写成的
+// 章作答的长线，答案就是那一章。
+func validateThreads(input TaskInput, base, projected story) error {
+	if _, planning := planRequest(input); !planning {
+		return nil
+	}
+	if projected.compass == nil || len(projected.compass.Threads) == 0 {
+		return fmt.Errorf("the blueprint requires compass threads: the questions the whole book pursues and its ending answers: %w", ErrInvalid)
+	}
+	if base.compass == nil {
+		return nil
+	}
+	written := projected.writtenPlans()
+	for _, before := range base.compass.Threads {
+		if !written[before.Answer] {
+			continue
+		}
+		if after, ok := projected.compass.Thread(before.ID); !ok || after.Answer != before.Answer {
+			return fmt.Errorf("thread %q was answered in written chapter %q, which stays its answer: %w", before.ID, before.Answer, ErrInvalid)
 		}
 	}
 	return nil

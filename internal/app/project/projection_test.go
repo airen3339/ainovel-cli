@@ -48,7 +48,7 @@ func newProjectionFixture(t *testing.T) *projectionFixture {
 			Plan: []model.PlanNode{
 				{ID: "v1", Kind: model.PlanVolume, Title: "第一卷", Summary: "起"},
 				{ID: "a1", ParentID: "v1", Kind: model.PlanArc, Title: "第一弧", Summary: "承"},
-				{ID: "c1", ParentID: "a1", Kind: model.PlanChapter, Title: "第一章", Summary: "入门"},
+				{ID: "c1", ParentID: "a1", Kind: model.PlanChapter, Turn: "转折", Title: "第一章", Summary: "入门"},
 			},
 		},
 		CreatedAt: now,

@@ -193,7 +193,7 @@ func (v RewriteChapterInput) Validate() error {
 }
 
 // ReworkChapterInput 是按用户点名的返工要求重写一章（D78）：Directives 里标了 rework 的
-// 要求是用户对现有正文的意见。返工可能改变这一章写了什么，章题与章纲随正文一起改（D87）；
+// 要求是用户对现有正文的意见。返工可能改变这一章写了什么，章题、章纲与转折随正文一起改（D87、D92）；
 // 不是自动修订，不计入预算。
 type ReworkChapterInput struct {
 	ChapterID     string        `json:"chapter_id"`
@@ -221,9 +221,12 @@ func (v ReworkChapterInput) Validate() error {
 // Reviewed 是上一轮已审且正文未变的章（D68），只作上下文；PriorFindings 是其余章
 // 上一轮的阻塞意见，复审逐条核对是否解决。
 type ReviewRangeInput struct {
-	ChapterIDs    []string        `json:"chapter_ids"`
-	Requirements  []Requirement   `json:"requirements,omitempty"`
-	Reviewed      []string        `json:"reviewed,omitempty"`
+	ChapterIDs   []string      `json:"chapter_ids"`
+	Requirements []Requirement `json:"requirements,omitempty"`
+	Reviewed     []string      `json:"reviewed,omitempty"`
+	// Satisfied 是 reviewed 章所在的上一份裁定已判满足的要求：正文与要求都没变，结论不重开，
+	// 不能借它们阻塞 reviewed 章。
+	Satisfied     []string        `json:"satisfied,omitempty"`
 	PriorFindings []ReviewFinding `json:"prior_findings,omitempty"`
 	Basis         EvidenceBasis   `json:"basis"`
 	Goal          string          `json:"goal,omitempty"`
@@ -262,6 +265,14 @@ func (v ReviewRangeInput) Validate() error {
 			return fmt.Errorf("reviewed chapter %q is outside the review range: %w", id, ErrInvalid)
 		}
 	}
+	if err := validateDistinctStrings("satisfied requirements", v.Satisfied); err != nil {
+		return err
+	}
+	for _, id := range v.Satisfied {
+		if _, ok := seen[id]; !ok || len(v.Reviewed) == 0 {
+			return fmt.Errorf("satisfied requirement %q must be one of the requirements, with reviewed chapters: %w", id, ErrInvalid)
+		}
+	}
 	for i, finding := range v.PriorFindings {
 		if finding.Severity != FindingBlocking || strings.TrimSpace(finding.Note) == "" ||
 			!slices.Contains(v.ChapterIDs, finding.ChapterID) || slices.Contains(v.Reviewed, finding.ChapterID) {
@@ -272,7 +283,7 @@ func (v ReviewRangeInput) Validate() error {
 }
 
 // AdmitsFinding 是审阅发现的落点规则：只能落在审阅范围内；已审且正文未变的章（D68）
-// 只作上下文，阻塞发现必须链接它违反的要求。
+// 只作上下文，阻塞发现必须链接它违反的要求，而且不是上一份裁定已判满足的要求。
 func (v ReviewRangeInput) AdmitsFinding(finding ReviewFinding) error {
 	if !slices.Contains(v.ChapterIDs, finding.ChapterID) {
 		return fmt.Errorf("finding chapter %q is outside the requested range; attach cross-chapter issues to the most relevant chapter in range: %w",
@@ -286,9 +297,17 @@ func (v ReviewRangeInput) AdmitsFinding(finding ReviewFinding) error {
 		return fmt.Errorf("requirement %q is not one of this review's requirements %q; link only those ids, and leave requirement empty for any other issue: %w",
 			finding.Requirement, ids, ErrInvalid)
 	}
-	if finding.Severity == FindingBlocking && finding.Requirement == "" && slices.Contains(v.Reviewed, finding.ChapterID) {
+	if finding.Severity != FindingBlocking || !slices.Contains(v.Reviewed, finding.ChapterID) {
+		return nil
+	}
+	if finding.Requirement == "" {
 		return fmt.Errorf("chapter %q was already reviewed and is unchanged, so this review reads it as context only: "+
 			"record the issue with severity %q, or link the requirement it violates: %w", finding.ChapterID, FindingNote, ErrInvalid)
+	}
+	if slices.Contains(v.Satisfied, finding.Requirement) {
+		return fmt.Errorf("chapter %q and requirement %q are both unchanged since the previous review found them satisfied, so that stands: "+
+			"record the issue with severity %q, or put it on the changed chapter that breaks the requirement: %w",
+			finding.ChapterID, finding.Requirement, FindingNote, ErrInvalid)
 	}
 	return nil
 }

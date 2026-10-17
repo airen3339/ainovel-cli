@@ -19,6 +19,11 @@ import (
 // 部分写成摘要，成本不随聊天时长无限增长。
 const conversationCompactAt = 100_000
 
+// conversationToolErrors 是一回合里同一工具连续失败多少次就停用。改书要和宿主来回：规划核对
+// 退回、分析器偶发违约都算失败，3 次在实跑里两回锁住了第 4 次就对的修改（D88）；5 次还
+// 办不成，就该停下问用户。
+const conversationToolErrors = 5
+
 type conversationStore interface {
 	AppendConversation(ctx context.Context, message model.ConversationMessage) (model.ConversationMessage, error)
 }
@@ -107,7 +112,7 @@ func NewConversation(config ConversationConfig) (*Conversation, error) {
 		Cache:         &litellm.CacheControl{},
 		Compactor:     compact.Summarizer{},
 		CompactAt:     conversationCompactAt,
-		MaxToolErrors: 3,
+		MaxToolErrors: conversationToolErrors,
 		Retry:         models.Retry(),
 	}, history)
 	c.agent.Subscribe(c.record)

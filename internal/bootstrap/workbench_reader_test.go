@@ -75,7 +75,7 @@ func BenchmarkWorkbenchReader500Chapters(b *testing.B) {
 	projection.Plan = []model.PlanNode{{ID: "volume", Kind: model.PlanVolume, Title: "来信", Summary: "来信"}, {ID: "arc", ParentID: "volume", Kind: model.PlanArc, Title: "雨夜", Summary: "雨夜"}}
 	for i := 1; i <= 500; i++ {
 		planID, id := fmt.Sprintf("plan-%d", i), fmt.Sprintf("chapter-%d", i)
-		projection.Plan = append(projection.Plan, model.PlanNode{ID: planID, ParentID: "arc", Kind: model.PlanChapter, Title: id, Summary: "雨夜来信", Order: i})
+		projection.Plan = append(projection.Plan, model.PlanNode{ID: planID, ParentID: "arc", Kind: model.PlanChapter, Turn: "转折", Title: id, Summary: "雨夜来信", Order: i})
 		projection.Manuscript = append(projection.Manuscript, model.ManuscriptChapter{ID: id, PlanNodeID: planID, Number: i, Author: model.AuthorUser, Blocks: []model.ManuscriptBlock{{ID: fmt.Sprintf("block-%d", i), Text: strings.Repeat("雨停了，屋檐却还在滴水。", 250)}}})
 	}
 	proposal, err := api.Projects.ImportProject(ctx, "import-long", "user-1", "benchmark", projection, testTime())

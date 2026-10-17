@@ -878,8 +878,8 @@ func TestRuntimeAnalyzesSemanticImpactInStoryLanguage(t *testing.T) {
 		put(domainmodel.DocumentIntent, domainmodel.SingletonDocumentID, domainmodel.Intent{Premise: "陈渡循着一把铜钥匙找姐姐"}),
 		put(domainmodel.DocumentPlan, "volume-1", domainmodel.PlanNode{ID: "volume-1", Kind: domainmodel.PlanVolume, Order: 1, Title: "雨城", Summary: "陈渡找姐姐"}),
 		put(domainmodel.DocumentPlan, "arc-1", domainmodel.PlanNode{ID: "arc-1", Kind: domainmodel.PlanArc, ParentID: "volume-1", Order: 1, Title: "来信", Summary: "钥匙指向雨巷"}),
-		put(domainmodel.DocumentPlan, "plan-1", domainmodel.PlanNode{ID: "plan-1", Kind: domainmodel.PlanChapter, ParentID: "arc-1", Order: 1, Title: "来信"}),
-		put(domainmodel.DocumentPlan, "plan-2", domainmodel.PlanNode{ID: "plan-2", Kind: domainmodel.PlanChapter, ParentID: "arc-1", Order: 2, Title: "开柜", Summary: "陈渡用铜钥匙打开保险柜"}),
+		put(domainmodel.DocumentPlan, "plan-1", domainmodel.PlanNode{ID: "plan-1", Kind: domainmodel.PlanChapter, Turn: "转折", ParentID: "arc-1", Order: 1, Title: "来信"}),
+		put(domainmodel.DocumentPlan, "plan-2", domainmodel.PlanNode{ID: "plan-2", Kind: domainmodel.PlanChapter, Turn: "转折", ParentID: "arc-1", Order: 2, Title: "开柜", Summary: "陈渡用铜钥匙打开保险柜"}),
 		put(domainmodel.DocumentEntity, "hero", domainmodel.Entity{ID: "hero", Kind: domainmodel.EntityCharacter, Name: "陈渡"}),
 		put(domainmodel.DocumentManuscript, "chapter-1", domainmodel.ManuscriptChapter{
 			ID: "chapter-1", PlanNodeID: "plan-1", Number: 1, Blocks: []domainmodel.ManuscriptBlock{{ID: "b1", Text: "陈渡捡到一把铜钥匙。"}},
@@ -1010,6 +1010,8 @@ func TestRuntimePlanSubmissionEnforcesLengthBound(t *testing.T) {
 	}
 	// 规划按序号编辑卷弧章（D66），ID 与顺序由宿主给。
 	structure := map[string]any{
+		"compass": map[string]any{"ending": "抵达"},
+		"threads": []map[string]any{{"name": "远方", "question": "他能否抵达远方"}},
 		"volumes": []map[string]any{{"volume": 1, "title": "第一卷", "summary": "开端"}},
 		"arcs":    []map[string]any{{"arc": 1, "volume": 1, "title": "第一幕", "summary": "启程"}},
 	}
@@ -1020,9 +1022,9 @@ func TestRuntimePlanSubmissionEnforcesLengthBound(t *testing.T) {
 		return raw
 	}
 	overshoot := submission("越过固定篇幅",
-		map[string]any{"chapter": 1, "arc": 1, "title": "第一章", "summary": "出发"},
-		map[string]any{"chapter": 2, "arc": 1, "title": "第二章", "summary": "多余"})
-	exact := submission("按固定篇幅规划一章", map[string]any{"chapter": 1, "arc": 1, "title": "第一章", "summary": "出发"})
+		map[string]any{"chapter": 1, "arc": 1, "title": "第一章", "summary": "出发", "turn": "他上了路"},
+		map[string]any{"chapter": 2, "arc": 1, "title": "第二章", "summary": "多余", "turn": "多余"})
+	exact := submission("按固定篇幅规划一章", map[string]any{"chapter": 1, "arc": 1, "title": "第一章", "summary": "出发", "turn": "他上了路"})
 	model := litellmtest.New(callReply("plan-submit-1", "proposal_submit", overshoot), callReply("plan-submit-2", "proposal_submit", exact))
 	runtime := boundRuntime(authorityStore, testChat(model))
 	runtime.now = func() time.Time { return now.Add(3 * time.Second) }
@@ -1030,8 +1032,8 @@ func TestRuntimePlanSubmissionEnforcesLengthBound(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute plan: %v", err)
 	}
-	if outcome.Proposal == nil || len(outcome.Proposal.Patches) != 3 {
-		t.Fatalf("outcome = %#v, want corrected 3-patch proposal", outcome)
+	if outcome.Proposal == nil || len(outcome.Proposal.Patches) != 4 {
+		t.Fatalf("outcome = %#v, want corrected 4-patch proposal (compass, volume, arc, chapter)", outcome)
 	}
 	if len(model.Requests()) != 2 {
 		t.Fatalf("model requests = %d, want overshoot rejected then corrected resubmission", len(model.Requests()))
@@ -1093,7 +1095,7 @@ func TestWriterSubmissionRequiresRedeclaringChapterFacts(t *testing.T) {
 			document(domainmodel.DocumentRef{Kind: domainmodel.DocumentIntent, ID: "root"}, domainmodel.Intent{Premise: "凡人修仙"}),
 			document(domainmodel.DocumentRef{Kind: domainmodel.DocumentPlan, ID: "volume-1"}, domainmodel.PlanNode{ID: "volume-1", Kind: domainmodel.PlanVolume, Title: "卷一", Summary: "入道"}),
 			document(domainmodel.DocumentRef{Kind: domainmodel.DocumentPlan, ID: "arc-1"}, domainmodel.PlanNode{ID: "arc-1", Kind: domainmodel.PlanArc, ParentID: "volume-1", Title: "弧一", Summary: "山门"}),
-			document(domainmodel.DocumentRef{Kind: domainmodel.DocumentPlan, ID: "plan-1"}, domainmodel.PlanNode{ID: "plan-1", Kind: domainmodel.PlanChapter, ParentID: "arc-1", Order: 1, Title: "第一章", Summary: "抵达"}),
+			document(domainmodel.DocumentRef{Kind: domainmodel.DocumentPlan, ID: "plan-1"}, domainmodel.PlanNode{ID: "plan-1", Kind: domainmodel.PlanChapter, Turn: "转折", ParentID: "arc-1", Order: 1, Title: "第一章", Summary: "抵达"}),
 			document(domainmodel.DocumentRef{Kind: domainmodel.DocumentEntity, ID: "hero"}, domainmodel.Entity{ID: "hero", Kind: domainmodel.EntityCharacter, Name: "主角"}),
 			document(domainmodel.DocumentRef{Kind: domainmodel.DocumentManuscript, ID: "chapter-1"}, domainmodel.ManuscriptChapter{
 				ID: "chapter-1", PlanNodeID: "plan-1", Number: 1, Author: domainmodel.AuthorAI,
@@ -1233,7 +1235,7 @@ func TestReworkSubmissionCarriesItsOutline(t *testing.T) {
 		submitted = proposal
 		return proposal, nil
 	})
-	if _, err := submit(ctx, json.RawMessage(`{"reason":"按返工要求重写","outline":{"title":"火漆印下的旧邮票","summary":"推进"},`+
+	if _, err := submit(ctx, json.RawMessage(`{"reason":"按返工要求重写","outline":{"title":"火漆印下的旧邮票","summary":"推进","turn":"信里是一枚旧邮票"},`+
 		`"entities":[{"name":"陈渡","kind":"character"}],"facts":[{"subject":"陈渡","predicate":"event.find","value":"信里是一枚旧邮票"}]}`)); err != nil {
 		t.Fatalf("submit rework: %v", err)
 	}
@@ -1244,7 +1246,7 @@ func TestReworkSubmissionCarriesItsOutline(t *testing.T) {
 		t.Fatalf("patches = %+v", submitted.Patches)
 	}
 	var node domainmodel.PlanNode
-	if err := json.Unmarshal(submitted.Patches[index].Content, &node); err != nil || node.Title != "火漆印下的旧邮票" || node.Summary != "推进" || node.ParentID != "arc-1" {
+	if err := json.Unmarshal(submitted.Patches[index].Content, &node); err != nil || node.Title != "火漆印下的旧邮票" || node.Summary != "推进" || node.Turn != "信里是一枚旧邮票" || node.ParentID != "arc-1" {
 		t.Fatalf("outline = %+v, %v", node, err)
 	}
 }
@@ -1268,7 +1270,7 @@ func seedWrittenChapters(t *testing.T, ctx context.Context, authorityStore *stor
 		plan, chapter := fmt.Sprintf("plan-%d", number), fmt.Sprintf("chapter-%d", number)
 		patches = append(patches,
 			document(domainmodel.DocumentRef{Kind: domainmodel.DocumentPlan, ID: plan}, domainmodel.PlanNode{
-				ID: plan, Kind: domainmodel.PlanChapter, ParentID: "arc-1", Order: number, Title: fmt.Sprintf("第%d章", number), Summary: "推进"}),
+				ID: plan, Kind: domainmodel.PlanChapter, Turn: "转折", ParentID: "arc-1", Order: number, Title: fmt.Sprintf("第%d章", number), Summary: "推进"}),
 			document(domainmodel.DocumentRef{Kind: domainmodel.DocumentManuscript, ID: chapter}, domainmodel.ManuscriptChapter{
 				ID: chapter, PlanNodeID: plan, Number: number, Author: domainmodel.AuthorAI,
 				Blocks: []domainmodel.ManuscriptBlock{{ID: "b1", Text: "正文"}}}),
@@ -1300,7 +1302,7 @@ func seedRuntimeProject(t *testing.T, ctx context.Context, authorityStore *store
 		document(domainmodel.DocumentRef{Kind: domainmodel.DocumentIntent, ID: "root"}, domainmodel.Intent{Premise: "凡人修仙"}),
 		document(domainmodel.DocumentRef{Kind: domainmodel.DocumentPlan, ID: "volume-1"}, domainmodel.PlanNode{ID: "volume-1", Kind: domainmodel.PlanVolume, Title: "卷一", Summary: "入道"}),
 		document(domainmodel.DocumentRef{Kind: domainmodel.DocumentPlan, ID: "arc-1"}, domainmodel.PlanNode{ID: "arc-1", Kind: domainmodel.PlanArc, ParentID: "volume-1", Title: "弧一", Summary: "山门"}),
-		document(domainmodel.DocumentRef{Kind: domainmodel.DocumentPlan, ID: "chapter-plan-1"}, domainmodel.PlanNode{ID: "chapter-plan-1", Kind: domainmodel.PlanChapter, ParentID: "arc-1", Order: 1, Title: "第一章", Summary: "抵达山门"}),
+		document(domainmodel.DocumentRef{Kind: domainmodel.DocumentPlan, ID: "chapter-plan-1"}, domainmodel.PlanNode{ID: "chapter-plan-1", Kind: domainmodel.PlanChapter, Turn: "转折", ParentID: "arc-1", Order: 1, Title: "第一章", Summary: "抵达山门"}),
 		document(domainmodel.DocumentRef{Kind: domainmodel.DocumentEntity, ID: "hero"}, domainmodel.Entity{ID: "hero", Kind: domainmodel.EntityCharacter, Name: "主角"}),
 		document(domainmodel.DocumentRef{Kind: domainmodel.DocumentCanon, ID: "hero-origin"}, domainmodel.CanonFact{
 			ID: "hero-origin", Kind: domainmodel.CanonState, SubjectID: "hero", Predicate: "state.origin", Value: json.RawMessage(`"农家子"`),

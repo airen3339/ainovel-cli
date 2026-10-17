@@ -15,7 +15,7 @@ import (
 
 // ViewKind 是模型视图的显式 schema 版本：视图结构或故事语言渲染演进时必须升版，
 // 旧 Execution Profile 仍按其记录的版本解释，不做静默兼容。
-const ViewKind = "model_view.v1"
+const ViewKind = "model_view.v2" // v2：罗盘渲染成故事语言，带长线（D91）
 
 // contextPolicy 是有界装配参数（§6.5）。它进入 ViewKey，改参数即换缓存键。
 type contextPolicy struct {
@@ -70,7 +70,7 @@ type ProjectContent struct {
 }
 
 func (c ProjectContent) story() *narrative.Story {
-	return narrative.New(narrative.Content{Plan: c.Plan, Entities: c.Entities, Canon: c.Canon, Manuscript: c.Manuscript})
+	return narrative.New(narrative.Content{Compass: c.Compass, Plan: c.Plan, Entities: c.Entities, Canon: c.Canon, Manuscript: c.Manuscript})
 }
 
 // ContextDocument 是装配选中的一份权威文档；它只在选择阶段存在，渲染后模型看不到 ID。
@@ -96,7 +96,7 @@ type selection struct {
 // StoryContext 是按预算装配、用故事语言渲染的有界视图（D66）：卷弧章大纲、实体、
 // 事实与正文，外加全书规模。Intent 与 Ownership 在 project_rules 层，不重复。
 type StoryContext struct {
-	Compass  *model.Compass          `json:"compass,omitempty"`
+	Compass  *narrative.CompassView  `json:"compass,omitempty"`
 	Totals   narrative.Totals        `json:"totals"`
 	Outline  []narrative.VolumeView  `json:"outline,omitempty"`
 	Entities []narrative.EntityView  `json:"entities,omitempty"`
@@ -125,7 +125,7 @@ func BuildModelView(content ProjectContent, kind model.OperationKind, task json.
 	if err != nil {
 		return ModelView{}, err
 	}
-	return ModelView{Ownership: ownership, Context: selected.render(story, content.Compass), Task: rendered}, nil
+	return ModelView{Ownership: ownership, Context: selected.render(story), Task: rendered}, nil
 }
 
 // omittedNames 是未装配计数在模型视图里的名字。
@@ -134,7 +134,7 @@ var omittedNames = map[model.DocumentKind]string{
 	model.DocumentCanon: "facts", model.DocumentManuscript: "chapters",
 }
 
-func (s selection) render(story *narrative.Story, compass *model.Compass) StoryContext {
+func (s selection) render(story *narrative.Story) StoryContext {
 	byKind := make(map[model.DocumentKind][]string)
 	for _, document := range s.Documents {
 		byKind[document.Ref.Kind] = append(byKind[document.Ref.Kind], document.Ref.ID)
@@ -145,7 +145,7 @@ func (s selection) render(story *narrative.Story, compass *model.Compass) StoryC
 		Chapters: story.Texts(byKind[model.DocumentManuscript]),
 	}
 	if len(byKind[model.DocumentCompass]) > 0 {
-		context.Compass = compass
+		context.Compass = story.Compass()
 	}
 	for kind, count := range s.Budget.Omitted {
 		if name, ok := omittedNames[kind]; ok {
@@ -330,7 +330,7 @@ func (s *selector) chapterTargets(chapterID string) []model.DocumentRef {
 func (s *selector) assemble(f focus, policy contextPolicy) error {
 	required := slices.Clone(f.targets)
 	if _, ok := s.documents[compassRef.Key()]; ok {
-		required = append(required, compassRef) // 篇幅与终局（D63），各任务都要知道故事往哪收
+		required = append(required, compassRef) // 篇幅、终局与长线（D63、D91），各任务都要知道故事往哪收
 	}
 	if f.previous {
 		for i := f.anchor - 1; i >= 0; i-- {

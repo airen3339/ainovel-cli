@@ -49,6 +49,10 @@ func (s *Story) labelPairs() []string {
 	for _, fact := range s.content.Canon {
 		add(model.DocumentRef{Kind: model.DocumentCanon, ID: fact.ID}, s.factLabel(fact))
 	}
+	// 长线住在罗盘里，不是文档，只换裸 ID。
+	for _, thread := range s.threads() {
+		pairs = append(pairs, `"`+thread.ID+`"`, "长线「"+thread.Name+"」")
+	}
 	return pairs
 }
 

@@ -70,8 +70,8 @@ func TestChapterTasksWriteExactlyTheirTargets(t *testing.T) {
 	base := story{plans: map[string]PlanNode{
 		"arc-1":  {ID: "arc-1", Kind: PlanArc, Title: "雨城", Summary: "陈渡循钥匙找姐姐"},
 		"arc-2":  {ID: "arc-2", Kind: PlanArc, Order: 1, Title: "邮局", Summary: "撞破秘密"},
-		"plan-1": {ID: "plan-1", Kind: PlanChapter, ParentID: "arc-1", Order: 1, Title: "火漆印下的铜钥匙", Summary: "信里只有一把铜钥匙"},
-		"plan-2": {ID: "plan-2", Kind: PlanChapter, ParentID: "arc-1", Order: 2, Title: "死信房", Summary: "按钥匙编号找柜格"},
+		"plan-1": {ID: "plan-1", Kind: PlanChapter, Turn: "转折", ParentID: "arc-1", Order: 1, Title: "火漆印下的铜钥匙", Summary: "信里只有一把铜钥匙"},
+		"plan-2": {ID: "plan-2", Kind: PlanChapter, Turn: "转折", ParentID: "arc-1", Order: 2, Title: "死信房", Summary: "按钥匙编号找柜格"},
 	}}
 	outline := func(id string, edit func(*PlanNode)) Patch {
 		node := base.plans[id]
@@ -80,7 +80,7 @@ func TestChapterTasksWriteExactlyTheirTargets(t *testing.T) {
 		return Patch{Document: DocumentRef{Kind: DocumentPlan, ID: id}, Operation: PatchPut, Content: content}
 	}
 	retitled := outline("plan-1", func(node *PlanNode) {
-		node.Title, node.Summary = "火漆印下的旧邮票", "信里只有一枚旧邮票"
+		node.Title, node.Summary, node.Turn = "火漆印下的旧邮票", "信里只有一枚旧邮票", "邮票背面写着姐姐的名字"
 	})
 	for _, c := range []struct {
 		name    string
@@ -104,6 +104,8 @@ func TestChapterTasksWriteExactlyTheirTargets(t *testing.T) {
 			outline("arc-1", func(node *PlanNode) { node.Summary = "陈渡循邮票找姐姐" })}, "only planning tasks edit the plan"},
 		{"rework cannot move its chapter", rework, []Patch{chapter("chapter-1", "plan-1", "新"),
 			outline("plan-1", func(node *PlanNode) { node.ParentID = "arc-2" })}, "only planning tasks edit the plan"},
+		{"rework cannot change its threads", rework, []Patch{chapter("chapter-1", "plan-1", "新"),
+			outline("plan-1", func(node *PlanNode) { node.Threads = []string{"t1"} })}, "only planning tasks edit the plan"},
 		{"rewrite cannot edit its outline", rewrite, []Patch{chapter("chapter-1", "plan-1", "新"), retitled}, "only planning tasks edit the plan"},
 		{"write cannot edit its outline", write, []Patch{chapter("chapter-1", "plan-1", ten), retitled}, "only planning tasks edit the plan"},
 	} {
@@ -134,6 +136,106 @@ func TestChapterTasksWriteExactlyTheirTargets(t *testing.T) {
 				t.Fatalf("err = %v, want %q", err, c.wantErr)
 			}
 		})
+	}
+}
+
+// 规划要立起长线（D91）；已写章的大纲描述它的正文，规划不改；在已写章作答的长线，答案就是那
+// 一章。未写的章与未写的答案随规划调整。
+func TestPlanningKeepsWrittenChaptersAndTheirAnswers(t *testing.T) {
+	raw, _ := json.Marshal(&RevisePlanInput{ExistingChapters: 2})
+	planning := Operation{Kind: OperationRevisePlan, Input: raw, Snapshot: ExecutionSnapshot{BaseRevision: 3}}
+	base := story{
+		plans: map[string]PlanNode{
+			"arc-1":  {ID: "arc-1", Kind: PlanArc, Title: "雨城", Summary: "陈渡循钥匙找姐姐"},
+			"plan-1": {ID: "plan-1", Kind: PlanChapter, Turn: "转折", ParentID: "arc-1", Order: 1, Title: "铜钥匙", Summary: "信里只有一把钥匙", Threads: []string{"t1"}},
+			"plan-2": {ID: "plan-2", Kind: PlanChapter, Turn: "转折", ParentID: "arc-1", Order: 2, Title: "死信房", Summary: "按编号找柜格", Threads: []string{"t2"}},
+		},
+		chapters: map[string]ManuscriptChapter{"chapter-1": {ID: "chapter-1", PlanNodeID: "plan-1", Number: 1}},
+		compass: &Compass{ScaleMax: 50, Ending: "找到姐姐", Threads: []StoryThread{
+			{ID: "t1", Name: "钥匙", Question: "钥匙开哪扇门", Answer: "plan-1"},
+			{ID: "t2", Name: "姐姐", Question: "姐姐为何失踪", Answer: "plan-2"},
+		}},
+	}
+	appended := PlanNode{ID: "plan-3", Kind: PlanChapter, Turn: "转折", ParentID: "arc-1", Order: 3, Title: "柜格", Summary: "柜格里是旧信", Threads: []string{"t2"}}
+	answers := func(t1, t2 string) Compass {
+		compass := *base.compass
+		compass.Threads = []StoryThread{base.compass.Threads[0], base.compass.Threads[1]}
+		compass.Threads[0].Answer, compass.Threads[1].Answer = t1, t2
+		return compass
+	}
+	edited := func(id string, edit func(*PlanNode)) PlanNode {
+		node := base.plans[id]
+		edit(&node)
+		return node
+	}
+	for _, c := range []struct {
+		name    string
+		compass Compass
+		plans   []PlanNode
+		wantErr string
+	}{
+		{"unwritten answer moves", answers("plan-1", "plan-3"), nil, ""},
+		{"unwritten chapter is revised", answers("plan-1", "plan-2"),
+			[]PlanNode{edited("plan-2", func(node *PlanNode) { node.Summary = "柜格是空的" })}, ""},
+		{"written answer stays", answers("plan-3", "plan-2"), nil, "stays its answer"},
+		{"written chapter is not revised", answers("plan-1", "plan-2"),
+			[]PlanNode{edited("plan-1", func(node *PlanNode) { node.Summary = "信里只有一枚邮票" })}, "planning may not edit chapter"},
+		{"written chapter keeps its threads", answers("plan-1", "plan-2"),
+			[]PlanNode{edited("plan-1", func(node *PlanNode) { node.Threads = nil })}, "planning may not edit chapter"},
+		{"written chapter keeps its turn", answers("plan-1", "plan-2"),
+			[]PlanNode{edited("plan-1", func(node *PlanNode) { node.Turn = "钥匙是假的" })}, "planning may not edit chapter"},
+		{"blueprint needs threads", Compass{ScaleMax: 50, Ending: "找到姐姐"}, nil, "requires compass threads"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			projected := story{plans: make(map[string]PlanNode), chapters: base.chapters, compass: &c.compass}
+			for id, node := range base.plans {
+				projected.plans[id] = node
+			}
+			content, _ := json.Marshal(c.compass)
+			patches := []Patch{{Document: DocumentRef{Kind: DocumentCompass, ID: SingletonDocumentID}, Operation: PatchPut, Content: content}}
+			for _, node := range append(c.plans, appended) {
+				projected.plans[node.ID] = node
+				content, _ := json.Marshal(node)
+				patches = append(patches, Patch{Document: DocumentRef{Kind: DocumentPlan, ID: node.ID}, Operation: PatchPut, Content: content})
+			}
+			err := validateTaskSubmission(planning, base, projected, patches)
+			if c.wantErr == "" && err != nil {
+				t.Fatalf("rejected: %v", err)
+			}
+			if c.wantErr != "" && (!errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), c.wantErr)) {
+				t.Fatalf("err = %v, want %q", err, c.wantErr)
+			}
+		})
+	}
+}
+
+// 长线的引用是蓝图结构的一部分：章推进的长线必须在罗盘里，答案必须是章节计划。
+func TestThreadReferencesFollowTheCompass(t *testing.T) {
+	plans := map[string]PlanNode{
+		"arc-1":  {ID: "arc-1", Kind: PlanArc, Title: "雨城", Summary: "找姐姐"},
+		"plan-1": {ID: "plan-1", Kind: PlanChapter, Turn: "转折", ParentID: "arc-1", Order: 1, Title: "铜钥匙", Summary: "钥匙", Threads: []string{"t1"}},
+	}
+	thread := func(answer string) *Compass {
+		return &Compass{Ending: "找到姐姐", Threads: []StoryThread{{ID: "t1", Name: "钥匙", Question: "钥匙开哪扇门", Answer: answer}}}
+	}
+	for name, c := range map[string]struct {
+		compass *Compass
+		wantErr string
+	}{
+		"answered in a chapter": {thread("plan-1"), ""},
+		"open":                  {thread(""), ""},
+		"no compass":            {nil, "there is no compass"},
+		"missing thread":        {&Compass{Ending: "找到姐姐"}, "missing thread"},
+		"answered in an arc":    {thread("arc-1"), "missing chapter plan"},
+		"answered nowhere":      {thread("plan-9"), "missing chapter plan"},
+	} {
+		err := story{plans: plans, compass: c.compass}.validateThreadRefs()
+		if c.wantErr == "" && err != nil {
+			t.Fatalf("%s: rejected: %v", name, err)
+		}
+		if c.wantErr != "" && (!errors.Is(err, ErrStructuralConflict) || !strings.Contains(err.Error(), c.wantErr)) {
+			t.Fatalf("%s: err = %v, want %q", name, err, c.wantErr)
+		}
 	}
 }
 

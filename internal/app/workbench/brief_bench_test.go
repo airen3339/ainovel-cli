@@ -29,7 +29,7 @@ func BenchmarkChapterBriefsLongBook(b *testing.B) {
 			project.Plan = append(project.Plan, model.PlanNode{ID: arc, Kind: model.PlanArc, ParentID: volume, Order: n})
 		}
 		plan, chapter := fmt.Sprint("p", n), fmt.Sprint("c", n)
-		project.Plan = append(project.Plan, model.PlanNode{ID: plan, Kind: model.PlanChapter, ParentID: arc, Order: n})
+		project.Plan = append(project.Plan, model.PlanNode{ID: plan, Kind: model.PlanChapter, Turn: "转折", ParentID: arc, Order: n})
 		project.Manuscript = append(project.Manuscript, model.ManuscriptChapter{ID: chapter, PlanNodeID: plan, Number: n})
 		for f := range 10 {
 			project.Canon = append(project.Canon, model.CanonFact{ID: fmt.Sprint("f", n, "-", f), Kind: model.CanonState, Predicate: "state.x", Value: json.RawMessage(`"值"`), SourceChapterID: chapter})

@@ -9,11 +9,22 @@ import (
 	"github.com/voocel/ainovel-cli/internal/domain/narrative"
 )
 
-// ChapterBrief 是一章的依据（页面设计 §3 右栏）：覆盖它的要求与审阅对每项的结论，以及
-// 这一章记下的设定。规划摘要在大纲里，审阅发现在 Findings 里。
+// ChapterBrief 是一章的依据（页面设计 §3 右栏）：它推进的长线、覆盖它的要求与审阅对每项
+// 的结论，以及这一章记下的设定。规划摘要在大纲里，审阅发现在 Findings 里。
 type ChapterBrief struct {
+	Threads      []BriefThread      `json:"threads,omitempty"`
 	Requirements []BriefRequirement `json:"requirements,omitempty"`
 	Facts        []BriefFact        `json:"facts,omitempty"`
+}
+
+// Thread 是一条长线（D91）的进度：最近推进它的已写章、此后停了几章、下一次推进它的未写章
+// 与作答章，与模型看到的同一份统计。
+type Thread = narrative.ThreadView
+
+// BriefThread 是这一章推进的一条长线（D91）；Answer 表示答案落在这一章。
+type BriefThread struct {
+	Name   string `json:"name"`
+	Answer bool   `json:"answer,omitempty"`
 }
 
 // BriefRequirement 是覆盖这一章的一项要求；Status 是包含这一章的当前裁定对它的结论
@@ -57,6 +68,17 @@ func chapterBriefs(project projectdoc.Snapshot, final int, current map[string]*n
 		written[chapter.PlanNodeID], numbers[chapter.ID] = chapter, chapter.Number
 	}
 	briefs := make(map[int]ChapterBrief, len(plans))
+	if project.Compass != nil {
+		for index, plan := range plans {
+			for _, thread := range project.Compass.Threads {
+				if answer := thread.Answer == plan.ID; answer || slices.Contains(plan.Threads, thread.ID) {
+					brief := briefs[index+1]
+					brief.Threads = append(brief.Threads, BriefThread{Name: thread.Name, Answer: answer})
+					briefs[index+1] = brief
+				}
+			}
+		}
+	}
 	reworks := novel.ReworksDue(project)
 	effective := make(map[string]model.ReviewVerdict)
 	for number, requirements := range novel.RequirementsByChapter(project, final) {

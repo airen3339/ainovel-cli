@@ -50,17 +50,17 @@ func CommittedFinal(compass *model.Compass, planned int) int {
 func (l Length) planningGoal() string {
 	switch {
 	case l.Fixed > 0 && l.Compass == nil:
-		return fmt.Sprintf("全书固定 %d 章：本次必须给出故事罗盘 compass，只写终局方向 ending（篇幅已由用户固定，不写 scale_max 与 final）；规划到第 %d 章时收束主线，把未回收的伏笔分配进收官章节", l.Fixed, l.Fixed)
+		return fmt.Sprintf("全书固定 %d 章：本次必须给出故事罗盘 compass，只写终局方向 ending（篇幅已由用户固定，不写 scale_max 与 final）；规划到第 %d 章时收束主线，给每条未答的长线定下作答的章，把未回收的伏笔分配进收官章节", l.Fixed, l.Fixed)
 	case l.Fixed > 0:
-		return fmt.Sprintf("全书固定 %d 章：规划到第 %d 章时收束主线，把未回收的伏笔分配进收官章节；终局方向有变化时修订 compass.ending", l.Fixed, l.Fixed)
+		return fmt.Sprintf("全书固定 %d 章：规划到第 %d 章时收束主线，给每条未答的长线定下作答的章，把未回收的伏笔分配进收官章节；终局方向有变化时修订 compass.ending", l.Fixed, l.Fixed)
 	case l.Compass == nil || l.Compass.ScaleMax == 0:
 		return fmt.Sprintf("篇幅由你决定：本次必须给出故事罗盘 compass，写下终局方向 ending 与预计篇幅 scale_max（全书大约多少章：先看用户的话，再按题材惯例与故事引擎估计；它随故事修订，%d 章以内由你决定，更长需用户同意）；规划已到故事终点时同时声明收官 final", model.CompassAutonomyCeiling)
 	case l.Compass.Final > 0 && l.Final == 0:
 		return fmt.Sprintf("篇幅由你决定（当前预计 %d 章）：罗盘的收官承诺 %d 章已少于蓝图章数而失效，本次必须修订 compass.final（不少于已规划章数）或撤回收官（省略 final）", l.Compass.ScaleMax, l.Compass.Final)
 	case l.Final > 0:
-		return fmt.Sprintf("已承诺全书 %d 章收官：规划到第 %d 章时收束主线，把未回收的伏笔分配进收官章节；确需调整就修订 compass.final", l.Final, l.Final)
+		return fmt.Sprintf("已承诺全书 %d 章收官：规划到第 %d 章时收束主线，给每条未答的长线定下作答的章，把未回收的伏笔分配进收官章节；确需调整就修订 compass.final", l.Final, l.Final)
 	default:
-		return fmt.Sprintf("篇幅由你决定（当前预计 %d 章）：按故事进展修订 compass；故事已到收束点或临近预计篇幅时声明收官 final（全书章数，不少于已规划章数），并把未回收的伏笔分配进收官章节；故事需要更长就上调 scale_max（%d 章以内由你决定，更长需用户同意）", l.Compass.ScaleMax, model.AutonomousScale(*l.Compass))
+		return fmt.Sprintf("篇幅由你决定（当前预计 %d 章）：按故事进展修订 compass；故事已到收束点或临近预计篇幅时声明收官 final（全书章数，不少于已规划章数），并给每条未答的长线定下作答的章、把未回收的伏笔分配进收官章节；故事需要更长就上调 scale_max（%d 章以内由你决定，更长需用户同意）", l.Compass.ScaleMax, model.AutonomousScale(*l.Compass))
 	}
 }
 

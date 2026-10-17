@@ -191,7 +191,7 @@ func newRenderingApp(t *testing.T, approval model.ApprovalPolicy) (*testApp, *ex
 	}
 	for number := 1; number <= 3; number++ {
 		draft.Plan = append(draft.Plan, model.PlanNode{
-			ID: "chapter-plan-" + strconv.Itoa(number), Kind: model.PlanChapter, ParentID: "arc-1",
+			ID: "chapter-plan-" + strconv.Itoa(number), Kind: model.PlanChapter, Turn: "转折", ParentID: "arc-1",
 			Order: number, Title: "第" + strconv.Itoa(number) + "章", Summary: "推进",
 		})
 	}
@@ -303,7 +303,7 @@ func TestRenderingRunRegeneratesOnlyAffectedTargetAfterSourceChange(t *testing.T
 	before := attachmentsByTarget(renderingSnapshot(t, api))
 
 	edited, err := json.Marshal(model.PlanNode{
-		ID: "chapter-plan-2", Kind: model.PlanChapter, ParentID: "arc-1", Order: 2, Title: "第2章", Summary: "改写后的推进",
+		ID: "chapter-plan-2", Kind: model.PlanChapter, Turn: "转折", ParentID: "arc-1", Order: 2, Title: "第2章", Summary: "改写后的推进",
 	})
 	if err != nil {
 		t.Fatalf("encode plan: %v", err)

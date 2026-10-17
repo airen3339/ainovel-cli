@@ -30,8 +30,9 @@ func TestExecuteUsesRoleBindingAndRecordsRunStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan := func() json.RawMessage {
-		return json.RawMessage(`{"reason":"规划","volumes":[{"volume":1,"title":"卷","summary":"卷"}],` +
-			`"arcs":[{"arc":1,"volume":1,"title":"弧","summary":"弧"}],"chapters":[{"chapter":1,"arc":1,"title":"第一章","summary":"开篇"}]}`)
+		return json.RawMessage(`{"reason":"规划","compass":{"ending":"收束"},"threads":[{"name":"主线","question":"主角能否做成那件事"}],` +
+			`"volumes":[{"volume":1,"title":"卷","summary":"卷"}],"arcs":[{"arc":1,"volume":1,"title":"弧","summary":"弧"}],` +
+			`"chapters":[{"chapter":1,"arc":1,"title":"第一章","summary":"开篇","turn":"主角出发","threads":["主线"]}]}`)
 	}
 	task := json.RawMessage(`{"fixed_chapters":3}`)
 	runID := createRuntimeTestRun(t, ctx, authorityStore, "book-plan", now)

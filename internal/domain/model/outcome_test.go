@@ -61,6 +61,38 @@ func TestReviewedChaptersOnlyBlockThroughRequirements(t *testing.T) {
 	}
 }
 
+// 复审时没改过的章与上一份裁定已判满足的要求都没变，那条结论不重开：不能借它阻塞没改过的
+// 章，矛盾记在改动章上；上一份裁定没判满足的要求照旧能阻塞（如新增的伏笔让收官要求变了）。
+func TestSatisfiedRequirementsStayClosedOnReviewedChapters(t *testing.T) {
+	basis := EvidenceBasis{Documents: []DocumentBasis{{Ref: DocumentRef{Kind: DocumentManuscript, ID: "chapter-1"}, Revision: 2}}}
+	input := ReviewRangeInput{
+		ChapterIDs: []string{"chapter-1", "chapter-2"}, Reviewed: []string{"chapter-1"}, Satisfied: []string{"directive:rain"}, Basis: basis,
+		Requirements: []Requirement{{ID: "directive:rain", Text: "要下雨"}, {ID: "book:finale:new", Text: "结局回收伏笔"}},
+	}
+	block := func(chapter, requirement string) ReviewFinding {
+		return ReviewFinding{ChapterID: chapter, Severity: FindingBlocking, Note: "不合要求", Requirement: requirement}
+	}
+	if err := input.AdmitsFinding(block("chapter-1", "directive:rain")); !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), `"directive:rain"`) {
+		t.Fatalf("settled requirement reopened on an unchanged chapter: %v", err)
+	}
+	for _, finding := range []ReviewFinding{block("chapter-1", "book:finale:new"), block("chapter-2", "directive:rain")} {
+		if err := input.AdmitsFinding(finding); err != nil {
+			t.Fatalf("%+v: %v", finding, err)
+		}
+	}
+	if err := input.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	for name, bad := range map[string]ReviewRangeInput{
+		"satisfied outside requirements": {ChapterIDs: input.ChapterIDs, Reviewed: input.Reviewed, Requirements: input.Requirements, Satisfied: []string{"directive:gone"}, Basis: basis},
+		"satisfied without reviewed":     {ChapterIDs: input.ChapterIDs, Requirements: input.Requirements, Satisfied: []string{"directive:rain"}, Basis: basis},
+	} {
+		if err := bad.Validate(); !errors.Is(err, ErrInvalid) {
+			t.Fatalf("%s: err = %v", name, err)
+		}
+	}
+}
+
 func TestReviewVerdictRequirementCoverage(t *testing.T) {
 	// D62：任务输入携带的每项要求都必须被恰好声明一次，不得漏项、越界或重复。
 	operation := Operation{

@@ -304,7 +304,7 @@ func verdictNotes(verdict model.ReviewVerdict) []string {
 
 // storyOf 是作品的故事索引：交给模型或用户的文字用章号、名称指称，不露文档 ID（D66）。
 func storyOf(project projectdoc.Snapshot) *narrative.Story {
-	return narrative.New(narrative.Content{Plan: project.Plan, Entities: project.Entities, Canon: project.Canon, Manuscript: project.Manuscript})
+	return narrative.New(narrative.Content{Compass: project.Compass, Plan: project.Plan, Entities: project.Entities, Canon: project.Canon, Manuscript: project.Manuscript})
 }
 
 func manuscriptsByID(manuscript []model.ManuscriptChapter) map[string]model.ManuscriptChapter {
@@ -331,7 +331,7 @@ func planWork(run model.CreationRun, length Length, pending []string) creation.W
 		ID: runQuickID(run.ID, "plan", length.inputID()), Kind: model.OperationDevelopPlan,
 		Input: model.DevelopPlanInput{
 			FixedChapters: length.Fixed, PendingRequirements: pending,
-			Goal: "设计可直接用于连续创作的卷、故事弧与章节大纲：只搭近处——第一卷的故事弧骨架（看得清时可再搭下一卷），更远的卷写到时按已发生的故事再定，终局只作为方向写进罗盘；这次只为第一个故事弧展开章节，这一弧多少章由你按故事走向决定，每章挂在所属故事弧下；为 pending_requirements 中的要求安排落点，指明了章的就落在那几章；" + length.planningGoal(),
+			Goal: "设计可直接用于连续创作的卷、故事弧与章节大纲：只搭近处——第一卷的故事弧骨架（看得清时可再搭下一卷），更远的卷写到时按已发生的故事再定，终局只作为方向写进罗盘；立起长线（threads）：全书在追问、终局要回答的几个问题；这次只为第一个故事弧展开章节，这一弧多少章由你按故事走向决定，每章挂在所属故事弧下，用 threads 标明它推进哪几条长线，用 turn 写明它的转折；为 pending_requirements 中的要求安排落点，指明了章的就落在那几章；" + length.planningGoal(),
 		},
 		Reasons: creation.WorkReasons{
 			Start:   "规划故事蓝图：搭起卷与故事弧，展开第一个故事弧的章节",
@@ -347,7 +347,7 @@ func planWork(run model.CreationRun, length Length, pending []string) creation.W
 // 末章的裁定为基线（D51），裁定失效则扩窗任务失效。已覆盖的末章作为全书结局写成时是续写（D63）。
 func extendWork(run model.CreationRun, length Length, ledger reviewLedger, covered int) creation.WorkItem {
 	concluded := ledger.concluded(covered)
-	goal := "展开下一个故事弧的章节：已有章节保持不变，只在末尾追加并挂在所属故事弧下；下一弧已有骨架就按已发生的故事修订后展开，没有就新建；本卷的故事弧都已写完时先判断故事是否到了终点，未到终点才新开一卷，新卷只搭它自己的故事弧骨架；这一弧多少章由你按故事走向决定；结合审阅意见调整后续走向，为 pending_requirements 中尚未兑现的要求安排落点；已有人物与事物的状态随章节正文记录，规划不改写；" + length.planningGoal()
+	goal := "展开下一个故事弧的章节：已有章节保持不变，只在末尾追加并挂在所属故事弧下；下一弧已有骨架就按已发生的故事修订后展开，没有就新建；本卷的故事弧都已写完时先判断故事是否到了终点，未到终点才新开一卷，新卷只搭它自己的故事弧骨架；这一弧多少章由你按故事走向决定；结合审阅意见调整后续走向，为 pending_requirements 中尚未兑现的要求安排落点；对照罗盘里各条长线停了几章（quiet）与下一次的安排（next）规划这一弧，新章用 threads 标明推进的长线、用 turn 写明转折，答案落在哪一章就给那条长线写上 answer，故事里出现新的长线就立起来；已有人物与事物的状态随章节正文记录，规划不改写；" + length.planningGoal()
 	parts := []string{"plan", "extend", strconv.Itoa(covered), length.inputID()}
 	start := fmt.Sprintf("扩展蓝图：前 %d 章已审完，展开下一个故事弧", covered)
 	if concluded {
@@ -419,7 +419,7 @@ func reworkWork(project projectdoc.Snapshot, run model.CreationRun, chapter chap
 		Input: model.ReworkChapterInput{
 			ChapterID: chapter.chapterID, ChapterPlanID: chapter.plan.ID,
 			Directives: chapter.directives(project), Basis: chapter.basis(project),
-			Goal: "按用户的返工要求重写本章：directives 里 rework 为 true 的要求是用户对现有正文的意见，针对它修改，不引入新的越界改动，与前后章节的衔接保持一致；重申报本章全部既有事实（确认、更新或删除），以及本章的章题与章纲（照重写后的正文，没变就原样给出）；严格满足 directives 列出的每条创作要求（用户原话），字数约束按 constraints 执行",
+			Goal: "按用户的返工要求重写本章：directives 里 rework 为 true 的要求是用户对现有正文的意见，针对它修改，不引入新的越界改动，与前后章节的衔接保持一致；重申报本章全部既有事实（确认、更新或删除），以及本章的章题、章纲与转折（照重写后的正文，没变就原样给出）；严格满足 directives 列出的每条创作要求（用户原话），字数约束按 constraints 执行",
 		},
 		Reasons: creation.WorkReasons{
 			Start:   "按你的要求重写" + chapter.label() + "：「" + strings.Join(texts, "」「") + "」",
@@ -463,9 +463,14 @@ func reviewWork(project projectdoc.Snapshot, run model.CreationRun, ledger revie
 		return creation.WorkItem{}, err
 	}
 	requirements := ledger.window(step.review)
-	goal := "审阅本窗口正文：检查与上一章的衔接、窗口内的连续性与 Intent 方向，产出结构化裁定与发现；上一章正文只用于衔接检查，不在审阅范围"
+	// 上一份裁定判过满足、如今已不在要核验之列的要求（如已退役）不再提。
+	satisfied := slices.DeleteFunc(slices.Clone(step.satisfied), func(id string) bool {
+		return !slices.ContainsFunc(requirements, func(r model.Requirement) bool { return r.ID == id })
+	})
+	goal := "审阅本窗口正文：检查与上一章的衔接、窗口内的连续性与 Intent 方向，产出结构化裁定与发现；上一章正文只用于衔接检查，不在审阅范围；" +
+		"每条 blocking 都由重写它所在的那一章来解决：写明这一章要怎么改，不要求改别的章或全书统一"
 	if len(step.reviewed) > 0 {
-		goal += "；reviewed 列出的章上一轮已审且正文未变，只作上下文：不再对它们记 blocking（违反 requirements 除外），其中的问题记为 note；改动章与它们之间的矛盾记在改动章上"
+		goal += "；reviewed 列出的章上一轮已审且正文未变，只作上下文：不再对它们记 blocking（违反 requirements 除外，但 satisfied 列出的要求上一轮已判满足，不再借它们阻塞），其中的问题记为 note；改动章与它们之间的矛盾记在改动章上"
 	}
 	if len(step.prior) > 0 {
 		goal += "；逐条核对 prior_findings 列出的上一轮阻塞问题是否已解决，并检查改动有没有引入新问题"
@@ -474,7 +479,7 @@ func reviewWork(project projectdoc.Snapshot, run model.CreationRun, ledger revie
 		goal += "；逐项核验 requirements：已兑现为 satisfied，被违反为 violated 并用阻塞发现链接，仅凭本窗口正文还无法判断为 pending；settle 为 true 的项必须给出 satisfied 或 violated"
 	}
 	input := model.ReviewRangeInput{
-		ChapterIDs: step.review, Requirements: requirements, Reviewed: step.reviewed, PriorFindings: step.prior,
+		ChapterIDs: step.review, Requirements: requirements, Reviewed: step.reviewed, Satisfied: satisfied, PriorFindings: step.prior,
 		Basis: basis, Goal: goal,
 	}
 	first, last := ledger.numbers[step.review[0]], ledger.numbers[step.review[len(step.review)-1]]

@@ -97,13 +97,19 @@ func (r *Runtime) storyAt(ctx context.Context, target model.AuthorityTarget, rev
 	return narrative.New(content), nil
 }
 
-// contentAt 读作品在 revision 上的大纲、实体、设定与正文；作品意图由用得着的一方另读。
+// contentAt 读作品在 revision 上的罗盘、大纲、实体、设定与正文；作品意图由用得着的一方另读。
 func (r *Runtime) contentAt(ctx context.Context, target model.AuthorityTarget, revision model.Revision) (narrative.Content, error) {
 	var content narrative.Content
 	if revision <= model.InitialRevision {
 		return content, nil
 	}
-	var err error
+	compass, err := documentsAt[model.Compass](ctx, r.store, target, revision, model.DocumentCompass)
+	if err != nil {
+		return narrative.Content{}, err
+	}
+	if len(compass) > 0 {
+		content.Compass = &compass[0]
+	}
 	if content.Plan, err = documentsAt[model.PlanNode](ctx, r.store, target, revision, model.DocumentPlan); err != nil {
 		return narrative.Content{}, err
 	}

@@ -38,7 +38,7 @@ func TestManuscriptRejectsDuplicateBlockID(t *testing.T) {
 func TestDocumentDependenciesIncludeStableParentAndPlan(t *testing.T) {
 	planContent := json.RawMessage(`{
 		"id":"chapter-plan-1",
-		"kind":"chapter",
+		"kind":"chapter","turn":"转折",
 		"parent_id":"arc-1",
 		"order":1,
 		"title":"山门",
@@ -65,7 +65,7 @@ func TestValidateBlueprint(t *testing.T) {
 	chapters := func(ids ...int) []PlanNode {
 		var nodes []PlanNode
 		for _, n := range ids {
-			nodes = append(nodes, PlanNode{ID: fmt.Sprintf("chapter-%d", n), Kind: PlanChapter, ParentID: "arc-1", Order: n, Title: "章", Summary: "推进"})
+			nodes = append(nodes, PlanNode{ID: fmt.Sprintf("chapter-%d", n), Kind: PlanChapter, Turn: "转折", ParentID: "arc-1", Order: n, Title: "章", Summary: "推进"})
 		}
 		return nodes
 	}
@@ -178,7 +178,7 @@ func TestValidateBlueprint(t *testing.T) {
 				return []Patch{{Document: DocumentRef{Kind: DocumentPlan, ID: "chapter-3"}, Operation: PatchDelete}, compass(t, 10, 5)}
 			}, false},
 		{"deleting the compass keeps a node named root", open,
-			blueprint(&Compass{ScaleMax: 10, Ending: "称帝"}, append(chapters(1, 2), PlanNode{ID: "root", Kind: PlanChapter, ParentID: "arc-1", Order: 3, Title: "章", Summary: "推进"})...),
+			blueprint(&Compass{ScaleMax: 10, Ending: "称帝"}, append(chapters(1, 2), PlanNode{ID: "root", Kind: PlanChapter, Turn: "转折", ParentID: "arc-1", Order: 3, Title: "章", Summary: "推进"})...),
 			func(t *testing.T) []Patch {
 				return append(plans(t, 4, 5, 6), Patch{Document: DocumentRef{Kind: DocumentCompass, ID: SingletonDocumentID}, Operation: PatchDelete}, compass(t, 10, 0))
 			}, true},
@@ -255,22 +255,45 @@ func TestCompassValidateAndNeverDependency(t *testing.T) {
 		{Compass{ScaleMax: 60}, false},
 		{Compass{ScaleMax: 60, Ending: "称帝", Final: 61}, false},
 		{Compass{ScaleMax: 60, Ending: "称帝", Final: -1}, false},
+		// 长线（D91）：每条有问题，ID 与短名各不相同。
+		{Compass{Ending: "称帝", Threads: []StoryThread{{ID: "t1", Name: "王位", Question: "能否称帝"}, {ID: "t2", Name: "旧债", Question: "父仇谁报"}}}, true},
+		{Compass{Ending: "称帝", Threads: []StoryThread{{ID: "t1", Name: "王位"}}}, false},
+		{Compass{Ending: "称帝", Threads: []StoryThread{{ID: "t1", Question: "能否称帝"}}}, false},
+		{Compass{Ending: "称帝", Threads: []StoryThread{{ID: "t1", Name: "王位", Question: "能否称帝"}, {ID: "t2", Name: "王位", Question: "父仇谁报"}}}, false},
+		{Compass{Ending: "称帝", Threads: []StoryThread{{ID: "t1", Name: "王位", Question: "能否称帝"}, {ID: "t1", Name: "旧债", Question: "父仇谁报"}}}, false},
 	} {
 		if err := c.compass.Validate(); (err == nil) != c.ok {
 			t.Fatalf("%+v validate = %v, want ok %v", c.compass, err, c.ok)
 		}
 	}
-	node := PlanNode{ID: "chapter-1", Kind: PlanChapter, ParentID: "arc-1", Title: "章", Summary: "推进",
+	node := PlanNode{ID: "chapter-1", Kind: PlanChapter, Turn: "转折", ParentID: "arc-1", Title: "章", Summary: "推进",
 		DependsOn: []DocumentRef{{Kind: DocumentCompass, ID: SingletonDocumentID}}}
 	if err := node.Validate(); !errors.Is(err, ErrInvalid) {
 		t.Fatalf("compass dependency error = %v, want ErrInvalid", err)
 	}
 }
 
+// 转折（D92）是章节计划的一部分：章必有，卷、弧没有。
+func TestOnlyChapterPlansCarryATurn(t *testing.T) {
+	for _, c := range []struct {
+		node PlanNode
+		ok   bool
+	}{
+		{PlanNode{ID: "c", Kind: PlanChapter, ParentID: "a", Title: "章", Summary: "推进", Turn: "钥匙开了门"}, true},
+		{PlanNode{ID: "c", Kind: PlanChapter, ParentID: "a", Title: "章", Summary: "推进", Turn: " "}, false},
+		{PlanNode{ID: "a", Kind: PlanArc, ParentID: "v", Title: "弧", Summary: "推进"}, true},
+		{PlanNode{ID: "a", Kind: PlanArc, ParentID: "v", Title: "弧", Summary: "推进", Turn: "钥匙开了门"}, false},
+	} {
+		if err := c.node.Validate(); (err == nil) != c.ok {
+			t.Fatalf("%+v validate = %v, want ok %v", c.node, err, c.ok)
+		}
+	}
+}
+
 func TestChapterPlansInOrderSortsByOrderThenID(t *testing.T) {
 	plan := []PlanNode{
-		{ID: "c", Kind: PlanChapter, Order: 2}, {ID: "arc", Kind: PlanArc},
-		{ID: "b", Kind: PlanChapter, Order: 1}, {ID: "a", Kind: PlanChapter, Order: 2},
+		{ID: "c", Kind: PlanChapter, Turn: "转折", Order: 2}, {ID: "arc", Kind: PlanArc},
+		{ID: "b", Kind: PlanChapter, Turn: "转折", Order: 1}, {ID: "a", Kind: PlanChapter, Turn: "转折", Order: 2},
 	}
 	var ids []string
 	for _, node := range ChapterPlansInOrder(plan) {

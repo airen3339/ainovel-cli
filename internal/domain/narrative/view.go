@@ -34,10 +34,31 @@ type ArcView struct {
 }
 
 type ChapterPlanView struct {
-	Chapter int    `json:"chapter"`
-	Title   string `json:"title"`
-	Summary string `json:"summary"`
-	Written bool   `json:"written,omitempty"`
+	Chapter int      `json:"chapter"`
+	Title   string   `json:"title"`
+	Summary string   `json:"summary"`
+	Turn    string   `json:"turn"`              // 本章的转折（D92）
+	Threads []string `json:"threads,omitempty"` // 本章推进的长线（短名）
+	Written bool     `json:"written,omitempty"`
+}
+
+// CompassView 是故事罗盘：终局、篇幅与长线走到了哪。
+type CompassView struct {
+	Ending   string       `json:"ending"`
+	ScaleMax int          `json:"scale_max,omitempty"`
+	Final    int          `json:"final,omitempty"`
+	Threads  []ThreadView `json:"threads,omitempty"`
+}
+
+// ThreadView 是一条长线（D91）。章号由宿主按章节计划的引用推出：作答的章也算推进。
+type ThreadView struct {
+	Name     string `json:"name"`
+	Question string `json:"question"`
+	Advanced int    `json:"advanced,omitempty"` // 最近推进它的已写章
+	Quiet    int    `json:"quiet,omitempty"`    // 此后又写了几章没有推进它；从未推进时是已写章数
+	Next     int    `json:"next,omitempty"`     // 下一个计划推进它的未写章
+	Answer   int    `json:"answer,omitempty"`   // 作答的章
+	Answered bool   `json:"answered,omitempty"` // 作答的那一章已写
 }
 
 type EntityView struct {
@@ -102,7 +123,46 @@ func (s *Story) Outline(ids []string) []VolumeView {
 
 func (s *Story) chapterPlanView(node model.PlanNode) ChapterPlanView {
 	_, written := s.written[node.ID]
-	return ChapterPlanView{Chapter: s.number[node.ID], Title: node.Title, Summary: node.Summary, Written: written}
+	view := ChapterPlanView{Chapter: s.number[node.ID], Title: node.Title, Summary: node.Summary, Turn: node.Turn, Written: written}
+	for _, id := range node.Threads {
+		view.Threads = append(view.Threads, s.threadName(id))
+	}
+	return view
+}
+
+// Compass 渲染故事罗盘；尚未规划时为 nil。
+func (s *Story) Compass() *CompassView {
+	compass := s.content.Compass
+	if compass == nil {
+		return nil
+	}
+	view := &CompassView{Ending: compass.Ending, ScaleMax: compass.ScaleMax, Final: compass.Final}
+	for _, thread := range compass.Threads {
+		view.Threads = append(view.Threads, s.threadView(thread))
+	}
+	return view
+}
+
+func (s *Story) threadView(thread model.StoryThread) ThreadView {
+	view := ThreadView{Name: thread.Name, Question: thread.Question, Answer: s.chapterNumberOf(thread.Answer)}
+	_, view.Answered = s.written[thread.Answer]
+	written := 0
+	for _, node := range s.ordered[model.PlanChapter] {
+		_, done := s.written[node.ID]
+		advances := node.ID == thread.Answer || slices.Contains(node.Threads, thread.ID)
+		switch {
+		case done && advances:
+			view.Advanced, written = s.number[node.ID], 0
+		case done:
+			written++
+		case advances && view.Next == 0:
+			view.Next = s.number[node.ID]
+		}
+	}
+	if !view.Answered {
+		view.Quiet = written
+	}
+	return view
 }
 
 func (s *Story) Entities(ids []string) []EntityView {

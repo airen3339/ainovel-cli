@@ -24,7 +24,7 @@ func (v Intent) Validate() error {
 	return validateDistinctStrings("intent required", v.Required)
 }
 
-// Compass 是故事罗盘（D63）：AI 在蓝图里给出的终局与篇幅，随滚动规划修订，只有
+// Compass 是故事罗盘（D63）：AI 在蓝图里给出的终局、长线与篇幅，随滚动规划修订，只有
 // 规划任务能写。终局方向总由 AI 定；篇幅只在交给 AI 时才有（D70）：ScaleMax 是
 // 预计篇幅（D73），Final 是收官承诺（全书章数，0 表示尚未收官）；用户固定篇幅时二者为 0。
 type Compass struct {
@@ -32,6 +32,27 @@ type Compass struct {
 	ScaleMax int    `json:"scale_max,omitempty"`
 	Ending   string `json:"ending"` // 终局方向
 	Final    int    `json:"final,omitempty"`
+	// Threads 是长线（D91）：全书在追问、终局要回答的几个大问题，章节计划引用它们。
+	Threads []StoryThread `json:"threads,omitempty"`
+}
+
+// StoryThread 是一条长线（D91）：驱动全书的一个问题，与伏笔（埋下待回收的具体线索）不同。
+// 章节计划按 ID 引用它推进的长线；Answer 是作答那一章的计划 ID，未定为空。
+type StoryThread struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`     // 短名，故事语言里按它指称
+	Question string `json:"question"` // 全书追问的问题
+	Answer   string `json:"answer,omitempty"`
+}
+
+// Thread 按 ID 取长线。
+func (v Compass) Thread(id string) (StoryThread, bool) {
+	for _, thread := range v.Threads {
+		if thread.ID == id {
+			return thread, true
+		}
+	}
+	return StoryThread{}, false
 }
 
 // CompassAutonomyCeiling 是无人值守的篇幅护栏（D63/D73）：预计篇幅超过它，AI 须经用户裁决。
@@ -50,7 +71,17 @@ func (v Compass) Validate() error {
 	if v.Final < 0 || v.Final > v.ScaleMax {
 		return fmt.Errorf("compass final %d must be within scale_max %d: %w", v.Final, v.ScaleMax, ErrInvalid)
 	}
-	return nil
+	ids, names := make([]string, len(v.Threads)), make([]string, len(v.Threads))
+	for i, thread := range v.Threads {
+		if strings.TrimSpace(thread.Question) == "" {
+			return fmt.Errorf("compass thread %q requires a question: %w", thread.ID, ErrInvalid)
+		}
+		ids[i], names[i] = thread.ID, thread.Name
+	}
+	if err := validateDistinctStrings("compass thread ids", ids); err != nil {
+		return err
+	}
+	return validateDistinctStrings("compass thread names", names)
 }
 
 type PlanNodeKind string
@@ -63,12 +94,17 @@ const (
 )
 
 type PlanNode struct {
-	ID        string        `json:"id"`
-	Kind      PlanNodeKind  `json:"kind"`
-	ParentID  string        `json:"parent_id,omitempty"`
-	Order     int           `json:"order"`
-	Title     string        `json:"title"`
-	Summary   string        `json:"summary"`
+	ID       string       `json:"id"`
+	Kind     PlanNodeKind `json:"kind"`
+	ParentID string       `json:"parent_id,omitempty"`
+	Order    int          `json:"order"`
+	Title    string       `json:"title"`
+	Summary  string       `json:"summary"`
+	// Turn 是这一章的转折（D92）：读完这一章，读者在它推进的长线上多知道的那件具体的事，或
+	// 局面的变化。章节计划必有，其余节点没有。
+	Turn string `json:"turn,omitempty"`
+	// Threads 是这一章推进的长线（罗盘里的 ID，D91），只有章节计划有。
+	Threads   []string      `json:"threads,omitempty"`
 	DependsOn []DocumentRef `json:"depends_on,omitempty"`
 }
 
@@ -140,6 +176,15 @@ func (v PlanNode) Validate() error {
 	}
 	if strings.TrimSpace(v.Title) == "" || strings.TrimSpace(v.Summary) == "" {
 		return fmt.Errorf("plan node title and summary are required: %w", ErrInvalid)
+	}
+	if (strings.TrimSpace(v.Turn) != "") != (v.Kind == PlanChapter) {
+		return fmt.Errorf("chapter plans and only chapter plans carry a turn (%s %q): %w", v.Kind, v.ID, ErrInvalid)
+	}
+	if len(v.Threads) > 0 && v.Kind != PlanChapter {
+		return fmt.Errorf("only chapter plans advance threads, not %s %q: %w", v.Kind, v.ID, ErrInvalid)
+	}
+	if err := validateDistinctStrings("plan node threads", v.Threads); err != nil {
+		return err
 	}
 	return validateDocumentRefs(v.DependsOn)
 }

@@ -11,8 +11,8 @@ import (
 func TestNothingLeftToWriteNeedsAKnownFinal(t *testing.T) {
 	project := projectdoc.Snapshot{
 		Plan: []model.PlanNode{
-			{ID: "chapter-1", Kind: model.PlanChapter, Order: 1, Title: "第一章", Summary: "开端"},
-			{ID: "chapter-2", Kind: model.PlanChapter, Order: 2, Title: "第二章", Summary: "推进"},
+			{ID: "chapter-1", Kind: model.PlanChapter, Turn: "转折", Order: 1, Title: "第一章", Summary: "开端"},
+			{ID: "chapter-2", Kind: model.PlanChapter, Turn: "转折", Order: 2, Title: "第二章", Summary: "推进"},
 		},
 		Manuscript: []model.ManuscriptChapter{
 			{ID: "manuscript-1", PlanNodeID: "chapter-1", Number: 1, Blocks: []model.ManuscriptBlock{{ID: "block-1", Text: "正文"}}},

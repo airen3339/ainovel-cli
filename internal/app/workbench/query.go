@@ -127,6 +127,8 @@ type WorkbenchSnapshot struct {
 	Briefs map[int]ChapterBrief `json:"briefs,omitempty"`
 	// Cast 是出过场的人物，涉及章数多的在前。
 	Cast []CastMember `json:"cast,omitempty"`
+	// Threads 是长线（D91），按立起的先后。
+	Threads []Thread `json:"threads,omitempty"`
 	// Length 是篇幅口径（D63）：固定章数、故事罗盘与全书章数，与推导器同一规则。
 	Length novel.Length `json:"length"`
 }
@@ -218,6 +220,9 @@ func (s *Query) snapshotFromProject(ctx context.Context, project projectdoc.Snap
 	snapshot.Length = novel.LengthOf(project, snapshot.Run)
 	snapshot.Briefs = chapterBriefs(project, snapshot.Length.Final, current, novel.SatisfiedRequirements(project, snapshot.Length.Final, verdicts))
 	snapshot.Cast = castOf(project)
+	if compass := storyOf(project).Compass(); compass != nil {
+		snapshot.Threads = compass.Threads
+	}
 	return snapshot, nil
 }
 

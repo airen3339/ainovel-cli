@@ -29,7 +29,7 @@ func longBook(planned, written int) ProjectContent {
 		}
 		mate := fmt.Sprintf("配角%03d", i)
 		content.Plan = append(content.Plan, model.PlanNode{
-			ID: planID(i), Kind: model.PlanChapter, ParentID: arc, Order: i, Title: fmt.Sprintf("第%d章", i), Summary: "主角遇见" + mate,
+			ID: planID(i), Kind: model.PlanChapter, Turn: "转折", ParentID: arc, Order: i, Title: fmt.Sprintf("第%d章", i), Summary: "主角遇见" + mate,
 		})
 		if i > written {
 			continue

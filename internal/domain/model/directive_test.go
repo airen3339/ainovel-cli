@@ -10,7 +10,7 @@ func TestDirectiveScopeCoversTarget(t *testing.T) {
 	plan := []PlanNode{
 		{ID: "volume-1", Kind: PlanVolume, Order: 1, Title: "卷一", Summary: "s"},
 		{ID: "arc-1", Kind: PlanArc, ParentID: "volume-1", Order: 1, Title: "弧一", Summary: "s"},
-		{ID: "chapter-plan-3", Kind: PlanChapter, ParentID: "arc-1", Order: 3, Title: "三", Summary: "s"},
+		{ID: "chapter-plan-3", Kind: PlanChapter, Turn: "转折", ParentID: "arc-1", Order: 3, Title: "三", Summary: "s"},
 	}
 	target := DirectiveTarget{ChapterNumber: 3, PlanNodeIDs: IndexPlan(plan).Ancestry("chapter-plan-3")}
 	if got := target.PlanNodeIDs; len(got) != 3 || got[0] != "chapter-plan-3" || got[2] != "volume-1" {

@@ -1,6 +1,7 @@
 package bootstrap_test
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os"
@@ -789,8 +790,9 @@ func TestLiveDetailedSetup(t *testing.T) {
 	if locked != "" && planSummary(snap, 4) != locked {
 		t.Errorf("S5：锁定后第 4 章的规划被改了：%s → %s", locked, planSummary(snap, 4))
 	}
-	if summary := planSummary(snap, 1); !strings.Contains(summary, "烧") {
-		t.Errorf("S2：第 1 章的规划没有按用户的大纲：%s", summary)
+	// 烧信可能写成“焚信”“丢进炉膛”，章题与梗概合起来看。
+	if plan := outlineTitle(snap, liveChapter(snap, 1).PlanNodeID) + planSummary(snap, 1); !strings.ContainsAny(plan, "烧焚") {
+		t.Errorf("S2：第 1 章的规划没有按用户的大纲：%s", plan)
 	}
 	for number, brief := range snap.Briefs {
 		for _, requirement := range brief.Requirements {
@@ -902,8 +904,8 @@ func TestLiveModelTrial(t *testing.T) {
 // 跑 headless，比每章输入、完本、返工与要求满足。篇幅两边都是软要求：v1 在官方写作标准里，
 // v0 写进需求原文。
 func TestLiveVersusV0(t *testing.T) {
-	const chapters = 40
-	intent := model.Intent{Premise: livePremise, Required: []string{"第 5 章陈渡第一次正面见到邮局局长"}, Forbidden: []string{"感情线"}}
+	const chapters = versusChapters
+	intent := versusIntent(t)
 	u := openLive(t)
 	u.log("v0 的需求：%s全书 %d 章，每章三到四千字。要求：%s。不要写%s。", intent.Premise, chapters, intent.Required[0], intent.Forbidden[0])
 	u.session.Write(chief.WriteParams{Intent: &intent, Chapters: chapters, Approval: model.ApprovalAuto})
@@ -914,6 +916,53 @@ func TestLiveVersusV0(t *testing.T) {
 			if requirement.Status != model.CheckSatisfied {
 				u.log("第 %d 章的要求「%s」：%s", number, requirement.Text, requirement.Status)
 			}
+		}
+	}
+}
+
+const versusChapters = 40
+
+// versusIntents 是与 v0 对照的需求，AINOVEL_VERSUS 选一个（D92 起三个题材）：p1 悬疑（默认）、
+// p2 慢节奏的家族群像、p3 网文长篇的玄幻成长。v0 用日志里打出的同一段话作 --prompt-file。
+var versusIntents = map[string]model.Intent{
+	"p1": {Premise: livePremise, Required: []string{"第 5 章陈渡第一次正面见到邮局局长"}, Forbidden: []string{"感情线"}},
+	"p2": {Premise: "江边小城的老茶馆传到第三代：外婆想把它守下去，母亲要卖掉它还债，外孙女辞了城里的工作回来，在旧账本里翻到一笔四十年前没还上的人情。",
+		Required: []string{"第 6 章外孙女弄清那笔人情欠的是谁"}, Forbidden: []string{"穿越、重生或超自然"}},
+	"p3": {Premise: "被判为废脉的少年林晚能听见兵器的声音，他进铸剑宗当杂役，想查清父亲当年为什么铸出一把弑主之剑。",
+		Required: []string{"第 8 章林晚第一次在人前用上听剑的本事"}, Forbidden: []string{"后宫"}},
+}
+
+func versusIntent(t *testing.T) model.Intent {
+	intent, ok := versusIntents[cmp.Or(os.Getenv("AINOVEL_VERSUS"), "p1")]
+	if !ok {
+		t.Fatal("AINOVEL_VERSUS 只认 p1、p2、p3")
+	}
+	return intent
+}
+
+// 只跑开篇规划（D91 的验证）：与 TestLiveVersusV0 同一需求，规划入库就暂停，章纲与长线留在
+// 库里比对。
+func TestLiveVersusV0Plan(t *testing.T) {
+	intent := versusIntent(t)
+	u := openLive(t)
+	paused := false
+	u.watch = func(snap workbench.WorkbenchSnapshot) {
+		if len(snap.Threads) == 0 || paused {
+			return
+		}
+		paused = true
+		if err := u.session.Pause(u.ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	u.session.Write(chief.WriteParams{Intent: &intent, Chapters: versusChapters, Approval: model.ApprovalAuto})
+	snap := u.advance(func(snap workbench.WorkbenchSnapshot) bool { return len(snap.Threads) > 0 })
+	for _, thread := range snap.Threads {
+		u.log("长线「%s」：%s · 作答第 %d 章", thread.Name, thread.Question, thread.Answer)
+	}
+	for _, node := range snap.Outline {
+		if node.Node.Kind == model.PlanChapter {
+			u.log("第 %d 章《%s》%v：%s", node.Number, node.Node.Title, snap.Briefs[node.Number].Threads, node.Node.Summary)
 		}
 	}
 }

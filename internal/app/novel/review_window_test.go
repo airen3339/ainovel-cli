@@ -13,6 +13,12 @@ import (
 )
 
 // requirementFixture 在小说快照上加意图条目与各类作用域的要求。
+// 夹具意图条目在核验项里的 ID。
+var (
+	intentRequired  = intentRequirementID("required", 0, "主角登场")
+	intentForbidden = intentRequirementID("forbidden", 0, "感情线")
+)
+
 func requirementFixture(t *testing.T, plans, written int) projectdoc.Snapshot {
 	t.Helper()
 	project := novelFixture(t, plans, written)
@@ -56,11 +62,11 @@ func TestRequirementScopesAndEnds(t *testing.T) {
 	}
 	project := requirementFixture(t, 3, 3)
 	assertEnds(t, requirementEnds(requirements(project, 5)), map[string]int{
-		"intent:required:0": 5, "intent:forbidden:0": 5, finaleRequirement(project, 5).ID: 5,
+		intentRequired: 5, intentForbidden: 5, finaleRequirement(project, 5).ID: 5,
 		"directive:d-arc": 0, "directive:d-empty": 0, "directive:d-range": 3,
 	})
 	assertEnds(t, requirementEnds(requirements(project, 0)), map[string]int{
-		"intent:required:0": 0, "intent:forbidden:0": 0,
+		intentRequired: 0, intentForbidden: 0,
 		"directive:d-arc": 0, "directive:d-empty": 0, "directive:d-late": 0, "directive:d-range": 3,
 	})
 	// 作用域落在全书之外的用户要求单列出来，由推导器按篇幅来源处理。
@@ -84,14 +90,14 @@ func TestSatisfiedRequirementsFollowTheGate(t *testing.T) {
 	last := []string{"chapter-iiii", "chapter-iiiii"}
 	satisfied := SatisfiedRequirements(project, 5, []StoredVerdict{
 		storedTestVerdict("review-a", 1, first, nil,
-			check("intent:required:0", model.CheckSatisfied), check("directive:d-range", model.CheckSatisfied)),
+			check(intentRequired, model.CheckSatisfied), check("directive:d-range", model.CheckSatisfied)),
 		storedTestVerdict("review-c", 3, first, nil,
-			check("intent:required:0", model.CheckPending), check("directive:d-range", model.CheckSatisfied)),
+			check(intentRequired, model.CheckPending), check("directive:d-range", model.CheckSatisfied)),
 		storedTestVerdict("review-b", 2, last, nil,
-			check("intent:required:0", model.CheckPending), check("directive:d-arc", model.CheckPending)),
+			check(intentRequired, model.CheckPending), check("directive:d-arc", model.CheckPending)),
 	})
-	if !satisfied["intent:required:0"] || !satisfied["directive:d-range"] || satisfied["directive:d-arc"] || len(satisfied) != 2 {
-		t.Fatalf("satisfied = %v, want intent:required:0 and directive:d-range", satisfied)
+	if !satisfied[intentRequired] || !satisfied["directive:d-range"] || satisfied["directive:d-arc"] || len(satisfied) != 2 {
+		t.Fatalf("satisfied = %v, want the intent entry and directive:d-range", satisfied)
 	}
 }
 
@@ -119,7 +125,7 @@ func TestReviewWindowSettlesDueRequirements(t *testing.T) {
 	last := []string{"chapter-iiii", "chapter-iiiii"}
 	firstChecks := func(required string) []model.RequirementCheck {
 		return []model.RequirementCheck{
-			check("intent:required:0", required), check("intent:forbidden:0", model.CheckSatisfied),
+			check(intentRequired, required), check(intentForbidden, model.CheckSatisfied),
 			check("directive:d-arc", model.CheckSatisfied), check("directive:d-range", model.CheckSatisfied),
 		}
 	}
@@ -132,7 +138,7 @@ func TestReviewWindowSettlesDueRequirements(t *testing.T) {
 			t.Fatalf("next = %#v, %v", next, err)
 		}
 		requirementWant(t, *next.Work, map[string]bool{
-			"intent:required:0": false, "intent:forbidden:0": true, "directive:d-arc": false, "directive:d-range": true,
+			intentRequired: false, intentForbidden: true, "directive:d-arc": false, "directive:d-range": true,
 		})
 	})
 	t.Run("final window settles what is still open", func(t *testing.T) {
@@ -142,7 +148,7 @@ func TestReviewWindowSettlesDueRequirements(t *testing.T) {
 			t.Fatalf("next = %#v, %v", next, err)
 		}
 		requirementWant(t, *next.Work, map[string]bool{
-			"intent:required:0": true, "intent:forbidden:0": true, finale: true, "directive:d-arc": false,
+			intentRequired: true, intentForbidden: true, finale: true, "directive:d-arc": false,
 		})
 	})
 	t.Run("already satisfied elsewhere is not forced on the final window", func(t *testing.T) {
@@ -152,12 +158,12 @@ func TestReviewWindowSettlesDueRequirements(t *testing.T) {
 			t.Fatalf("next = %#v, %v", next, err)
 		}
 		requirementWant(t, *next.Work, map[string]bool{
-			"intent:required:0": false, "intent:forbidden:0": true, finale: true, "directive:d-arc": false,
+			intentRequired: false, intentForbidden: true, finale: true, "directive:d-arc": false,
 		})
 	})
 
 	lastChecks := []model.RequirementCheck{
-		check("intent:required:0", model.CheckPending), check("intent:forbidden:0", model.CheckSatisfied),
+		check(intentRequired, model.CheckPending), check(intentForbidden, model.CheckSatisfied),
 		check(finale, model.CheckSatisfied), check("directive:d-arc", model.CheckSatisfied),
 	}
 	t.Run("covered but unmet requirement re-reviews its closing window", func(t *testing.T) {
@@ -175,12 +181,12 @@ func TestReviewWindowSettlesDueRequirements(t *testing.T) {
 			t.Fatalf("settle review = %+v, want window and reviewed %v", input, last)
 		}
 		requirementWant(t, *next.Work, map[string]bool{
-			"intent:required:0": true, "intent:forbidden:0": true, finale: false, "directive:d-arc": false,
+			intentRequired: true, intentForbidden: true, finale: false, "directive:d-arc": false,
 		})
 		// ID 标识完整输入：必须下结论的再审与先前的窗口审阅不撞 ID。
 		earlier := slices.Clone(input.Requirements)
 		for i := range earlier {
-			earlier[i].Settle = earlier[i].ID == "intent:forbidden:0"
+			earlier[i].Settle = earlier[i].ID == intentForbidden
 		}
 		if next.Work.ID == reviewOperationID(run.ID, 2, model.ReviewRangeInput{ChapterIDs: last, Requirements: earlier}) {
 			t.Fatal("settle review must not reuse the earlier review id")
@@ -202,7 +208,7 @@ func TestExtendCarriesPendingRequirements(t *testing.T) {
 	project := requirementFixture(t, 3, 3)
 	first := []string{"chapter-i", "chapter-ii", "chapter-iii"}
 	evidence := Evidence{Verdicts: []StoredVerdict{storedTestVerdict("review-a", 1, first, nil,
-		check("intent:required:0", model.CheckPending), check("intent:forbidden:0", model.CheckSatisfied),
+		check(intentRequired, model.CheckPending), check(intentForbidden, model.CheckSatisfied),
 		check("directive:d-arc", model.CheckSatisfied), check("directive:d-range", model.CheckSatisfied),
 	)}}
 	assertStep(t, project, testRun(5, 1), evidence, stepWant{

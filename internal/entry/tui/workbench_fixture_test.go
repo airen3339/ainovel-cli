@@ -38,13 +38,14 @@ func studioModel(t *testing.T, width, height int) model {
 		"那封回信只有一行字。\n\n别在天亮前敲门。\n\n陈渡把信翻过来，背面是自己的笔迹。他记不起写过这句话，正如他记不起，为什么口袋里会有一把陌生的钥匙。",
 	}
 	summaries := []string{"", "", "回信只有一行字，背面是陈渡自己的笔迹。", "陈渡循着回信找到老宅，门后有人叫出他的名字；开门留到章末。"}
+	turns := []string{"信没有邮戳", "来客不留水迹", "回信是陈渡自己写的", "门后的人认得陈渡"}
 	for i, title := range []string{"无人签收", "雨夜来客", "回信", "门后的声音"} {
 		state := workbench.ChapterConfirmed
 		if i == 3 {
 			state = workbench.ChapterInProgress
 		}
 		m.bench.snap.Outline = append(m.bench.snap.Outline, workbench.OutlineNode{
-			Node: domainmodel.PlanNode{ID: fmt.Sprint("c", i+1), Kind: domainmodel.PlanChapter, ParentID: "v1", Title: title, Summary: summaries[i]}, Number: i + 1, State: state,
+			Node: domainmodel.PlanNode{ID: fmt.Sprint("c", i+1), Kind: domainmodel.PlanChapter, Turn: turns[i], ParentID: "v1", Title: title, Summary: summaries[i]}, Number: i + 1, State: state,
 		})
 		if i < 3 {
 			chapter := domainmodel.ManuscriptChapter{
@@ -67,7 +68,7 @@ func studioModel(t *testing.T, width, height int) model {
 				{Fact: workbench.Fact{Kind: domainmodel.CanonForeshadow, Subject: "回信", Text: "背面是陈渡本人的笔迹"}, Pending: true},
 			},
 		},
-		4: {Requirements: []workbench.BriefRequirement{
+		4: {Threads: []workbench.BriefThread{{Name: "姐姐"}, {Name: "回信", Answer: true}}, Requirements: []workbench.BriefRequirement{
 			{ID: "intent:forbidden:0", Text: "主角死亡", Forbidden: true}, suspense,
 			{ID: "directive:d2", Text: "用声音与一个具体动作承接悬念", Scope: "第 4 章"},
 		}},
@@ -120,7 +121,7 @@ func longWorkbench(tb testing.TB, count int) model {
 		if i%50 == 1 {
 			m.bench.snap.Outline = append(m.bench.snap.Outline, workbench.OutlineNode{Node: domainmodel.PlanNode{ID: fmt.Sprintf("v%d", i), Kind: domainmodel.PlanVolume, Title: fmt.Sprintf("第%d卷", i/50+1)}})
 		}
-		m.bench.snap.Outline = append(m.bench.snap.Outline, workbench.OutlineNode{Node: domainmodel.PlanNode{ID: fmt.Sprint(i), Kind: domainmodel.PlanChapter, Title: fmt.Sprintf("雨夜来信 %d", i)}, Number: i, State: workbench.ChapterConfirmed})
+		m.bench.snap.Outline = append(m.bench.snap.Outline, workbench.OutlineNode{Node: domainmodel.PlanNode{ID: fmt.Sprint(i), Kind: domainmodel.PlanChapter, Turn: "转折", Title: fmt.Sprintf("雨夜来信 %d", i)}, Number: i, State: workbench.ChapterConfirmed})
 		chapter := domainmodel.ManuscriptChapter{ID: fmt.Sprint(i), Number: i, Blocks: []domainmodel.ManuscriptBlock{{Text: strings.Repeat("雨停了，屋檐却还在滴水。", 250)}}}
 		m.bench.snap.Manuscript = append(m.bench.snap.Manuscript, chapter)
 		m.bench.snap.Words += chapter.Runes()

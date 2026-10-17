@@ -133,7 +133,7 @@ func describe(story *narrative.Story, ref model.DocumentRef) string {
 }
 
 func storyOf(project projectdoc.Snapshot) *narrative.Story {
-	return narrative.New(narrative.Content{Plan: project.Plan, Entities: project.Entities, Canon: project.Canon, Manuscript: project.Manuscript})
+	return narrative.New(narrative.Content{Compass: project.Compass, Plan: project.Plan, Entities: project.Entities, Canon: project.Canon, Manuscript: project.Manuscript})
 }
 
 // changeLine 用一句故事语言说清一处改动：大纲说改名、改梗概或挪位置，设定说新的内容，

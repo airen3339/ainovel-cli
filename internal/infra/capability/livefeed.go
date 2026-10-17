@@ -75,6 +75,7 @@ func streamSpecs(task model.TaskInput) map[string]streamSpec {
 		prompt.ToolWorkspaceReplaceBlock: {text: blockProse},
 		prompt.ToolProposalSubmit: {items: []itemTap{
 			{tapPath{"compass"}, sectionOutline, compassLine},
+			{tapPath{"threads", ""}, sectionOutline, decoded(threadLine)},
 			{tapPath{"volumes", ""}, sectionOutline, decoded(func(v narrative.VolumeEdit) string {
 				return outlineLine(fmt.Sprintf("第 %d 卷", v.Volume), v.Title, v.Summary)
 			})},
@@ -82,7 +83,11 @@ func streamSpecs(task model.TaskInput) map[string]streamSpec {
 				return outlineLine(fmt.Sprintf("第 %d 个故事弧", v.Arc), v.Title, v.Summary)
 			})},
 			{tapPath{"chapters", ""}, sectionOutline, decoded(func(v narrative.ChapterEdit) string {
-				return outlineLine(fmt.Sprintf("第 %d 章", v.Chapter), v.Title, v.Summary)
+				line := outlineLine(fmt.Sprintf("第 %d 章", v.Chapter), v.Title, v.Summary)
+				if len(v.Threads) > 0 {
+					line += "（推进：" + strings.Join(v.Threads, "、") + "）"
+				}
+				return line
 			})},
 			{tapPath{"entities", ""}, sectionCanon, decoded(entityLine)},
 			{tapPath{"facts", ""}, sectionCanon, decoded(factLine)},
@@ -123,8 +128,23 @@ func outlineLine(head, title, summary string) string {
 	return head
 }
 
+func threadLine(v narrative.ThreadEdit) string {
+	name := flat(v.Name)
+	if name == "" {
+		return ""
+	}
+	line := "长线 · " + name
+	if question := flat(v.Question); question != "" {
+		line += " —— " + question
+	}
+	if v.Answer > 0 {
+		line += fmt.Sprintf("（第 %d 章作答）", v.Answer)
+	}
+	return line
+}
+
 func compassLine(raw []byte) (string, bool) {
-	var compass model.Compass
+	var compass narrative.CompassEdit
 	if json.Unmarshal(raw, &compass) != nil {
 		return "", false
 	}

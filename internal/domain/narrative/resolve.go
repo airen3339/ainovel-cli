@@ -14,22 +14,38 @@ import (
 // Submission 是模型用故事语言写的提交（D66）：不含任何文档 ID。正文不在这里，
 // 由宿主按工作稿键与版本装配后随 drafts 传入。
 type Submission struct {
-	Compass  *model.Compass `json:"compass,omitempty"`
-	Volumes  []VolumeEdit   `json:"volumes,omitempty"`
-	Arcs     []ArcEdit      `json:"arcs,omitempty"`
-	Chapters []ChapterEdit  `json:"chapters,omitempty"`
-	Entities []EntityEdit   `json:"entities,omitempty"`
-	Facts    []FactEdit     `json:"facts,omitempty"`
-	Confirm  []FactRef      `json:"confirm_facts,omitempty"`
-	Remove   []FactRef      `json:"remove_facts,omitempty"`
-	// Outline 是返工重申报的本章章题与章纲（D87）。
+	Compass  *CompassEdit  `json:"compass,omitempty"`
+	Threads  []ThreadEdit  `json:"threads,omitempty"`
+	Volumes  []VolumeEdit  `json:"volumes,omitempty"`
+	Arcs     []ArcEdit     `json:"arcs,omitempty"`
+	Chapters []ChapterEdit `json:"chapters,omitempty"`
+	Entities []EntityEdit  `json:"entities,omitempty"`
+	Facts    []FactEdit    `json:"facts,omitempty"`
+	Confirm  []FactRef     `json:"confirm_facts,omitempty"`
+	Remove   []FactRef     `json:"remove_facts,omitempty"`
+	// Outline 是返工重申报的本章章题、章纲与转折（D87、D92）。
 	Outline *OutlineEdit `json:"outline,omitempty"`
 }
 
-// OutlineEdit 是一章的章题与章纲。
+// CompassEdit 整体替换罗盘的终局与篇幅；长线另按 ThreadEdit 编辑。
+type CompassEdit struct {
+	ScaleMax int    `json:"scale_max,omitempty"`
+	Ending   string `json:"ending"`
+	Final    int    `json:"final,omitempty"`
+}
+
+// ThreadEdit 按短名定位长线（D91）：已有的就地修改，否则新立；Answer 是作答的章号。
+type ThreadEdit struct {
+	Name     string `json:"name"`
+	Question string `json:"question,omitempty"`
+	Answer   int    `json:"answer,omitempty"`
+}
+
+// OutlineEdit 是一章的章题、章纲与转折。
 type OutlineEdit struct {
 	Title   string `json:"title"`
 	Summary string `json:"summary"`
+	Turn    string `json:"turn"`
 }
 
 // 计划编辑按序号定位：已有序号是修改（空字段保持原值），紧接末尾的序号是新增。
@@ -51,6 +67,10 @@ type ChapterEdit struct {
 	Arc     int    `json:"arc,omitempty"`
 	Title   string `json:"title,omitempty"`
 	Summary string `json:"summary,omitempty"`
+	// Turn 是本章的转折（D92），新增的章必填。
+	Turn string `json:"turn,omitempty"`
+	// Threads 是本章推进的长线短名：给出即整体替换，省略保持原样。
+	Threads []string `json:"threads,omitempty"`
 }
 
 // EntityEdit 按本名定位：已有实体合并别名，否则新建。Rename 把已有实体改叫别的本名（用户
@@ -90,10 +110,16 @@ func (s *Story) Resolve(input model.TaskInput, submission Submission, drafts []m
 }
 
 func (s *Story) resolver(direct bool) *resolver {
-	return &resolver{
+	r := &resolver{
 		story: s, ids: s.allocator(), created: make(map[model.PlanNodeKind][]string),
 		names: make(map[string]string), touched: make(map[string]bool), chapters: make(map[int]string), direct: direct,
 	}
+	if s.content.Compass != nil {
+		compass := *s.content.Compass
+		compass.Threads = slices.Clone(compass.Threads)
+		r.compass = &compass
+	}
+	return r
 }
 
 func (r *resolver) submission(input model.TaskInput, submission Submission, drafts []model.ManuscriptChapter) error {
@@ -110,15 +136,13 @@ func (r *resolver) submission(input model.TaskInput, submission Submission, draf
 	if err := r.outline(input, submission.Outline); err != nil {
 		return err
 	}
-	if submission.Compass != nil {
-		if err := r.put(model.DocumentCompass, model.SingletonDocumentID, submission.Compass); err != nil {
-			return err
-		}
-	}
+	// 长线先立后用：章节编辑按短名引用它们，作答章在章节编辑之后解析，新增的章也能作答。
 	steps := []func() error{
+		func() error { return r.defineThreads(submission.Compass, submission.Threads) },
 		func() error { return r.plan(model.PlanVolume, "", volumeEdits(submission.Volumes)) },
 		func() error { return r.plan(model.PlanArc, model.PlanVolume, arcEdits(submission.Arcs)) },
 		func() error { return r.plan(model.PlanChapter, model.PlanArc, chapterEdits(submission.Chapters)) },
+		func() error { return r.answerThreads(submission.Threads) },
 		func() error { return r.entities(submission.Entities) },
 		func() error { return r.facts(submission.Facts) },
 		func() error { return r.references(submission.Confirm, true) },
@@ -132,30 +156,32 @@ func (r *resolver) submission(input model.TaskInput, submission Submission, draf
 	return nil
 }
 
-// outline 处理返工重申报的章题与章纲（D87）：返工的章写了什么由重写后的正文说了算，章题
-// 与章纲随它走，必须重申报；变了才写进提交。其余任务照大纲写，不提交它。
+// outline 处理返工重申报的章题、章纲与转折（D87、D92）：返工的章写了什么由重写后的正文
+// 说了算，它们随正文走，必须重申报；变了才写进提交。其余任务照大纲写，不提交它。
 func (r *resolver) outline(input model.TaskInput, outline *OutlineEdit) error {
 	rework, ok := input.(*model.ReworkChapterInput)
 	switch {
 	case !ok && outline == nil:
 		return nil
 	case !ok:
-		return fmt.Errorf("只有返工能随正文改本章的章题与章纲: %w", model.ErrInvalid)
-	case outline == nil || strings.TrimSpace(outline.Title) == "" || strings.TrimSpace(outline.Summary) == "":
-		return fmt.Errorf("返工要重申报本章的章题与章纲（outline 的 title 与 summary）：照重写后的正文给出，没变就原样给出: %w", model.ErrInvalid)
+		return fmt.Errorf("只有返工能随正文改本章的章题、章纲与转折: %w", model.ErrInvalid)
+	case outline == nil || strings.TrimSpace(outline.Title) == "" || strings.TrimSpace(outline.Summary) == "" || strings.TrimSpace(outline.Turn) == "":
+		return fmt.Errorf("返工要重申报本章的章题、章纲与转折（outline 的 title、summary 与 turn）：照重写后的正文给出，没变就原样给出: %w", model.ErrInvalid)
 	}
 	node := r.story.plans[rework.ChapterPlanID]
-	if node.Title == outline.Title && node.Summary == outline.Summary {
+	if node.Title == outline.Title && node.Summary == outline.Summary && node.Turn == outline.Turn {
 		return nil
 	}
-	node.Title, node.Summary = outline.Title, outline.Summary
+	node.Title, node.Summary, node.Turn = outline.Title, outline.Summary, outline.Turn
 	return r.put(model.DocumentPlan, node.ID, node)
 }
 
 type resolver struct {
-	story    *Story
-	ids      *idAllocator
-	patches  []model.Patch
+	story   *Story
+	ids     *idAllocator
+	patches []model.Patch
+	// compass 是解析中的罗盘：基线的副本加本次的编辑，尚未规划时为 nil。
+	compass  *model.Compass
 	created  map[model.PlanNodeKind][]string // 本次新增的计划节点，按序号
 	names    map[string]string               // 本次提交的实体名称与别名 → ID
 	touched  map[string]bool                 // 本次已处理的事实
@@ -178,6 +204,8 @@ func (r *resolver) put(kind model.DocumentKind, id string, value any) error {
 type planEdit struct {
 	number, parent int
 	title, summary string
+	turn           string   // 仅章
+	threads        []string // 长线短名；nil 保持原样
 }
 
 func volumeEdits(edits []VolumeEdit) []planEdit {
@@ -199,7 +227,7 @@ func arcEdits(edits []ArcEdit) []planEdit {
 func chapterEdits(edits []ChapterEdit) []planEdit {
 	result := make([]planEdit, len(edits))
 	for i, edit := range edits {
-		result[i] = planEdit{number: edit.Chapter, parent: edit.Arc, title: edit.Title, summary: edit.Summary}
+		result[i] = planEdit{number: edit.Chapter, parent: edit.Arc, title: edit.Title, summary: edit.Summary, turn: edit.Turn, threads: edit.Threads}
 	}
 	return result
 }
@@ -221,12 +249,15 @@ func (r *resolver) plan(kind, parentKind model.PlanNodeKind, edits []planEdit) e
 		switch next := len(existing) + len(r.created[kind]) + 1; {
 		case edit.number >= 1 && edit.number <= len(existing):
 			node = existing[edit.number-1]
-			node.Title, node.Summary = cmp.Or(edit.title, node.Title), cmp.Or(edit.summary, node.Summary)
+			node.Title, node.Summary, node.Turn = cmp.Or(edit.title, node.Title), cmp.Or(edit.summary, node.Summary), cmp.Or(edit.turn, node.Turn)
 		case edit.number == next:
 			if strings.TrimSpace(edit.title) == "" || strings.TrimSpace(edit.summary) == "" || (parentKind != "" && edit.parent == 0) {
 				return fmt.Errorf("新增的第 %d 个%s需要 title、summary 和所属的%s序号: %w", edit.number, name, kindName(parentKind), model.ErrInvalid)
 			}
-			node = model.PlanNode{ID: r.ids.allocate(planPrefix(kind)), Kind: kind, Order: order + edit.number - len(existing), Title: edit.title, Summary: edit.summary}
+			if kind == model.PlanChapter && strings.TrimSpace(edit.turn) == "" {
+				return fmt.Errorf("新增的第 %d 章需要 turn：读完这一章，读者在它推进的长线上多知道了哪件具体的事，或局面变成了什么: %w", edit.number, model.ErrInvalid)
+			}
+			node = model.PlanNode{ID: r.ids.allocate(planPrefix(kind)), Kind: kind, Order: order + edit.number - len(existing), Title: edit.title, Summary: edit.summary, Turn: edit.turn}
 			r.created[kind] = append(r.created[kind], node.ID)
 		default:
 			return fmt.Errorf("第 %d 个%s不存在；已有 %d 个，新增的%s从第 %d 个起连续编号: %w",
@@ -239,11 +270,110 @@ func (r *resolver) plan(kind, parentKind model.PlanNodeKind, edits []planEdit) e
 			}
 			node.ParentID = parent
 		}
+		if edit.threads != nil {
+			threads, err := r.threadIDs(edit.number, edit.threads)
+			if err != nil {
+				return err
+			}
+			node.Threads = threads
+		}
 		if err := r.put(model.DocumentPlan, node.ID, node); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// defineThreads 处理罗盘（D91）：终局与篇幅随 compass 整体替换；长线按短名定位，已有的
+// 改问题，新的分配 ID。罗盘在全部编辑之后写一次。
+func (r *resolver) defineThreads(edit *CompassEdit, threads []ThreadEdit) error {
+	if edit == nil && len(threads) == 0 {
+		return nil
+	}
+	if r.compass == nil {
+		r.compass = new(model.Compass)
+	}
+	if edit != nil {
+		r.compass.ScaleMax, r.compass.Ending, r.compass.Final = edit.ScaleMax, edit.Ending, edit.Final
+	}
+	seen := make(map[string]bool)
+	for _, thread := range threads {
+		name := strings.TrimSpace(thread.Name)
+		switch {
+		case name == "":
+			return fmt.Errorf("长线需要 name: %w", model.ErrInvalid)
+		case seen[name]:
+			return fmt.Errorf("长线「%s」提交了两次: %w", name, model.ErrInvalid)
+		}
+		seen[name] = true
+		index := slices.IndexFunc(r.compass.Threads, func(t model.StoryThread) bool { return t.Name == name })
+		switch {
+		case index >= 0 && strings.TrimSpace(thread.Question) != "":
+			r.compass.Threads[index].Question = thread.Question
+		case index >= 0:
+		case strings.TrimSpace(thread.Question) == "":
+			return fmt.Errorf("新立的长线「%s」需要 question：全书在追问的那个问题: %w", name, model.ErrInvalid)
+		default:
+			r.compass.Threads = append(r.compass.Threads, model.StoryThread{ID: r.ids.allocate(threadPrefix), Name: name, Question: thread.Question})
+		}
+	}
+	return nil
+}
+
+// answerThreads 记下长线的作答章，罗盘有变化就写入。
+func (r *resolver) answerThreads(threads []ThreadEdit) error {
+	if r.compass == nil {
+		return nil
+	}
+	for _, thread := range threads {
+		if thread.Answer == 0 {
+			continue
+		}
+		id, err := r.planID(model.PlanChapter, thread.Answer)
+		if err != nil {
+			return fmt.Errorf("长线「%s」的作答章第 %d 章还没有规划：先不写 answer，规划到那一章时再写: %w", thread.Name, thread.Answer, model.ErrInvalid)
+		}
+		index := slices.IndexFunc(r.compass.Threads, func(t model.StoryThread) bool { return t.Name == strings.TrimSpace(thread.Name) })
+		r.compass.Threads[index].Answer = id
+	}
+	if !r.compassEdited() {
+		return nil
+	}
+	return r.put(model.DocumentCompass, model.SingletonDocumentID, r.compass)
+}
+
+// compassEdited 是本次是否编辑了罗盘：没有基线的罗盘被新建，或与基线不同。
+func (r *resolver) compassEdited() bool {
+	base := r.story.content.Compass
+	if base == nil {
+		return r.compass != nil
+	}
+	return base.ScaleMax != r.compass.ScaleMax || base.Ending != r.compass.Ending || base.Final != r.compass.Final ||
+		!slices.Equal(base.Threads, r.compass.Threads)
+}
+
+// threadIDs 把一章推进的长线短名解析成罗盘里的 ID。
+func (r *resolver) threadIDs(chapter int, names []string) ([]string, error) {
+	ids := make([]string, 0, len(names))
+	for _, name := range names {
+		var thread model.StoryThread
+		found := false
+		if r.compass != nil {
+			for _, candidate := range r.compass.Threads {
+				if candidate.Name == strings.TrimSpace(name) {
+					thread, found = candidate, true
+				}
+			}
+		}
+		if !found {
+			return nil, fmt.Errorf("第 %d 章推进的长线「%s」不存在；新的长线先在 threads 里立起来: %w", chapter, name, model.ErrInvalid)
+		}
+		if slices.Contains(ids, thread.ID) {
+			return nil, fmt.Errorf("第 %d 章把长线「%s」列了两次: %w", chapter, name, model.ErrInvalid)
+		}
+		ids = append(ids, thread.ID)
+	}
+	return ids, nil
 }
 
 // planID 按序号找计划节点：已有的与本次新增的。

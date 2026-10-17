@@ -22,9 +22,9 @@ func fixture() *Story {
 		Plan: []model.PlanNode{
 			{ID: "v1", Kind: model.PlanVolume, Order: 1, Title: "入门", Summary: "进入宗门"},
 			{ID: "a1", Kind: model.PlanArc, ParentID: "v1", Order: 1, Title: "试炼", Summary: "外门试炼"},
-			{ID: "c1", Kind: model.PlanChapter, ParentID: "a1", Order: 1, Title: "山门", Summary: "拜师"},
-			{ID: "c2", Kind: model.PlanChapter, ParentID: "a1", Order: 2, Title: "立誓", Summary: "立誓"},
-			{ID: "c3", Kind: model.PlanChapter, ParentID: "a1", Order: 3, Title: "下山", Summary: "下山"},
+			{ID: "c1", Kind: model.PlanChapter, Turn: "转折", ParentID: "a1", Order: 1, Title: "山门", Summary: "拜师"},
+			{ID: "c2", Kind: model.PlanChapter, Turn: "转折", ParentID: "a1", Order: 2, Title: "立誓", Summary: "立誓"},
+			{ID: "c3", Kind: model.PlanChapter, Turn: "转折", ParentID: "a1", Order: 3, Title: "下山", Summary: "下山"},
 		},
 		Entities: []model.Entity{
 			{ID: "e1", Kind: model.EntityCharacter, Name: "林凡", Aliases: []string{"小凡"}},
@@ -71,8 +71,8 @@ func TestResolvePlanEditsAssignIDsAndKeepNumbering(t *testing.T) {
 	patches, err := story.Resolve(&model.RevisePlanInput{}, Submission{
 		Arcs: []ArcEdit{{Arc: 2, Volume: 1, Title: "下山", Summary: "历练"}},
 		Chapters: []ChapterEdit{
-			{Chapter: 5, Arc: 2, Title: "夜雨", Summary: "遇袭"},
-			{Chapter: 4, Arc: 2, Title: "出山", Summary: "告别"},
+			{Chapter: 5, Arc: 2, Title: "夜雨", Summary: "遇袭", Turn: "刺客认得林凡"},
+			{Chapter: 4, Arc: 2, Title: "出山", Summary: "告别", Turn: "师父交出旧剑"},
 			{Chapter: 3, Summary: "改为悄然下山"},
 		},
 	}, nil)
@@ -86,7 +86,10 @@ func TestResolvePlanEditsAssignIDsAndKeepNumbering(t *testing.T) {
 	if arc.ParentID != "v1" || fourth.ParentID != "a2" || fourth.Order != 4 || fifth.Order != 5 || fourth.Title != "出山" {
 		t.Fatalf("new nodes = %+v %+v %+v", arc, fourth, fifth)
 	}
-	if third.Title != "下山" || third.Summary != "改为悄然下山" || third.ParentID != "a1" {
+	if fourth.Turn != "师父交出旧剑" || fifth.Turn != "刺客认得林凡" {
+		t.Fatalf("new chapters carry their turns: %+v %+v", fourth, fifth)
+	}
+	if third.Title != "下山" || third.Summary != "改为悄然下山" || third.Turn != "转折" || third.ParentID != "a1" {
 		t.Fatalf("update must keep unspecified fields: %+v", third)
 	}
 	projected, err := story.Apply(patches)
@@ -97,11 +100,100 @@ func TestResolvePlanEditsAssignIDsAndKeepNumbering(t *testing.T) {
 	for name, edits := range map[string][]ChapterEdit{
 		"gap":       {{Chapter: 5, Arc: 1, Title: "t", Summary: "s"}},
 		"duplicate": {{Chapter: 3, Title: "a"}, {Chapter: 3, Title: "b"}},
-		"no parent": {{Chapter: 4, Title: "t", Summary: "s"}},
+		"no parent": {{Chapter: 4, Title: "t", Summary: "s", Turn: "r"}},
+		"no turn":   {{Chapter: 4, Arc: 1, Title: "t", Summary: "s"}},
 	} {
 		if _, err := story.Resolve(&model.RevisePlanInput{}, Submission{Chapters: edits}, nil); !errors.Is(err, model.ErrInvalid) {
 			t.Fatalf("%s: error = %v", name, err)
 		}
+	}
+}
+
+// 长线（D91）：按短名新立、引用与作答，ID 由宿主给；模型视图只见短名，统计每条长线最近推进
+// 的已写章、此后停了几章与下一次的安排。
+func TestResolveThreadsByNameAndCountTheirQuiet(t *testing.T) {
+	story := fixture()
+	patches, err := story.Resolve(&model.RevisePlanInput{}, Submission{
+		Compass: &CompassEdit{ScaleMax: 20, Ending: "林凡入内门"},
+		Threads: []ThreadEdit{{Name: "内门", Question: "林凡能否入内门", Answer: 4}, {Name: "苏晴", Question: "苏晴为何入宗"}},
+		Chapters: []ChapterEdit{
+			{Chapter: 3, Threads: []string{"苏晴"}},
+			{Chapter: 4, Arc: 1, Title: "内门", Summary: "入内门", Turn: "林凡过了内门考校", Threads: []string{"内门", "苏晴"}},
+		},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compass := decodePatch[model.Compass](t, patches, "compass:root")
+	if len(compass.Threads) != 2 || compass.Threads[0] != (model.StoryThread{ID: "t1", Name: "内门", Question: "林凡能否入内门", Answer: "c4"}) ||
+		compass.Threads[1].ID != "t2" || compass.Threads[1].Answer != "" || compass.ScaleMax != 20 {
+		t.Fatalf("compass = %+v", compass)
+	}
+	if third := decodePatch[model.PlanNode](t, patches, "plan:c3"); !slices.Equal(third.Threads, []string{"t2"}) || third.Summary != "下山" {
+		t.Fatalf("chapter 3 = %+v", third)
+	}
+	projected, err := story.Apply(patches)
+	if err != nil {
+		t.Fatal(err)
+	}
+	view := projected.Compass()
+	want := []ThreadView{
+		{Name: "内门", Question: "林凡能否入内门", Quiet: 2, Next: 4, Answer: 4},
+		{Name: "苏晴", Question: "苏晴为何入宗", Quiet: 2, Next: 3},
+	}
+	if !slices.Equal(view.Threads, want) {
+		t.Fatalf("threads = %+v", view.Threads)
+	}
+	content := projected.content
+	content.Plan = slices.Clone(content.Plan)
+	content.Plan[slices.IndexFunc(content.Plan, func(node model.PlanNode) bool { return node.ID == "c1" })].Threads = []string{"t1"}
+	if advanced := New(content).Compass().Threads[0]; advanced.Advanced != 1 || advanced.Quiet != 1 || advanced.Next != 4 {
+		t.Fatalf("advanced in chapter 1 = %+v", advanced)
+	}
+	content.Compass = &model.Compass{ScaleMax: 20, Ending: "林凡入内门", Threads: []model.StoryThread{{ID: "t1", Name: "内门", Question: "林凡能否入内门", Answer: "c2"}}}
+	if answered := New(content).Compass().Threads[0]; !answered.Answered || answered.Advanced != 2 || answered.Quiet != 0 {
+		t.Fatalf("answered in chapter 2 = %+v", answered)
+	}
+	if err := projected.Humanize(fmt.Errorf(`thread "t1": %w`, model.ErrInvalid)); !strings.Contains(err.Error(), "长线「内门」") {
+		t.Fatalf("humanized = %v", err)
+	}
+
+	// 已有长线按短名定位：省略 question 保持原样，作答章随后可改；章的长线省略保持原样。
+	again, err := projected.Resolve(&model.RevisePlanInput{}, Submission{
+		Threads:  []ThreadEdit{{Name: "苏晴", Answer: 5}},
+		Chapters: []ChapterEdit{{Chapter: 5, Arc: 1, Title: "真相", Summary: "苏晴道出来意", Turn: "苏晴是来寻仇的"}},
+	}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	compass = decodePatch[model.Compass](t, again, "compass:root")
+	if compass.Threads[1] != (model.StoryThread{ID: "t2", Name: "苏晴", Question: "苏晴为何入宗", Answer: "c5"}) || compass.Ending != "林凡入内门" {
+		t.Fatalf("answered compass = %+v", compass)
+	}
+	if fifth := decodePatch[model.PlanNode](t, again, "plan:c5"); fifth.Threads != nil {
+		t.Fatalf("chapter 5 threads = %v", fifth.Threads)
+	}
+	if untouched, err := projected.Resolve(&model.RevisePlanInput{}, Submission{Chapters: []ChapterEdit{{Chapter: 3, Summary: "改道下山"}}}, nil); err != nil ||
+		slices.ContainsFunc(untouched, func(patch model.Patch) bool { return patch.Document.Kind == model.DocumentCompass }) {
+		t.Fatalf("an untouched compass must not be rewritten: %v, %v", patchIDs(untouched), err)
+	}
+
+	for name, submission := range map[string]Submission{
+		"unknown thread":       {Chapters: []ChapterEdit{{Chapter: 3, Threads: []string{"师门"}}}},
+		"new without question": {Threads: []ThreadEdit{{Name: "师门"}}},
+		"submitted twice":      {Threads: []ThreadEdit{{Name: "师门", Question: "师门何在"}, {Name: "师门", Question: "师门何在"}}},
+		"unnamed":              {Threads: []ThreadEdit{{Question: "师门何在"}}},
+		"listed twice":         {Chapters: []ChapterEdit{{Chapter: 3, Threads: []string{"内门", "内门"}}}},
+		"answer nowhere":       {Threads: []ThreadEdit{{Name: "内门", Answer: 9}}},
+	} {
+		if _, err := projected.Resolve(&model.RevisePlanInput{}, submission, nil); !errors.Is(err, model.ErrInvalid) {
+			t.Fatalf("%s: error = %v", name, err)
+		}
+	}
+	// 作答章还没规划到（只看清近处）：说清先不写，规划到那一章再写。
+	if _, err := projected.Resolve(&model.RevisePlanInput{}, Submission{Threads: []ThreadEdit{{Name: "内门", Answer: 9}}}, nil); err == nil ||
+		!strings.Contains(err.Error(), "长线「内门」的作答章第 9 章还没有规划") {
+		t.Fatalf("unplanned answer = %v", err)
 	}
 }
 
@@ -195,21 +287,24 @@ func TestReworkRedeclaresItsChapterOutline(t *testing.T) {
 	resolve := func(input model.TaskInput, outline *OutlineEdit) ([]model.Patch, error) {
 		return story.Resolve(input, Submission{Outline: outline, Remove: []FactRef{{Subject: "林凡", Predicate: "event.oath"}}}, []model.ManuscriptChapter{draft})
 	}
-	if _, err := resolve(rework, nil); !errors.Is(err, model.ErrInvalid) || !strings.Contains(err.Error(), "重申报本章的章题与章纲") {
+	if _, err := resolve(rework, nil); !errors.Is(err, model.ErrInvalid) || !strings.Contains(err.Error(), "重申报本章的章题、章纲与转折") {
 		t.Fatalf("rework without its outline: %v", err)
 	}
-	patches, err := resolve(rework, &OutlineEdit{Title: "拒誓", Summary: "林凡拒绝立誓"})
+	if _, err := resolve(rework, &OutlineEdit{Title: "拒誓", Summary: "林凡拒绝立誓"}); !errors.Is(err, model.ErrInvalid) {
+		t.Fatalf("rework without its turn: %v", err)
+	}
+	patches, err := resolve(rework, &OutlineEdit{Title: "拒誓", Summary: "林凡拒绝立誓", Turn: "林凡与宗门决裂"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if node := decodePatch[model.PlanNode](t, patches, "plan:c2"); node.Title != "拒誓" || node.Summary != "林凡拒绝立誓" || node.ParentID != "a1" {
+	if node := decodePatch[model.PlanNode](t, patches, "plan:c2"); node.Title != "拒誓" || node.Summary != "林凡拒绝立誓" || node.Turn != "林凡与宗门决裂" || node.ParentID != "a1" {
 		t.Fatalf("outline = %+v", node)
 	}
-	if patches, err = resolve(rework, &OutlineEdit{Title: "立誓", Summary: "立誓"}); err != nil || slices.Contains(patchIDs(patches), "plan:c2/put") {
+	if patches, err = resolve(rework, &OutlineEdit{Title: "立誓", Summary: "立誓", Turn: "转折"}); err != nil || slices.Contains(patchIDs(patches), "plan:c2/put") {
 		t.Fatalf("unchanged outline = %v, %v", patchIDs(patches), err)
 	}
 	rewrite := &model.RewriteChapterInput{ChapterID: "c2", ChapterPlanID: "c2", Findings: []string{"节奏拖沓"}}
-	if _, err := resolve(rewrite, &OutlineEdit{Title: "拒誓", Summary: "林凡拒绝立誓"}); !errors.Is(err, model.ErrInvalid) {
+	if _, err := resolve(rewrite, &OutlineEdit{Title: "拒誓", Summary: "林凡拒绝立誓", Turn: "林凡与宗门决裂"}); !errors.Is(err, model.ErrInvalid) {
 		t.Fatalf("a review rewrite edited its outline: %v", err)
 	}
 }
@@ -231,8 +326,8 @@ func TestPlanningCheckJudgesEachUnwrittenPlan(t *testing.T) {
 	}
 	premise, rule := ref(model.DocumentIntent, model.SingletonDocumentID), ref(model.DocumentCanon, "f3")
 	patches := []model.Patch{
-		plan(model.PlanNode{ID: "c3", Kind: model.PlanChapter, ParentID: "a1", Order: 3, Title: "下山", Summary: "林凡独自下山"}),
-		plan(model.PlanNode{ID: "c4", Kind: model.PlanChapter, ParentID: "a1", Order: 4, Title: "归来", Summary: "归来"}),
+		plan(model.PlanNode{ID: "c3", Kind: model.PlanChapter, Turn: "转折", ParentID: "a1", Order: 3, Title: "下山", Summary: "林凡独自下山"}),
+		plan(model.PlanNode{ID: "c4", Kind: model.PlanChapter, Turn: "转折", ParentID: "a1", Order: 4, Title: "归来", Summary: "归来"}),
 	}
 	affected := []model.DocumentRef{ref(model.DocumentManuscript, "c2"), ref(model.DocumentPlan, "c2"), ref(model.DocumentPlan, "a1"),
 		rule, ref(model.DocumentCanon, "f1"), premise}

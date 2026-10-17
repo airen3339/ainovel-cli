@@ -35,7 +35,7 @@ func TestEveryOperationKindIsAssembled(t *testing.T) {
 		Plan: []model.PlanNode{
 			{ID: "volume-1", Kind: model.PlanVolume, Title: "入道", Summary: "进入山门"},
 			{ID: "arc-1", Kind: model.PlanArc, ParentID: "volume-1", Title: "山门", Summary: "考验"},
-			{ID: "chapter-plan-1", Kind: model.PlanChapter, ParentID: "arc-1", Order: 1, Title: "第一章", Summary: "抵达"},
+			{ID: "chapter-plan-1", Kind: model.PlanChapter, Turn: "转折", ParentID: "arc-1", Order: 1, Title: "第一章", Summary: "抵达"},
 		},
 		Entities: []model.Entity{{ID: "hero", Kind: model.EntityCharacter, Name: "主角"}},
 		Manuscript: []model.ManuscriptChapter{{

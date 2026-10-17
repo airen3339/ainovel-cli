@@ -121,7 +121,7 @@ func (s *Session) project(ctx context.Context) (projectdoc.Snapshot, *narrative.
 	if err != nil {
 		return projectdoc.Snapshot{}, nil, err
 	}
-	story := narrative.New(narrative.Content{Plan: project.Plan, Entities: project.Entities, Canon: project.Canon, Manuscript: project.Manuscript})
+	story := narrative.New(narrative.Content{Compass: project.Compass, Plan: project.Plan, Entities: project.Entities, Canon: project.Canon, Manuscript: project.Manuscript})
 	return project, story, nil
 }
 
@@ -146,11 +146,11 @@ func (s *Session) outline(ctx context.Context, _ none) (string, error) {
 	}
 	return encode(struct {
 		Intent   model.Intent           `json:"intent"`
-		Compass  *model.Compass         `json:"compass,omitempty"`
+		Compass  *narrative.CompassView `json:"compass,omitempty"`
 		Totals   narrative.Totals       `json:"totals"`
 		Outline  []narrative.VolumeView `json:"outline"`
 		Entities []narrative.EntityView `json:"entities"`
-	}{project.Intent, project.Compass, story.Totals(), story.Outline(chapters), story.Entities(entities)})
+	}{project.Intent, story.Compass(), story.Totals(), story.Outline(chapters), story.Entities(entities)})
 }
 
 func (s *Session) read(ctx context.Context, query narrative.Query) (string, error) {

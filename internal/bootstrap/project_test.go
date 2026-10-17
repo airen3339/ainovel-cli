@@ -805,7 +805,7 @@ func testProjectDraft() projectdoc.ProjectDraft {
 		Plan: []model.PlanNode{
 			{ID: "volume-1", Kind: model.PlanVolume, Title: "入道", Summary: "进入修行世界"},
 			{ID: "arc-1", Kind: model.PlanArc, ParentID: "volume-1", Title: "山门", Summary: "通过山门考验"},
-			{ID: "chapter-plan-1", Kind: model.PlanChapter, ParentID: "arc-1", Title: "第一章", Summary: "抵达山门"},
+			{ID: "chapter-plan-1", Kind: model.PlanChapter, Turn: "转折", ParentID: "arc-1", Title: "第一章", Summary: "抵达山门"},
 			{ID: "ending-beat", Kind: model.PlanBeat, ParentID: "chapter-plan-1", Title: "结局锚点", Summary: "守住本心"},
 		},
 		Entities: []model.Entity{{ID: "hero", Kind: model.EntityCharacter, Name: "主角"}},

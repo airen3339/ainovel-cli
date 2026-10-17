@@ -124,13 +124,19 @@ func TestBookRowShowsTheWholeBookWithItsCast(t *testing.T) {
 		m.bench.snap.Cast = append(m.bench.snap.Cast, workbench.CastMember{Name: fmt.Sprintf("人物%02d", i), Chapters: 20 - i, Latest: 4})
 	}
 	m.bench.snap.Cast[0].Aliases = []string{"邮差"}
+	m.bench.snap.Threads = []workbench.Thread{
+		{Name: "姐姐", Question: "姐姐为何失踪", Advanced: 2, Quiet: 1, Next: 5, Answer: 8},
+		{Name: "回信", Question: "谁在替亡者回信", Advanced: 3},
+	}
 	m.bench.cursor = 0
-	requireContains(t, railView(m), "全书", "人物", "12 位", "人物01", "19 章", "人物10", "… 另 2 位 · /view 查看全部")
+	requireContains(t, railView(m), "全书", "长线", "2 条", "姐姐", "停了 1 章", "姐姐为何失踪", "回信", "第 3 章推进",
+		"人物", "12 位", "人物01", "19 章", "人物10", "… 另 2 位 · /view 查看全部")
 	if view := railView(m); strings.Contains(view, "人物11") {
 		t.Fatalf("the rail lists the leading members only:\n%s", view)
 	}
 	report := ansi.Strip(m.detailReport())
-	requireContains(t, report, "全书详情", "人物 · 12 位", "人物01（又名 邮差） · 19 章 · 最近第 4 章", "人物12")
+	requireContains(t, report, "全书详情", "长线 · 2 条", "姐姐：姐姐为何失踪 · 最近第 2 章推进 · 停了 1 章 · 下次第 5 章 · 第 8 章作答",
+		"回信：谁在替亡者回信 · 最近第 3 章推进 · 作答章未定", "人物 · 12 位", "人物01（又名 邮差） · 19 章 · 最近第 4 章", "人物12")
 }
 
 func TestRailShowsTheBriefOfWhatTheMainViewShows(t *testing.T) {
@@ -149,7 +155,8 @@ func TestRailShowsTheBriefOfWhatTheMainViewShows(t *testing.T) {
 	// 用时、用量、缓存命中与花费，最后是合计。
 	view := rail(wide)
 	requireContains(t, view,
-		"写作依据 ─", "第 4 章 · 门后的声音", "◉ 写作中", "规划 ─", "│ 陈渡循着回信找到老宅",
+		"写作依据 ─", "第 4 章 · 门后的声音", "◉ 写作中", "规划 ─", "│ 陈渡循着回信找到老宅", "转折 ─", "│ 门后的人认得陈渡",
+		"长线 ─", "│ · 姐姐", "│ · 回信 · 本章作答",
 		"要求 ─", "3 条", "│ · 禁止 主角死亡", "│ · 用声音与一个具体动作承接悬念 · 第 4",
 		"创作团队 ─", "$0.42 · 4m12s", "✓ Architect deepseek-v4-pro", "4m00s", "↑41K ↓9.0K · 缓存 12%", "$0.31",
 		"◉ Writer deepseek-v4-flash", "↑192K ↓49K · 缓存 95%", "$0.11", "○ Editor deepseek-v4-flash", "还没出场",
@@ -418,7 +425,7 @@ func TestBlueprintProposalReadsAsStoryAndPreviewsInOutline(t *testing.T) {
 	m.bench.snap.Outline[4].State = workbench.ChapterPlanned
 	m.bench.snap.Outline = append(m.bench.snap.Outline,
 		workbench.OutlineNode{Node: domainmodel.PlanNode{ID: "plan-arc-2", Kind: domainmodel.PlanArc, ParentID: "v1", Title: "门后"}, Proposed: true},
-		workbench.OutlineNode{Node: domainmodel.PlanNode{ID: "plan-chapter-5", Kind: domainmodel.PlanChapter, ParentID: "plan-arc-2", Title: "旧友", Summary: "苏晚认出陈渡"},
+		workbench.OutlineNode{Node: domainmodel.PlanNode{ID: "plan-chapter-5", Kind: domainmodel.PlanChapter, Turn: "转折", ParentID: "plan-arc-2", Title: "旧友", Summary: "苏晚认出陈渡"},
 			Number: 5, State: workbench.ChapterPlanned, Proposed: true, Detail: "方案待你确认"},
 	)
 	patch := domainmodel.Patch{Document: domainmodel.DocumentRef{Kind: domainmodel.DocumentPlan, ID: "plan-chapter-5"}, Operation: domainmodel.PatchPut, Content: []byte(`{}`)}
@@ -788,7 +795,7 @@ func TestLongOutlineGroupsAndTruncatesGracefully(t *testing.T) {
 	flat := longWorkbench(t, 120)
 	flat.bench.snap.Outline = flat.bench.snap.Outline[:0:0]
 	for i := 1; i <= 120; i++ {
-		flat.bench.snap.Outline = append(flat.bench.snap.Outline, workbench.OutlineNode{Node: domainmodel.PlanNode{ID: fmt.Sprint(i), Kind: domainmodel.PlanChapter, Title: fmt.Sprintf("雨夜来信 %d", i)}, Number: i, State: workbench.ChapterConfirmed})
+		flat.bench.snap.Outline = append(flat.bench.snap.Outline, workbench.OutlineNode{Node: domainmodel.PlanNode{ID: fmt.Sprint(i), Kind: domainmodel.PlanChapter, Turn: "转折", Title: fmt.Sprintf("雨夜来信 %d", i)}, Number: i, State: workbench.ChapterConfirmed})
 	}
 	flat.bench.rowsCache = &outlineCache{}
 	requireContains(t, frame(flat), "第 1–50 章", "后面还有")

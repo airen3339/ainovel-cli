@@ -74,10 +74,11 @@ func (s *Story) Task(kind model.OperationKind, raw json.RawMessage) (json.RawMes
 		view = struct {
 			Chapters      []int               `json:"chapters"`
 			Reviewed      []int               `json:"reviewed,omitempty"`
+			Satisfied     []string            `json:"satisfied,omitempty"`
 			PriorFindings []Finding           `json:"prior_findings,omitempty"`
 			Requirements  []model.Requirement `json:"requirements,omitempty"`
 			Goal          string              `json:"goal,omitempty"`
-		}{s.chapterNumbers(input.ChapterIDs), s.chapterNumbers(input.Reviewed), prior, input.Requirements, input.Goal}
+		}{s.chapterNumbers(input.ChapterIDs), s.chapterNumbers(input.Reviewed), input.Satisfied, prior, input.Requirements, input.Goal}
 	default:
 		return nil, fmt.Errorf("operation %s has no story-language task view: %w", kind, model.ErrInvalid)
 	}
@@ -165,7 +166,7 @@ func (s *Story) Findings(input model.ReviewRangeInput, findings []Finding) ([]mo
 	for _, finding := range findings {
 		chapter, err := s.manuscript(finding.Chapter)
 		if err == nil && !slices.Contains(input.ChapterIDs, chapter.ID) {
-			err = fmt.Errorf("第 %d 章不在本次审阅范围 %v 之内；跨章问题挂到范围内最相关的一章: %w",
+			err = fmt.Errorf("第 %d 章不在本次审阅范围 %v 之内；跨章问题挂到范围内要改的那一章: %w",
 				finding.Chapter, s.chapterNumbers(input.ChapterIDs), model.ErrInvalid)
 		}
 		if err != nil {

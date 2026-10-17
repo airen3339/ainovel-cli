@@ -21,7 +21,7 @@ func TestNovelExportUsesAcceptedRevisionAndNumericOrder(t *testing.T) {
 	// 十章才有第 10 章：按数值排在第 2 章之后，而不是按字符串。
 	for n := 10; n >= 1; n-- {
 		id := fmt.Sprint(n)
-		projection.Plan = append(projection.Plan, model.PlanNode{ID: "p" + id, ParentID: "a", Kind: model.PlanChapter, Order: n, Title: "章" + id, Summary: "章"})
+		projection.Plan = append(projection.Plan, model.PlanNode{ID: "p" + id, ParentID: "a", Kind: model.PlanChapter, Turn: "转折", Order: n, Title: "章" + id, Summary: "章"})
 		projection.Manuscript = append(projection.Manuscript, model.ManuscriptChapter{ID: "c" + id, PlanNodeID: "p" + id, Number: n, Author: model.AuthorUser, Blocks: []model.ManuscriptBlock{{ID: "b" + id, Text: "已确认正文" + id}}})
 	}
 	proposal, err := api.Projects.ImportProject(ctx, "import", "user", "test", projection, testTime())

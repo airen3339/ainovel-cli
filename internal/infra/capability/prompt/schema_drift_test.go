@@ -27,7 +27,8 @@ func TestToolSchemaFieldsAreDecodable(t *testing.T) {
 		{ToolWorkspacePutReview, "findings[]", jsonFields(narrative.Finding{})},
 		{ToolVerdictSubmit, "checks[]", jsonFields(model.RequirementCheck{})},
 		{ToolProposalSubmit, "", submission},
-		{ToolProposalSubmit, "compass", jsonFields(model.Compass{})},
+		{ToolProposalSubmit, "compass", jsonFields(narrative.CompassEdit{})},
+		{ToolProposalSubmit, "threads[]", jsonFields(narrative.ThreadEdit{})},
 		{ToolProposalSubmit, "volumes[]", jsonFields(narrative.VolumeEdit{})},
 		{ToolProposalSubmit, "arcs[]", jsonFields(narrative.ArcEdit{})},
 		{ToolProposalSubmit, "chapters[]", jsonFields(narrative.ChapterEdit{})},
@@ -129,6 +130,7 @@ func TestChangeSchemaFieldsAreDecodable(t *testing.T) {
 		{"entities[]", jsonFields(narrative.EntityEdit{})},
 		{"facts[]", jsonFields(narrative.FactEdit{})},
 		{"remove_facts[]", jsonFields(narrative.FactRef{})},
+		{"threads[]", jsonFields(narrative.ThreadEdit{})},
 		{"intent", jsonFields(narrative.IntentEdit{})},
 		{"locks[]", jsonFields(narrative.LockEdit{})},
 	}

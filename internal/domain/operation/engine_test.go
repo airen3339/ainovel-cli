@@ -96,14 +96,15 @@ func TestRunNextRecoversCommittedProposalWithoutExecutingAgain(t *testing.T) {
 	}
 }
 
-// blueprintPatches 是固定一章的最小蓝图：卷、弧与一章。
+// blueprintPatches 是固定一章的最小蓝图：带一条长线的罗盘，卷、弧与一章。
 func blueprintPatches() []model.Patch {
+	compass, _ := json.Marshal(model.Compass{Ending: "得道", Threads: []model.StoryThread{{ID: "t1", Name: "道", Question: "少年能否得道"}}})
+	patches := []model.Patch{{Document: model.DocumentRef{Kind: model.DocumentCompass, ID: model.SingletonDocumentID}, Operation: model.PatchPut, Content: compass}}
 	nodes := []model.PlanNode{
 		{ID: "vol-1", Kind: model.PlanVolume, Title: "第一卷", Summary: "凡人踏入修行"},
 		{ID: "arc-1", Kind: model.PlanArc, ParentID: "vol-1", Title: "入门", Summary: "拜入山门"},
-		{ID: "chapter-plan-1", Kind: model.PlanChapter, ParentID: "arc-1", Title: "山门", Summary: "少年叩响山门"},
+		{ID: "chapter-plan-1", Kind: model.PlanChapter, Turn: "转折", ParentID: "arc-1", Title: "山门", Summary: "少年叩响山门", Threads: []string{"t1"}},
 	}
-	patches := make([]model.Patch, 0, len(nodes))
 	for _, node := range nodes {
 		content, _ := json.Marshal(node)
 		patches = append(patches, model.Patch{Document: model.DocumentRef{Kind: model.DocumentPlan, ID: node.ID}, Operation: model.PatchPut, Content: content})
@@ -278,7 +279,7 @@ func seedConstrainedProject(
 		{model.DocumentRef{Kind: model.DocumentIntent, ID: "root"}, model.Intent{Premise: "凡人守住底线"}},
 		{model.DocumentRef{Kind: model.DocumentPlan, ID: "volume-1"}, model.PlanNode{ID: "volume-1", Kind: model.PlanVolume, Title: "入道", Summary: "进入山门"}},
 		{model.DocumentRef{Kind: model.DocumentPlan, ID: "arc-1"}, model.PlanNode{ID: "arc-1", Kind: model.PlanArc, ParentID: "volume-1", Title: "山门", Summary: "接受考验"}},
-		{model.DocumentRef{Kind: model.DocumentPlan, ID: "chapter-plan-1"}, model.PlanNode{ID: "chapter-plan-1", Kind: model.PlanChapter, ParentID: "arc-1", Title: "第一章", Summary: "抵达山门"}},
+		{model.DocumentRef{Kind: model.DocumentPlan, ID: "chapter-plan-1"}, model.PlanNode{ID: "chapter-plan-1", Kind: model.PlanChapter, Turn: "转折", ParentID: "arc-1", Title: "第一章", Summary: "抵达山门"}},
 		{model.DocumentRef{Kind: model.DocumentEntity, ID: "hero"}, model.Entity{ID: "hero", Kind: model.EntityCharacter, Name: "主角"}},
 		{model.DocumentRef{Kind: model.DocumentCanon, ID: "hero-bottom-line"}, model.CanonFact{ID: "hero-bottom-line", Kind: model.CanonWorldRule, SubjectID: "hero", Predicate: "rule.bottom_line", Value: json.RawMessage(`"不伤无辜"`)}},
 		{model.DocumentRef{Kind: model.DocumentOwnership, ID: "canon:hero-bottom-line"}, model.OwnershipRule{Target: model.DocumentRef{Kind: model.DocumentCanon, ID: "hero-bottom-line"}, Control: model.ControlLocked}},

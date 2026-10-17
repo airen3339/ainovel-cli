@@ -35,7 +35,7 @@ func TestProjectCreateAndShowCommands(t *testing.T) {
 		Plan: []model.PlanNode{
 			{ID: "volume-1", Kind: model.PlanVolume, Title: "第一卷", Summary: "入道"},
 			{ID: "arc-1", Kind: model.PlanArc, ParentID: "volume-1", Title: "山门", Summary: "入门"},
-			{ID: "chapter-plan-1", Kind: model.PlanChapter, ParentID: "arc-1", Title: "第一章", Summary: "抵达"},
+			{ID: "chapter-plan-1", Kind: model.PlanChapter, Turn: "转折", ParentID: "arc-1", Title: "第一章", Summary: "抵达"},
 		},
 	})
 	if err := os.WriteFile(draftPath, draft, 0o644); err != nil {

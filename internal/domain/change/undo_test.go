@@ -13,7 +13,7 @@ func chapterPlanPatch(t *testing.T, title string) model.Patch {
 	t.Helper()
 	return model.Patch{
 		Document: model.DocumentRef{Kind: model.DocumentPlan, ID: "chapter-plan-1"}, Operation: model.PatchPut,
-		Content: documentJSON(t, model.PlanNode{ID: "chapter-plan-1", Kind: model.PlanChapter, ParentID: "arc-1", Title: title, Summary: "抵达山门"}),
+		Content: documentJSON(t, model.PlanNode{ID: "chapter-plan-1", Kind: model.PlanChapter, Turn: "转折", ParentID: "arc-1", Title: title, Summary: "抵达山门"}),
 	}
 }
 

@@ -15,8 +15,8 @@ func directiveTestProject() projectdoc.Snapshot {
 		Plan: []model.PlanNode{
 			{ID: "volume-1", Kind: model.PlanVolume, Order: 1, Title: "卷一"},
 			{ID: "arc-1", Kind: model.PlanArc, ParentID: "volume-1", Order: 1, Title: "弧一"},
-			{ID: "chapter-plan-1", Kind: model.PlanChapter, ParentID: "arc-1", Order: 1, Title: "第一章"},
-			{ID: "chapter-plan-2", Kind: model.PlanChapter, ParentID: "arc-1", Order: 2, Title: "第二章"},
+			{ID: "chapter-plan-1", Kind: model.PlanChapter, Turn: "转折", ParentID: "arc-1", Order: 1, Title: "第一章"},
+			{ID: "chapter-plan-2", Kind: model.PlanChapter, Turn: "转折", ParentID: "arc-1", Order: 2, Title: "第二章"},
 		},
 		Manuscript: []model.ManuscriptChapter{
 			{ID: "chapter-1", PlanNodeID: "chapter-plan-1", Number: 1},

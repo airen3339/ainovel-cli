@@ -46,7 +46,7 @@ const reviewFindingSchema = `{
 	"type": "object",
 	"properties": {
 		"chapter": {"type": "integer", "minimum": 1,
-			"description": "章号，必须是本次审阅范围（任务的 chapters）之一；跨章问题挂到最相关的那一章"},
+			"description": "章号，必须是本次审阅范围（任务的 chapters）之一；跨章问题挂到要改的那一章"},
 		"severity": {"type": "string", "enum": ["blocking", "note"],
 			"description": "blocking=必须修改的问题，违反的是任务 requirements 里的一项时用 requirement 填它的 id，其他问题不填；note=仅供参考的观察，禁止带 requirement。任务 reviewed 列出的章只作上下文，只有违反 requirements 才能记 blocking"},
 		"note": {"type": "string", "description": "结论与依据"},
@@ -125,7 +125,7 @@ var builtinCapabilities = []CapabilityDefinition{
 		OperationKinds: []model.OperationKind{model.OperationReworkChapter},
 		Worker: WorkerProfile{
 			ID: "writer.rework", Version: "1", ModelRole: "writer",
-			// 返工与修订共用重写方法；只有返工能随正文改本章的章题与章纲（D87）。
+			// 返工与修订共用重写方法；只有返工能随正文改本章的章题、章纲与转折（D87、D92）。
 			PromptSlots: []Slot{SlotWriterChapterDraft, SlotWriterRewrite}, Tools: writerTools(submission{prose: true, redeclare: true, outline: true}),
 			StopCondition: "返工稿通过本地校验，并重申报本章全部既有事实（确认、更新或删除）与章题章纲后提交候选，或返回明确错误",
 		},
@@ -246,21 +246,41 @@ func planEditSchema(number, parent, parentDescription string) map[string]any {
 	if parent != "" {
 		properties[parent] = map[string]any{"type": "integer", "minimum": 1, "description": parentDescription}
 	}
+	if number == "chapter" {
+		properties["turn"] = map[string]any{"type": "string", "description": turnDescription + "；新增的章必填"}
+		properties["threads"] = map[string]any{"type": "array", "items": map[string]any{"type": "string"},
+			"description": "本章推进的长线（罗盘里长线的 name）：可以没有；给出即整体替换，省略保持原样"}
+	}
 	return map[string]any{"type": "array", "items": map[string]any{
 		"type": "object", "properties": properties, "required": []string{number}, "additionalProperties": false,
 	}}
 }
 
-const compassSchema = `{"type":"object","description":"故事罗盘，只有规划任务可写。ending 是终局方向：故事最终要回答的问题或抵达的状态，` +
-	`首次规划必须给出，之后只在有变化时提交。scale_max 是预计全书篇幅（章），随故事修订；final 是收官承诺（全书章数，未收官时省略）：` +
+// turnDescription 是章的转折（D92）：每章一个硬进展，写手照它写成场景，审阅照它核对。
+const turnDescription = "本章的转折：读完这一章，读者在它推进的长线上多知道了哪件具体的事，或局面变成了什么；写成一件会发生的事，不写气氛与感悟"
+
+const compassSchema = `{"type":"object","description":"故事罗盘的终局与篇幅（长线另在 threads 里编辑），只有规划任务可写。ending 是终局方向：故事最终要回答的问题或抵达的状态，` +
+	`首次规划必须给出，之后只在有变化时提交，给出时三项整体替换。scale_max 是预计全书篇幅（章），随故事修订；final 是收官承诺（全书章数，未收官时省略）：` +
 	`任务有 fixed_chapters 时篇幅由用户固定，二者都不写；篇幅交给 AI 时首次规划必须给出 scale_max，未收官时蓝图章节总数必须小于它，` +
 	`临近时声明 final 收官，故事需要更长就上调 scale_max（超出任务说明的自主范围需用户同意）；给出 final 后蓝图不超过第 final 章，可分次规划到它",` +
 	`"properties":{"scale_max":{"type":"integer","minimum":1},"ending":{"type":"string"},"final":{"type":"integer","minimum":1}},` +
 	`"required":["ending"],"additionalProperties":false}`
 
+// threadsSchema 是长线编辑（D91）：按 name 定位，已有的可改问题、写上作答章，新的要给问题。
+func threadsSchema() map[string]any {
+	return map[string]any{"type": "array",
+		"description": "长线：全书在追问、终局要回答的几个大问题，可以分属不同的人物。它们与伏笔不同：伏笔是埋下待回收的具体线索。" +
+			"按 name 定位：已有的可以改 question、写上 answer，没有的就是新立，要给 question；长线只能作答，不能删",
+		"items": map[string]any{"type": "object", "properties": map[string]any{
+			"name":     map[string]any{"type": "string", "description": "短名，章节的 threads 按它引用"},
+			"question": map[string]any{"type": "string", "description": "这条长线追问的问题，一句话"},
+			"answer":   map[string]any{"type": "integer", "minimum": 1, "description": "回答它的章号，须是已规划或这次规划的章：作答章还没规划到就先不写；已写成的章作答后不再改"},
+		}, "required": []string{"name"}, "additionalProperties": false}}
+}
+
 // submission 是一种任务能提交的内容。prose 是写章任务：正文由宿主取本章工作稿装配；
 // redeclare 公开确认与删除，只给要重申报已有事实的任务——写新章时本章还没有事实；planning
-// 公开罗盘与卷弧章编辑；outline 要求重申报本章的章题与章纲，只给返工（D87）。
+// 公开罗盘与卷弧章编辑；outline 要求重申报本章的章题、章纲与转折，只给返工（D87、D92）。
 type submission struct{ prose, redeclare, planning, outline bool }
 
 // proposalTool 按任务公开提交参数：没有合法用途的参数不出现，模型就不会误用。创作意图只装
@@ -293,22 +313,25 @@ func proposalTool(can submission) ToolSchema {
 	}
 	if can.outline {
 		properties["outline"] = map[string]any{"type": "object",
-			"description": "重申报本章的章题与章纲：照重写后的正文给出，返工改了本章写的事就改，没变就原样给出",
+			"description": "重申报本章的章题、章纲与转折：照重写后的正文给出，返工改了本章写的事就改，没变就原样给出",
 			"properties": map[string]any{
 				"title":   map[string]any{"type": "string", "minLength": 1},
 				"summary": map[string]any{"type": "string", "minLength": 1, "description": "一两句话说本章写了什么"},
-			}, "required": []string{"title", "summary"}, "additionalProperties": false}
+				"turn":    map[string]any{"type": "string", "minLength": 1, "description": turnDescription},
+			}, "required": []string{"title", "summary", "turn"}, "additionalProperties": false}
 		required = append(required, "outline")
 	}
 	if can.planning {
 		properties["compass"] = json.RawMessage(compassSchema)
+		properties["threads"] = threadsSchema()
 		properties["volumes"] = planEditSchema("volume", "", "")
 		properties["arcs"] = planEditSchema("arc", "volume", "所属卷序号，新增时必填")
 		chapters := planEditSchema("chapter", "arc", "所属故事弧序号，新增时必填")
 		chapters["description"] = "章节大纲。只有规划任务能新增章节，追加多少章由你按故事走向决定：至少一章，除非以现有章数声明收官；篇幅上界见 fixed_chapters 与 compass"
 		properties["chapters"] = chapters
 		description += `卷（volumes）、故事弧（arcs）、章（chapters）按序号编辑：已有序号是修改，省略的字段保持原值；` +
-			`新增的紧接 story_context.totals 的现有总数连续编号，并给出 title、summary 与上级序号；只能在末尾追加，不能插入或删除。`
+			`新增的紧接 story_context.totals 的现有总数连续编号，并给出 title、summary、上级序号，章还要给 turn；只能在末尾追加，不能插入或删除；已写的章不改。` +
+			`长线（threads）至少一条，章节用 threads 引用它们；story_context.compass 里每条长线带着最近推进它的已写章（advanced）、此后停了几章（quiet）与下一次的安排（next）。`
 	}
 	return tool(ToolProposalSubmit, description, mustSchema(map[string]any{
 		"type": "object", "properties": properties, "required": required, "additionalProperties": false,

@@ -116,6 +116,25 @@ func TestFinaleRequirementTracksOpenThreads(t *testing.T) {
 	}
 }
 
+// 长线（D91）同理：没有作答章的长线要结局回答，身份随长线的问题变化；定下作答章后回到原身份。
+func TestFinaleRequirementAsksUnansweredStoryThreads(t *testing.T) {
+	project := withCompass(novelFixture(t, 5, 5), 10, 5)
+	base := finaleRequirement(project, 5)
+	project.Compass.Threads = []model.StoryThread{{ID: "t1", Name: "王位", Question: "主角能否坐上王位"}}
+	open := finaleRequirement(project, 5)
+	if open.ID == base.ID || !strings.Contains(open.Text, "「王位」（主角能否坐上王位）") || strings.Contains(open.Text, "t1") {
+		t.Fatalf("open story thread finale = %+v", open)
+	}
+	project.Compass.Threads[0].Question = "主角能否守住王位"
+	if reworded := finaleRequirement(project, 5); reworded.ID == open.ID {
+		t.Fatal("a reworded question must change the finale identity")
+	}
+	project.Compass.Threads[0].Answer = "chapter-plan-iiiii"
+	if answered := finaleRequirement(project, 5); answered.ID != base.ID || strings.Contains(answered.Text, "王位") {
+		t.Fatalf("answered thread must restore the finale identity: %+v", answered)
+	}
+}
+
 // 续跑与工作台的篇幅口径：没有运行时交给 AI，收官承诺不少于蓝图才生效。
 func TestLengthOfReadsTheRunAndTheCompass(t *testing.T) {
 	project := withCompass(novelFixture(t, 3, 0), 10, 5)

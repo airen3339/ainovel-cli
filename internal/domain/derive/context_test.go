@@ -38,9 +38,9 @@ func TestWriteContextMeetsMinimumWritingContract(t *testing.T) {
 		Plan: []model.PlanNode{
 			{ID: "volume-1", Kind: model.PlanVolume, Title: "远行", Summary: "离开故乡"},
 			{ID: "arc-1", Kind: model.PlanArc, ParentID: "volume-1", Title: "渡河", Summary: "寻找渡口"},
-			{ID: "chapter-plan-1", Kind: model.PlanChapter, ParentID: "arc-1", Order: 1, Title: "第一章", Summary: "启程"},
-			{ID: "chapter-plan-2", Kind: model.PlanChapter, ParentID: "arc-1", Order: 2, Title: "第二章", Summary: "夜宿荒村"},
-			{ID: "chapter-plan-3", Kind: model.PlanChapter, ParentID: "arc-1", Order: 3, Title: "第三章", Summary: "抵达河边", DependsOn: []model.DocumentRef{relevant}},
+			{ID: "chapter-plan-1", Kind: model.PlanChapter, Turn: "转折", ParentID: "arc-1", Order: 1, Title: "第一章", Summary: "启程"},
+			{ID: "chapter-plan-2", Kind: model.PlanChapter, Turn: "转折", ParentID: "arc-1", Order: 2, Title: "第二章", Summary: "夜宿荒村"},
+			{ID: "chapter-plan-3", Kind: model.PlanChapter, Turn: "转折", ParentID: "arc-1", Order: 3, Title: "第三章", Summary: "抵达河边", DependsOn: []model.DocumentRef{relevant}},
 		},
 		Entities: []model.Entity{
 			{ID: "hero", Kind: model.EntityCharacter, Name: "主角"},
@@ -86,10 +86,10 @@ func contextFixture() ProjectContent {
 		Plan: []model.PlanNode{
 			{ID: "volume-1", Kind: model.PlanVolume, Title: "远行", Summary: "离开故乡"},
 			{ID: "arc-1", Kind: model.PlanArc, ParentID: "volume-1", Title: "渡河", Summary: "寻找渡口"},
-			{ID: "chapter-plan-1", Kind: model.PlanChapter, ParentID: "arc-1", Order: 1, Title: "第一章", Summary: "启程"},
-			{ID: "chapter-plan-2", Kind: model.PlanChapter, ParentID: "arc-1", Order: 2, Title: "第二章", Summary: "夜宿荒村",
+			{ID: "chapter-plan-1", Kind: model.PlanChapter, Turn: "转折", ParentID: "arc-1", Order: 1, Title: "第一章", Summary: "启程"},
+			{ID: "chapter-plan-2", Kind: model.PlanChapter, Turn: "转折", ParentID: "arc-1", Order: 2, Title: "第二章", Summary: "夜宿荒村",
 				DependsOn: []model.DocumentRef{{Kind: model.DocumentCanon, ID: "hero-location"}}},
-			{ID: "chapter-plan-3", Kind: model.PlanChapter, ParentID: "arc-1", Order: 3, Title: "第三章", Summary: "抵达河边"},
+			{ID: "chapter-plan-3", Kind: model.PlanChapter, Turn: "转折", ParentID: "arc-1", Order: 3, Title: "第三章", Summary: "抵达河边"},
 		},
 		Entities: []model.Entity{
 			{ID: "hero", Kind: model.EntityCharacter, Name: "主角"},
@@ -367,7 +367,7 @@ func TestContextKeyIsCanonicalAndBoundToKindAndVersion(t *testing.T) {
 	if base == key(model.OperationRewriteChapter, `{"chapter_plan_id":"c","directives":[]}`) {
 		t.Fatal("operation kind is not part of the context key")
 	}
-	if ViewKind != "model_view.v1" {
+	if ViewKind != "model_view.v2" {
 		t.Fatalf("schema version = %q", ViewKind)
 	}
 	for name, invalid := range map[string]struct {

@@ -116,7 +116,7 @@ func TestGuidedDocumentRequiresPassingCompliance(t *testing.T) {
 	// guided 约束作用于在途正文：AI 写第 2 章并随章更新受限的出身事实。
 	revision := commitUserChange(t, ctx, s, target, "plan-2", model.Patch{
 		Document: model.DocumentRef{Kind: model.DocumentPlan, ID: "chapter-plan-2"}, Operation: model.PatchPut,
-		Content: documentJSON(t, model.PlanNode{ID: "chapter-plan-2", Kind: model.PlanChapter, ParentID: "arc-1", Order: 2, Title: "第二章", Summary: "身世"}),
+		Content: documentJSON(t, model.PlanNode{ID: "chapter-plan-2", Kind: model.PlanChapter, Turn: "转折", ParentID: "arc-1", Order: 2, Title: "第二章", Summary: "身世"}),
 	})
 	base := pendingChange("guided-update", target, revision, model.AuthorAI, model.Patch{
 		Document: model.DocumentRef{Kind: model.DocumentManuscript, ID: "chapter-2"}, Operation: model.PatchPut,
@@ -383,7 +383,7 @@ func TestPrepareRejectsMissingPlanParent(t *testing.T) {
 		Document:  model.DocumentRef{Kind: model.DocumentPlan, ID: "chapter-plan-1"},
 		Operation: model.PatchPut,
 		Content: documentJSON(t, model.PlanNode{
-			ID: "chapter-plan-1", Kind: model.PlanChapter, ParentID: "missing-arc",
+			ID: "chapter-plan-1", Kind: model.PlanChapter, Turn: "转折", ParentID: "missing-arc",
 			Title: "第一章", Summary: "开篇",
 		}),
 	})
@@ -509,7 +509,7 @@ func seedProject(t *testing.T, ctx context.Context, s *store.Store, target model
 		{Document: model.DocumentRef{Kind: model.DocumentIntent, ID: "root"}, Operation: model.PatchPut, Content: documentJSON(t, model.Intent{Premise: "凡人修仙"})},
 		{Document: model.DocumentRef{Kind: model.DocumentPlan, ID: "volume-1"}, Operation: model.PatchPut, Content: documentJSON(t, model.PlanNode{ID: "volume-1", Kind: model.PlanVolume, Title: "第一卷", Summary: "入道"})},
 		{Document: model.DocumentRef{Kind: model.DocumentPlan, ID: "arc-1"}, Operation: model.PatchPut, Content: documentJSON(t, model.PlanNode{ID: "arc-1", Kind: model.PlanArc, ParentID: "volume-1", Title: "山门", Summary: "进入宗门"})},
-		{Document: model.DocumentRef{Kind: model.DocumentPlan, ID: "chapter-plan-1"}, Operation: model.PatchPut, Content: documentJSON(t, model.PlanNode{ID: "chapter-plan-1", Kind: model.PlanChapter, ParentID: "arc-1", Title: "第一章", Summary: "抵达山门"})},
+		{Document: model.DocumentRef{Kind: model.DocumentPlan, ID: "chapter-plan-1"}, Operation: model.PatchPut, Content: documentJSON(t, model.PlanNode{ID: "chapter-plan-1", Kind: model.PlanChapter, Turn: "转折", ParentID: "arc-1", Title: "第一章", Summary: "抵达山门"})},
 		{Document: model.DocumentRef{Kind: model.DocumentEntity, ID: "hero"}, Operation: model.PatchPut, Content: documentJSON(t, model.Entity{ID: "hero", Kind: model.EntityCharacter, Name: "主角"})},
 		{Document: model.DocumentRef{Kind: model.DocumentCanon, ID: "hero-origin"}, Operation: model.PatchPut, Content: documentJSON(t, model.CanonFact{ID: "hero-origin", Kind: model.CanonState, SubjectID: "hero", Predicate: "state.origin", Value: json.RawMessage(`"农家子"`)})},
 		{Document: model.DocumentRef{Kind: model.DocumentManuscript, ID: "chapter-1"}, Operation: model.PatchPut, Content: documentJSON(t, model.ManuscriptChapter{
@@ -807,7 +807,7 @@ func TestAICanonRulesForFlashbacksEventsAndRedeclaration(t *testing.T) {
 	plan := func(id string, order int) model.Patch {
 		return model.Patch{
 			Document: model.DocumentRef{Kind: model.DocumentPlan, ID: id}, Operation: model.PatchPut,
-			Content: documentJSON(t, model.PlanNode{ID: id, Kind: model.PlanChapter, ParentID: "arc-1", Order: order, Title: id, Summary: "推进"}),
+			Content: documentJSON(t, model.PlanNode{ID: id, Kind: model.PlanChapter, Turn: "转折", ParentID: "arc-1", Order: order, Title: id, Summary: "推进"}),
 		}
 	}
 	event := model.CanonFact{ID: "ch2-event", Kind: model.CanonEvent, SubjectID: "hero", Predicate: "event.arrival", Value: json.RawMessage(`"抵达"`), SourceChapterID: "chapter-2"}

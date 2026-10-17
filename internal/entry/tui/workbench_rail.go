@@ -72,7 +72,17 @@ func (m model) chapterBrief(r *railText, number int) {
 		r.section("规划", "")
 		r.paragraph(node.Node.Summary)
 	}
+	if node.Node.Turn != "" {
+		r.section("转折", "")
+		r.paragraph(node.Node.Turn)
+	}
 	brief := snap.Briefs[number]
+	if len(brief.Threads) > 0 {
+		r.section("长线", "")
+		for _, thread := range brief.Threads {
+			r.item(benchTheme.Muted.Render("·"), briefThreadText(thread), benchTheme.Text)
+		}
+	}
 	if len(brief.Requirements) > 0 {
 		violated := 0
 		for _, requirement := range brief.Requirements {
@@ -226,7 +236,8 @@ func (m model) sectionBrief(r *railText, row outlineRow) {
 	}
 }
 
-// bookBrief 全书：篇幅、终局、出过场的人物（涉及章数多的在前），创作意图与全部要求。
+// bookBrief 全书：篇幅、终局、长线的进度、出过场的人物（涉及章数多的在前），创作意图与
+// 全部要求。
 func (m model) bookBrief(r *railText) {
 	snap := m.bench.snap
 	r.head("全书", benchTheme.Muted.Render(lengthStatus(snap.Length)))
@@ -237,6 +248,13 @@ func (m model) bookBrief(r *railText) {
 	if ending != "" {
 		r.section("终局", "")
 		r.paragraph(ending)
+	}
+	if len(snap.Threads) > 0 {
+		r.section("长线", benchTheme.Muted.Render(fmt.Sprintf("%d 条", len(snap.Threads))))
+		for _, thread := range snap.Threads {
+			r.body(alignRight(benchTheme.Text.Render(thread.Name), benchTheme.Muted.Render(threadState(thread)), r.inner()))
+			r.item(" ", thread.Question, benchTheme.Muted)
+		}
 	}
 	if len(snap.Cast) > 0 {
 		r.section("人物", benchTheme.Muted.Render(fmt.Sprintf("%d 位", len(snap.Cast))))
@@ -266,6 +284,30 @@ func (m model) bookBrief(r *railText) {
 		}
 		r.item(mark, text, benchTheme.Text)
 	}
+}
+
+// threadState 一条长线此刻的进度：作答了写作答章；写过的章里推进过、之后没再推进的写停了
+// 几章；刚推进的写那一章；还没写到的写第一次推进的章。
+func threadState(thread workbench.Thread) string {
+	switch {
+	case thread.Answered:
+		return fmt.Sprintf("第 %d 章作答", thread.Answer)
+	case thread.Quiet > 0:
+		return fmt.Sprintf("停了 %d 章", thread.Quiet)
+	case thread.Advanced > 0:
+		return fmt.Sprintf("第 %d 章推进", thread.Advanced)
+	case thread.Next > 0:
+		return fmt.Sprintf("第 %d 章起", thread.Next)
+	default:
+		return ""
+	}
+}
+
+func briefThreadText(thread workbench.BriefThread) string {
+	if thread.Answer {
+		return thread.Name + " · 本章作答"
+	}
+	return thread.Name
 }
 
 // crewCard 创作团队在这本书上的累计：标题线右端是花费（有定价时）与用时；其下每个角色

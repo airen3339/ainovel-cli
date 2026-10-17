@@ -60,7 +60,7 @@ func CompileChief(request ChiefRequest) (ChiefPrompt, error) {
 }
 
 // ChangeSchema 是主编提出修改的参数（D77）：Worker 提交的同一份故事语言（不含正文与
-// 罗盘，篇幅另有工具），加上作品方向、锁定与审批三段。
+// 罗盘的终局、篇幅——篇幅另有工具；长线可改，D91），加上作品方向、锁定与审批三段。
 func ChangeSchema() json.RawMessage {
 	fact := factSchema()
 	fact["properties"].(map[string]any)["chapter"] = map[string]any{"type": "integer", "minimum": 1,
@@ -80,6 +80,7 @@ func ChangeSchema() json.RawMessage {
 	}
 	properties := map[string]any{
 		"reason":       map[string]any{"type": "string", "description": "一句话说明为什么这么改，给用户看"},
+		"threads":      threadsSchema(),
 		"volumes":      planEditSchema("volume", "", ""),
 		"arcs":         planEditSchema("arc", "volume", "所属卷序号，新增时必填"),
 		"chapters":     planEditSchema("chapter", "arc", "所属故事弧序号，新增时必填"),
@@ -97,7 +98,7 @@ func ChangeSchema() json.RawMessage {
 		"locks": map[string]any{"type": "array", "description": "控制一章（大纲，写了正文也含正文）、一个实体或一条设定能不能被 AI 改；按这次修改之后的书定位，同一次修改里新写的设定也能锁", "items": map[string]any{
 			"type": "object", "properties": map[string]any{
 				"chapter":  map[string]any{"type": "integer", "minimum": 1, "description": "已规划的章；chapter、entity、fact 给一个"},
-				"entity":   map[string]any{"type": "string", "description": "实体名称（只含名字与别名，人设、底线在设定里）"},
+				"entity":   map[string]any{"type": "string", "description": "实体名称：锁实体只保住它的名字与别名；人设、底线是关于它的设定，要锁就用 fact 锁那几条"},
 				"fact":     ref,
 				"control":  map[string]any{"type": "string", "enum": []string{"locked", "guided", "open"}, "description": "locked 不许改，guided 只按 guidance 改，open 放开"},
 				"guidance": map[string]any{"type": "array", "items": map[string]any{"type": "string"}, "description": "guided 时必填；逐字摘自用户的话"},
