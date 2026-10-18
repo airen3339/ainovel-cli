@@ -3,6 +3,7 @@ package capability
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sync"
 
@@ -197,7 +198,11 @@ func (r *Runtime) executor(
 			if err := decodeToolArgs(raw, &args); err != nil {
 				return nil, err
 			}
+			// 还没写的工作稿读回来就是空的，不是错：模型先读一眼再动笔很常见。
 			draft, err := r.workspace.Chapter(ctx, operation.ID)
+			if errors.Is(err, model.ErrNotFound) {
+				return json.Marshal(draftView{Blocks: []model.ManuscriptBlock{}})
+			}
 			if err != nil {
 				return nil, err
 			}
@@ -324,7 +329,12 @@ func (r *Runtime) executor(
 			if err != nil {
 				return nil, err
 			}
-			patches, err := base.Resolve(input, args.Submission, drafts)
+			// 新文档的 ID 让开此刻等裁决的提案：写作途中主编可能提了修改（D77）。
+			pending, err := r.store.PendingDocuments(ctx, operation.Target)
+			if err != nil {
+				return nil, err
+			}
+			patches, err := base.Avoiding(pending).Resolve(input, args.Submission, drafts)
 			if err != nil {
 				return nil, err
 			}

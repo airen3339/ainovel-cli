@@ -771,6 +771,43 @@ func TestQuickWriteExhaustedRepairBudgetWaitsAndRenewedBudgetResumes(t *testing.
 	}
 }
 
+// 第二次自动修订做到一半进程没了（D63）：续跑时那次修订还在队列里，接着把它做完，不能当成
+// 预算已用尽去等用户、把它丢在队列里。
+func TestQuickWriteResumesARepairCutShortByACrash(t *testing.T) {
+	ctx := context.Background()
+	executor := &scriptedQuickExecutor{now: testTime(), blockChapter: "chapter-chapter-plan-2", blockRemaining: 2}
+	api := newQuickTestApp(t, executor)
+	command := novelapp.QuickWriteCommand{
+		ProjectID: "crash-book", UserID: "user-1", Premise: "一个失忆的邮差替亡者送完最后一封信",
+		Chapters: 2, WorkerID: "quick-worker", LeaseDuration: time.Minute, CreatedAt: testTime(),
+	}
+	crash := errors.New("进程没了")
+	rewrites := 0
+	executor.onExecute = func(operation model.Operation) {
+		if operation.Kind == model.OperationRewriteChapter {
+			if rewrites++; rewrites == 2 {
+				executor.onExecute = nil
+				panic(crash)
+			}
+		}
+	}
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != crash {
+				panic(recovered)
+			}
+		}()
+		api.Novels.QuickWrite(ctx, command)
+	}()
+	resume := command
+	resume.CreatedAt = testTime().Add(3 * time.Minute)
+	result, err := api.Novels.QuickWrite(ctx, resume)
+	// 规划 1 + 两章 2 + 审阅/重写交替（阻塞 2 次）4 + 崩溃的那次重写重做 1 + 末窗审阅通过 1 = 9 次。
+	if err != nil || result.RunState != model.RunCompleted || executor.calls != 9 {
+		t.Fatalf("resumed result = %#v, executor calls = %d, %v", result, executor.calls, err)
+	}
+}
+
 type scriptedQuickExecutor struct {
 	now            time.Time
 	calls          int

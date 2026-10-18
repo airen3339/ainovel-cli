@@ -18,6 +18,11 @@ import (
 
 // Execute 产出统一 OperationOutcome（D30）：Worker 工具集决定收尾方式——携带
 // verdict_submit 的审阅/校验类以结构化 Verdict 收尾，其余以 Proposal 收尾。
+// taskTurns 是一次执行最多的模型回合。D92 的 12 本书里 758 次成功执行最多用了 12 回合（写章
+// p99 为 8）；每回合都重发整段上下文，空转的花费随回合数平方增长——厂商把工具调用发坏时，
+// agentcore 默认的 100 回合一次执行就烧掉了近两千万 token。
+const taskTurns = 30
+
 func (r *Runtime) Execute(ctx context.Context, operation model.Operation) (model.OperationOutcome, error) {
 	if !r.Bound() {
 		return model.OperationOutcome{}, fmt.Errorf("capability model is not bound: %w", model.ErrInvalid)
@@ -129,6 +134,7 @@ func (r *Runtime) Execute(ctx context.Context, operation model.Operation) (model
 		Middleware: []agentcore.ToolMiddleware{submissionGuard(stopExecution)},
 		Cache:      &litellm.CacheControl{},
 		Retry:      models.Retry(),
+		MaxTurns:   taskTurns,
 		// 每条进入会话的消息先落盘：落盘失败即停止本次执行，提交结果因此先于收尾持久化。
 		// 用量与工具报错在这里从消息取出，随同一次写入并入尝试摘要（D72）。
 		Emit: func(event agentcore.Event) error {

@@ -39,7 +39,12 @@ func (s *Session) proposeChange(ctx context.Context, args changeArgs) (string, e
 		return "", err
 	}
 	s.own(&args.Edit)
-	patches, intent, err := story.ResolveEdit(args.Edit, narrative.Settings{Intent: project.Intent, Ownership: project.Ownership})
+	// 新文档的 ID 让开等裁决的提案：已经在写的章交稿时不与这份修改撞号。
+	pending, err := s.service.store.PendingDocuments(ctx, model.AuthorityTarget{Kind: model.AuthorityProject, ID: s.projectID})
+	if err != nil {
+		return "", err
+	}
+	patches, intent, err := story.Avoiding(pending).ResolveEdit(args.Edit, narrative.Settings{Intent: project.Intent, Ownership: project.Ownership})
 	if err != nil {
 		return "", err
 	}

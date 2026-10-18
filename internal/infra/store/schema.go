@@ -8,12 +8,17 @@ import (
 // schemaVersion 是当前唯一支持的库结构版本。v1 没有历史数据，结构演进直接改
 // schema 并升版本号；不保留迁移阶梯，版本不符即拒绝打开。存储的 JSON 载荷格式变化同样
 // 升版本（v8：执行记录拆成尝试摘要与对话记录，D72；v9：主编对话，D74；v10：章节标题只在
-// 计划节点、提案带来源，D77）。
-const schemaVersion = 10
+// 计划节点、提案带来源，D77；v11：罗盘与章节计划带长线、章节计划必有转折，D91/D92）。
+const schemaVersion = 11
 
-// unsupportedSchema 说明库结构版本不符以及怎样重新开始：v1 不迁移旧库（D38），旧库改名
-// 保留备查，程序在原位置新建空库。
+// unsupportedSchema 说明库结构版本不符以及怎样处理：比程序新的库是新版程序写的，升级程序
+// 即可打开，不能让用户把好好的书改名弃掉；旧库 v1 不迁移（D38），改名保留备查，程序在原
+// 位置新建空库。
 func unsupportedSchema(path string, version int) error {
+	if version > schemaVersion {
+		return fmt.Errorf("作品库 %s 的结构版本是 %d，由更新版本的程序写入，当前程序只支持 %d。请升级程序后再打开",
+			path, version, schemaVersion)
+	}
 	return fmt.Errorf("作品库 %s 的结构版本是 %d，当前程序需要 %d，v1 不迁移旧库。"+
 		"把它连同同名的 -wal、-shm 文件与 .artifacts 目录（如有）改名备份，再重新启动即可新建空库",
 		path, version, schemaVersion)

@@ -808,7 +808,7 @@ func TestTooSmallTerminalAsksToMaximize(t *testing.T) {
 
 func TestFooterShowsUsageContextAndPrimaryAction(t *testing.T) {
 	m := studioModel(t, 150, 40)
-	requireContains(t, frame(m), "deepseek/deepseek-v4-flash · 思考 自动 · ↑233K ↓58K · 缓存 80% · $0.42", "Esc 暂停")
+	requireContains(t, frame(m), "deepseek/deepseek-v4-flash · 思考 auto · ↑233K ↓58K · 缓存 80% · $0.42", "Esc 暂停")
 	// 模型清单查得到时附上下文窗口；最窄时提示完整，模型摘要与用量截掉尾部。
 	list := `{"deepseek-v4-flash": {"mode": "chat", "litellm_provider": "deepseek", "max_input_tokens": 1000000}}`
 	if err := os.WriteFile(filepath.Join(m.deps.ConfigDir, "models.json"), []byte(list), 0o600); err != nil {
@@ -818,10 +818,10 @@ func TestFooterShowsUsageContextAndPrimaryAction(t *testing.T) {
 	if err := m.api.Models.Apply(testConfig()); err != nil {
 		t.Fatal(err)
 	}
-	requireContains(t, frame(m), "deepseek/deepseek-v4-flash · 思考 自动 · 上下文 1M · ↑233K ↓58K")
+	requireContains(t, frame(m), "deepseek/deepseek-v4-flash · 思考 auto · 上下文 1M · ↑233K ↓58K")
 	narrow := m
 	narrow.width = 120
-	requireContains(t, frame(narrow), "Esc 暂停", "deepseek/deepseek-v4-flash · 思考 自动 · 上下文 1M")
+	requireContains(t, frame(narrow), "Esc 暂停", "deepseek/deepseek-v4-flash · 思考 auto · 上下文 1M")
 	m.bench.snap.Usage = workbench.TeamUsage{}
 	if view := frame(m); strings.Contains(view, "↑233K") || !strings.Contains(view, "deepseek-v4-flash") {
 		t.Fatal("no usage yet must show only the model")

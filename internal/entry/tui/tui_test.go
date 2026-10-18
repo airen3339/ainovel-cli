@@ -12,6 +12,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/app/chief"
@@ -1103,6 +1104,28 @@ func TestActivityShowsThinkingExcerptAndErrorReason(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
 		}
+	}
+}
+
+// 活动视图是完整记录：工具报错写全、保留原有分行、悬挂缩进，不像现场条那样截成一行。
+func TestActivityTimelineShowsTheWholeToolError(t *testing.T) {
+	cause := "实体「灰袍执事」不存在；新的人物、地点、物品或组织先在 entities 里建立：" + strings.Repeat("长", 120) + "\n第二条：关系的另一方也要先建立"
+	at := time.Now()
+	entry := activity.Entry{Kind: activity.ToolStart, Tool: "proposal_submit", Err: cause, Done: true, At: at, DoneAt: at.Add(5 * time.Second)}
+	lines := model{}.stepLines(entry, 60)
+	if head := ansi.Strip(lines[0]); !strings.Contains(head, "! 提交候选稿遇到问题，模型正在自纠") || !strings.HasSuffix(head, "5.0s") {
+		t.Fatalf("head = %q", head)
+	}
+	var shown strings.Builder
+	for _, line := range lines[1:] {
+		if lipgloss.Width(line) > 60 {
+			t.Fatalf("line overflows: %q", ansi.Strip(line))
+		}
+		shown.WriteString(strings.TrimSpace(ansi.Strip(line)) + "\n")
+	}
+	squash := func(text string) string { return strings.Join(strings.Fields(text), "") }
+	if squash(shown.String()) != squash(cause) || !strings.Contains(shown.String(), "\n第二条") {
+		t.Fatalf("error not shown whole:\n%s", shown.String())
 	}
 }
 

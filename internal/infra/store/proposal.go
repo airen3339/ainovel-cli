@@ -130,11 +130,31 @@ func (s *Store) GetProposal(ctx context.Context, id string) (model.Proposal, err
 // PendingProposals 列出作品上不属于任何任务、等用户裁决的提案，新的在前（D77）：主编
 // 提出的修改与导入的草案。
 func (s *Store) PendingProposals(ctx context.Context, target model.AuthorityTarget) ([]model.Proposal, error) {
+	return s.pendingProposals(ctx, target, true)
+}
+
+// PendingDocuments 是作品上全部等裁决的提案（任务交的与不属于任务的）改到的文档：新文档
+// 分配 ID 时让开它们。
+func (s *Store) PendingDocuments(ctx context.Context, target model.AuthorityTarget) ([]model.DocumentRef, error) {
+	proposals, err := s.pendingProposals(ctx, target, false)
+	if err != nil {
+		return nil, err
+	}
+	var refs []model.DocumentRef
+	for _, proposal := range proposals {
+		for _, patch := range proposal.Patches {
+			refs = append(refs, patch.Document)
+		}
+	}
+	return refs, nil
+}
+
+func (s *Store) pendingProposals(ctx context.Context, target model.AuthorityTarget, tasklessOnly bool) ([]model.Proposal, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT id FROM proposals
-		WHERE target_kind = ? AND target_id = ? AND target_scope = ? AND state = ? AND operation_id IS NULL
+		WHERE target_kind = ? AND target_id = ? AND target_scope = ? AND state = ? AND (NOT ? OR operation_id IS NULL)
 		ORDER BY created_at_unix_ms DESC, id DESC`,
-		target.Kind, target.ID, target.Scope, model.ApprovalPending)
+		target.Kind, target.ID, target.Scope, model.ApprovalPending, tasklessOnly)
 	if err != nil {
 		return nil, fmt.Errorf("list pending proposals: %w", err)
 	}

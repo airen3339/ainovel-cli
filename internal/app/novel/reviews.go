@@ -27,7 +27,7 @@ type Evidence struct {
 	Verdicts []StoredVerdict
 	// Prior 是基线已失效的上一轮裁定（D68）：章节正文未变时沿用其结论。
 	Prior []StoredVerdict
-	// Repairs 是各章自运行最近一次策略事件以来已派发的自动修订次数，预算按章计（D63）。
+	// Repairs 是各章自运行最近一次策略事件以来已派发且不再执行的自动修订次数，预算按章计（D63）。
 	Repairs map[string]int
 	// Change 表示主编提出的修改正等用户确认（D77）：照着要变的内容接着写是白写，先停下。
 	Change bool
@@ -100,6 +100,10 @@ func (s *Reviews) runEvidence(ctx context.Context, project projectdoc.Snapshot, 
 		op, err := s.store.GetOperation(ctx, created.OperationID)
 		if err != nil {
 			return Evidence{}, err
+		}
+		// 还能接着执行的修订（含崩溃后放回队列的）不算用掉预算：推导出的仍是它，接着做完。
+		if op.State == model.OperationQueued || op.State == model.OperationRunning || op.State == model.OperationPaused {
+			continue
 		}
 		input, err := model.DecodeTaskInput(op.Kind, op.Input)
 		if err != nil {

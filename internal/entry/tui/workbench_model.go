@@ -8,27 +8,14 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// thinkingLabel 是思考强度档位的中文名；空档位是自动（沿用模型默认）。
+// thinkingLabel 是思考强度档位的显示名：档位就用各家通用的英文名，空档位是 auto（沿用模型
+// 默认）；角色的 inherit 与连接栏的“跟随默认”同义。
 func thinkingLabel(level string) string {
 	switch level {
 	case "":
-		return "自动"
+		return "auto"
 	case levelInherit:
 		return "跟随默认"
-	case "off":
-		return "关闭"
-	case "minimal":
-		return "最少"
-	case "low":
-		return "低"
-	case "medium":
-		return "中"
-	case "high":
-		return "高"
-	case "xhigh":
-		return "极高"
-	case "max":
-		return "最高"
 	}
 	return level
 }

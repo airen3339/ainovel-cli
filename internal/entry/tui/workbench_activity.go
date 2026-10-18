@@ -119,6 +119,25 @@ func (m model) stepLine(entry activity.Entry, width int, clock bool) string {
 	return alignRight(prefix+body, benchTheme.Muted.Render(elapsed), width)
 }
 
+// stepLines 活动视图里的一步。时间线是完整记录：出错的一步首行说哪一步出了问题，错误原文
+// 在下面写全、悬挂缩进，保留原有的分行；现场条只给一行（点击下钻诊断）。
+func (m model) stepLines(entry activity.Entry, width int) []string {
+	if entry.Kind != activity.ToolStart || entry.Err == "" {
+		return []string{m.stepLine(entry, width, true)}
+	}
+	prefix := ""
+	if !entry.At.IsZero() {
+		prefix = benchTheme.Muted.Render(entry.At.Local().Format("15:04:05")) + "  "
+	}
+	head := benchTheme.Warning.Render("! " + toolActivityLabel(entry.Tool) + "遇到问题，模型正在自纠")
+	lines := []string{alignRight(prefix+head, benchTheme.Muted.Render(entryElapsed(entry)), width)}
+	indent := strings.Repeat(" ", lipgloss.Width(prefix)+2)
+	for _, line := range readingLines(entry.Err, width-len(indent)) {
+		lines = append(lines, indent+benchTheme.Warning.Render(line))
+	}
+	return lines
+}
+
 // toneUser 标记用户自己的操作回响：只活在工作台的交互状态里，发布侧从不产生。
 const toneUser activity.Tone = "user"
 
@@ -265,13 +284,13 @@ func (m model) timelineLines(feed activity.Snapshot, width int) []string {
 	}
 	for _, item := range items {
 		if item.entry != nil {
-			lines = append(lines, m.stepLine(*item.entry, width, true))
+			lines = append(lines, m.stepLines(*item.entry, width)...)
 		} else {
 			lines = append(lines, m.blockLines(*item.block, width)...)
 		}
 	}
 	for _, entry := range open {
-		lines = append(lines, m.stepLine(entry, width, true))
+		lines = append(lines, m.stepLines(entry, width)...)
 	}
 	if feed.Waiting {
 		lines = append(lines, m.waitingLine(feed))

@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -28,20 +29,35 @@ func TestEnsureSchemaIsIdempotentAndRejectsForeignVersions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen at current version must succeed: %v", err)
 	}
-	if _, err := second.db.ExecContext(ctx, fmt.Sprintf("PRAGMA user_version = %d", schemaVersion+1)); err != nil {
-		t.Fatalf("mark foreign version: %v", err)
-	}
 	if err := second.Close(); err != nil {
 		t.Fatalf("close database: %v", err)
 	}
 
-	third, err := Open(ctx, path)
-	if err == nil {
-		third.Close()
-		t.Fatal("database with a foreign schema version must be rejected, not migrated")
+	// 报错要让用户知道是哪个库、怎样处理：旧库改名重开，新库升级程序。
+	for _, tc := range []struct {
+		version int
+		way     string
+	}{{schemaVersion - 1, "改名备份"}, {schemaVersion + 1, "升级程序"}} {
+		markSchemaVersion(t, path, tc.version)
+		third, err := Open(ctx, path)
+		if err == nil {
+			third.Close()
+			t.Fatalf("database at schema version %d must be rejected, not migrated", tc.version)
+		}
+		if !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), tc.way) {
+			t.Fatalf("schema version %d error lacks the path or %q: %v", tc.version, tc.way, err)
+		}
 	}
-	// 报错要让用户知道是哪个库、怎样重新开始。
-	if !strings.Contains(err.Error(), path) || !strings.Contains(err.Error(), "改名备份") {
-		t.Fatalf("unsupported schema error lacks the path or the way out: %v", err)
+}
+
+func markSchemaVersion(t *testing.T, path string, version int) {
+	t.Helper()
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(fmt.Sprintf("PRAGMA user_version = %d", version)); err != nil {
+		t.Fatalf("mark schema version %d: %v", version, err)
 	}
 }

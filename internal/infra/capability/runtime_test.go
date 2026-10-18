@@ -720,13 +720,17 @@ func TestInheritedDraftNamesTheChangesSinceIt(t *testing.T) {
 	if operation, err = authorityStore.ClaimNextOperation(ctx, "worker-1", time.Minute, now.Add(time.Second)); err != nil {
 		t.Fatalf("claim operation: %v", err)
 	}
+	runtime := NewRuntime(authorityStore)
+	read := testTool(t, runtime, operation, "writer.compose@1", prompt.ToolWorkspaceRead, nil)
+	// 还没写的工作稿读回来是空的，不算工具报错。
+	if view, err := read(ctx, json.RawMessage(`{}`)); err != nil || string(view) != `{"blocks":[]}` {
+		t.Fatalf("empty draft = %s, %v", view, err)
+	}
 	inherited := domainmodel.ManuscriptChapter{ID: "chapter-plan-1", PlanNodeID: "chapter-plan-1", Number: 1, Author: domainmodel.AuthorAI,
 		Blocks: []domainmodel.ManuscriptBlock{{ID: "p-1", Text: "农家子走进山门。"}}}
 	if _, err := workspace.New(authorityStore).PutChapter(ctx, operation.ID, workspace.Draft{Revision: 1, Chapter: inherited}, operation.Attempt, now); err != nil {
 		t.Fatalf("put inherited draft: %v", err)
 	}
-	runtime := NewRuntime(authorityStore)
-	read := testTool(t, runtime, operation, "writer.compose@1", prompt.ToolWorkspaceRead, nil)
 	if view, err := read(ctx, json.RawMessage(`{}`)); err != nil || !strings.Contains(string(view), `"changed_since":["主角改成孤儿"]`) {
 		t.Fatalf("inherited draft = %s, %v", view, err)
 	}

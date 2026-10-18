@@ -559,6 +559,23 @@ func TestFactLockFindsExistingAndNewFacts(t *testing.T) {
 	}
 }
 
+// 写作途中主编提的修改与写手交的稿出自同一基线（D77）：新文档的 ID 让开等裁决的提案改到的
+// 文档，两份先后生效时不撞号。
+func TestNewIDsAvoidPendingProposals(t *testing.T) {
+	pending := []model.DocumentRef{{Kind: model.DocumentCanon, ID: "f4"}, {Kind: model.DocumentEntity, ID: "e3"}, {Kind: model.DocumentPlan, ID: "c4"}}
+	patches, _, err := fixture().Avoiding(pending).ResolveEdit(Edit{
+		Chapters: []ChapterEdit{{Chapter: 4, Arc: 1, Title: "出山", Summary: "告别", Turn: "师父交出旧剑"}},
+		Entities: []EntityEdit{{Name: "陈渡", Kind: model.EntityCharacter}},
+		Facts:    []FactEdit{{Subject: "苏晴", Predicate: "rule.temper", Value: json.RawMessage(`"沉默寡言"`)}},
+	}, Settings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ids := patchIDs(patches); !slices.Equal(ids, []string{"plan:c5/put", "entity:e4/put", "canon:f5/put"}) {
+		t.Fatalf("patches = %v", ids)
+	}
+}
+
 // 规划者想把伏笔的回收落在还没写的章：报错说那章还没写、该写进梗概，不说“不存在”（D81）。
 func TestEffectiveChapterOnUnwrittenChapterPointsToTheSummary(t *testing.T) {
 	_, err := fixture().Resolve(&model.RevisePlanInput{}, Submission{Facts: []FactEdit{

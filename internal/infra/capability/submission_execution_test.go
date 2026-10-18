@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -97,6 +98,55 @@ func TestRuntimeRemindsATruncatedThoughtToContinue(t *testing.T) {
 	}
 	if reminder := requestText(requests[1].Messages[len(requests[1].Messages)-1]); !strings.Contains(reminder, "只有思考、没有输出") || !strings.Contains(reminder, "任务尚未形成 Proposal") {
 		t.Fatalf("reminder = %q", reminder)
+	}
+}
+
+// 模型一直调工具不交稿：一次执行到 taskTurns 回合就停，不按默认的 100 回合空转。
+func TestRuntimeStopsAtTheTurnLimit(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	s, op := runningWriterWithDraft(t, ctx)
+	replies := make([]litellmtest.Reply, taskTurns+1)
+	for i := range replies {
+		replies[i] = callReply(fmt.Sprintf("read-%d", i), prompt.ToolWorkspaceRead, json.RawMessage(`{}`))
+	}
+	llm := litellmtest.New(replies...)
+	if _, err := boundRuntime(s, testChat(llm)).Execute(ctx, op); err == nil || len(llm.Requests()) != taskTurns {
+		t.Fatalf("calls = %d, err = %v", len(llm.Requests()), err)
+	}
+}
+
+// 写作途中主编提了修改、还在等确认（D77）：写手交稿时新文档的 ID 让开它，两份先后生效时
+// 不撞号。
+func TestSubmissionIDsAvoidThePendingChange(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	s, op := runningWriterWithDraft(t, ctx)
+	fact, err := json.Marshal(model.CanonFact{ID: "f1", Kind: model.CanonState, SubjectID: "hero", Predicate: "state.temper", Value: json.RawMessage(`"沉默寡言"`)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SaveProposal(ctx, model.Proposal{
+		ID: "change", Target: op.Target, BaseRevision: op.Snapshot.BaseRevision, Author: model.ChiefAuthor, Reason: "锁住人设",
+		Patches:       []model.Patch{{Document: model.DocumentRef{Kind: model.DocumentCanon, ID: "f1"}, Operation: model.PatchPut, Content: fact}},
+		ApprovalState: model.ApprovalPending, CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	submit := callReply("submit", prompt.ToolProposalSubmit,
+		json.RawMessage(`{"reason":"完成","facts":[{"subject":"主角","predicate":"event.arrival","value":"抵达山门"}]}`))
+	outcome, err := boundRuntime(s, testChat(litellmtest.New(submit))).Execute(ctx, op)
+	if err != nil || outcome.Proposal == nil {
+		t.Fatalf("outcome = %+v, %v", outcome, err)
+	}
+	var facts []string
+	for _, patch := range outcome.Proposal.Patches {
+		if patch.Document.Kind == model.DocumentCanon {
+			facts = append(facts, patch.Document.ID)
+		}
+	}
+	if !slices.Equal(facts, []string{"f2"}) {
+		t.Fatalf("new facts = %v", facts)
 	}
 }
 

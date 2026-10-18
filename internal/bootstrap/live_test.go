@@ -3,10 +3,12 @@ package bootstrap_test
 import (
 	"cmp"
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -30,7 +32,7 @@ import (
 //	AINOVEL_LIVE=/tmp/live.db go test ./internal/bootstrap -run TestLive -v -timeout 8h
 //	go run ./cmd/ainovel-cli --headless --db /tmp/live.db diag --project <日志里的作品>
 //
-// AINOVEL_LIVE_PROJECT 给出库里已有的书时接着跑它（长篇超时后续跑）。
+// AINOVEL_LIVE_PROJECT 给出库里已有的书时接着跑它（长篇超时后续跑）；AINOVEL_LIVE_CHAPTERS 换长篇的章数（默认 40，0 交给 AI）；AINOVEL_LIVE_RAW 存下工具参数坏掉的原始响应。
 // 换模型、思考强度用 AINOVEL_MODEL、AINOVEL_THINKING（见 TestLiveModelTrial）。
 const liveUserID = "live-user"
 
@@ -69,6 +71,9 @@ func openLive(t *testing.T) *liveUser {
 	path := os.Getenv("AINOVEL_LIVE")
 	if path == "" {
 		t.Skip("AINOVEL_LIVE 未设：真实模型验收不跑")
+	}
+	if raw := os.Getenv("AINOVEL_LIVE_RAW"); raw != "" {
+		recordBrokenToolCalls(t, raw)
 	}
 	dir, err := appconfig.DefaultDir()
 	if err != nil {
@@ -856,9 +861,15 @@ func TestLiveMidCourseControl(t *testing.T) {
 
 // 长篇验收（§0.4 #3）：自动推进写 40 章，记每章摊到的用量与用时；单章成本不该随章数线性增长。
 func TestLiveLongBook(t *testing.T) {
-	const chapters = 40
+	chapters := 40
+	if value := os.Getenv("AINOVEL_LIVE_CHAPTERS"); value != "" {
+		var err error
+		if chapters, err = strconv.Atoi(value); err != nil || chapters != 0 && chapters < 20 {
+			t.Fatalf("AINOVEL_LIVE_CHAPTERS 要给不少于 20 的章数，0 交给 AI：%q", value)
+		}
+	}
 	u := openLive(t)
-	u.log("长篇：一句话开书，%d 章，自动推进", chapters)
+	u.log("长篇：一句话开书，%d 章（0 为交给 AI），自动推进", chapters)
 	var start workbench.WorkbenchSnapshot
 	if os.Getenv("AINOVEL_LIVE_PROJECT") != "" {
 		start = u.snapshot() // 接着跑：已写的章不计入
@@ -882,6 +893,58 @@ func TestLiveLongBook(t *testing.T) {
 	if final > 2*first {
 		t.Errorf("单章输入随章数膨胀：前十章 %dK，后十章 %dK", first/1000, final/1000)
 	}
+}
+
+// 写到很后面才改主角的设定（D77）：影响分析要对照受牵连的已写章。在已写了很多章的书上
+// （AINOVEL_LIVE_PROJECT，用库副本）只提修改、不确认，看影响分析读多少、多久判完、给不给得出处置。
+func TestLiveLateChange(t *testing.T) {
+	if os.Getenv("AINOVEL_LIVE_PROJECT") == "" {
+		t.Skip("AINOVEL_LIVE_PROJECT 未设：要在已写了很多章的书上跑")
+	}
+	u := openLive(t)
+	before := u.snapshot()
+	u.log("晚期改设定：已写 %d 章", len(before.Manuscript))
+	started := time.Now()
+	u.say("陈渡的设定改一下：他从小是左撇子，写字、投信、开锁都用左手。", 0)
+	u.log("主编这一回合用时 %s", time.Since(started).Round(time.Second))
+	// 与已写章没有出入时修改按审批直接生效，有出入时等用户选处置：两种都取那份提案。
+	var proposal model.Proposal
+	if change := u.snapshot().Change; change != nil {
+		proposal = change.Proposal
+		u.log("等确认：出入 %d 处，处置 %d 种", len(change.Findings), len(change.Options))
+		for _, finding := range change.Findings {
+			u.log("  出入：%s", finding)
+		}
+		for _, option := range change.Options {
+			u.log("  %s 第 %v 章：%s", option.Strategy, option.Chapters, option.Explanation)
+		}
+	} else {
+		history, err := u.api.Decisions.History(u.ctx, u.project, 1)
+		if err != nil || len(history) == 0 || history[0].Author != model.ChiefAuthor || history[0].NewRevision <= before.Revision {
+			t.Fatalf("主编没有提出修改：%+v %v", history, err)
+		}
+		proposal = history[0].Proposal
+		u.log("直接生效：%s", proposal.Impact.Semantic.Status)
+	}
+	// 设定改动要对照写到该主体的已写章（model.SemanticScope），影响分析把它们的全文一并读。
+	project, err := u.api.Projects.Project(u.ctx, u.project, proposal.BaseRevision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var subjects []model.DocumentRef
+	for _, patch := range proposal.Patches {
+		var fact model.CanonFact
+		if patch.Document.Kind == model.DocumentCanon && json.Unmarshal(patch.Content, &fact) == nil {
+			subjects = append(subjects, model.DocumentRef{Kind: model.DocumentEntity, ID: fact.SubjectID})
+		}
+	}
+	chapters, runes := 0, 0
+	for _, chapter := range project.Manuscript {
+		if slices.ContainsFunc(subjects, func(subject model.DocumentRef) bool { return slices.Contains(chapter.DependsOn, subject) }) {
+			chapters, runes = chapters+1, runes+chapter.Runes()
+		}
+	}
+	u.log("影响分析要对照 %d/%d 章、%d 字", chapters, len(project.Manuscript), runes)
 }
 
 // 换模型、思考强度对照：同一设定写 6 章，篇幅用官方写作标准的默认（软要求）；模型与档位用
@@ -1008,7 +1071,10 @@ func (u *liveUser) book(chapters int, start workbench.WorkbenchSnapshot) []model
 		u.log("  %s：输入 %dK（%.0f%%）输出 %dK · $%.2f · 用时 %s", role, usage.Usage.Input/1000,
 			100*float64(usage.Usage.Input)/float64(total.Input), usage.Usage.Output/1000, usage.Usage.Cost, usage.Worked.Round(time.Second))
 	}
-	if len(snap.Manuscript) != chapters {
+	if compass := snap.Length.Compass; chapters == 0 && compass != nil {
+		u.log("篇幅交给 AI：预计至多 %d 章，承诺 %d 章收官", compass.ScaleMax, compass.Final)
+	}
+	if chapters > 0 && len(snap.Manuscript) != chapters {
 		u.t.Fatalf("写了 %d 章，要的是 %d 章", len(snap.Manuscript), chapters)
 	}
 	return perChapter

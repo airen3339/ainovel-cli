@@ -177,7 +177,7 @@ func BuiltinWorkerProfile(id string) (WorkerProfile, error) {
 func writerTools(can submission) []ToolSchema {
 	return []ToolSchema{
 		tool(ToolAuthorityRead, authorityReadDescription, StoryReadSchema),
-		tool(ToolWorkspaceRead, "读回本章工作稿的当前版本：段落编号与正文。工作稿是照更早的作品写的（前任留下的稿）时，changed_since 列出这之后书里的修改，照现在的书核对着改", `{"type":"object","properties":{},"additionalProperties":false}`),
+		tool(ToolWorkspaceRead, "读回本章工作稿的当前版本：段落编号与正文。任务开始时工作稿是空的，直接用 workspace_put_chapter 写入整章；接着上次的尝试做时任务里会说明。工作稿是照更早的作品写的（前任留下的稿）时，changed_since 列出这之后书里的修改，照现在的书核对着改", `{"type":"object","properties":{},"additionalProperties":false}`),
 		putChapterTool(),
 		tool(ToolWorkspaceReplaceBlock, "按段落编号修改本章工作稿的一个段落；改几段就调用几次，返回改后的版本", `{"type":"object","properties":{"block_id":{"type":"string"},"text":`+proseTextSchema+`},"required":["block_id","text"],"additionalProperties":false}`),
 		proposalTool(can),

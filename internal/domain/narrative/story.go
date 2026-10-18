@@ -33,7 +33,8 @@ type Story struct {
 	manuscripts map[string]model.ManuscriptChapter // 正文 ID → 正文
 	entities    map[string]model.Entity
 	facts       map[string]model.CanonFact
-	parent      *Story // Apply 的基线：被删除文档的标签回退到这里
+	parent      *Story              // Apply 的基线：被删除文档的标签回退到这里
+	pending     []model.DocumentRef // 等裁决的提案改到的文档，见 Avoiding
 }
 
 func New(content Content) *Story {
@@ -251,8 +252,17 @@ func values[T any](documents map[string]T) []T {
 	return result
 }
 
-// idAllocator 给新文档分配确定性 ID：同一前缀取现有最大序号的下一个。同一基线上的
-// 同一提交总得到相同 ID，重试幂等。
+// Avoiding 是同一故事索引、新文档 ID 另让开 pending 的视图：pending 是等裁决的提案改到的
+// 文档。出自同一基线的两份提案（写作途中主编提的修改与写手交的稿，D77）各自取空号会撞上，
+// 先生效的一份让另一份搬不到新基线。
+func (s *Story) Avoiding(pending []model.DocumentRef) *Story {
+	view := *s
+	view.pending = pending
+	return &view
+}
+
+// idAllocator 给新文档分配确定性 ID：同一前缀取现有最大序号的下一个。同一基线、同样的
+// 等裁决提案上的同一提交总得到相同 ID，重试幂等。
 type idAllocator struct {
 	taken map[string]map[string]bool // 前缀 → 已占用 ID
 	next  map[string]int
@@ -327,6 +337,19 @@ func (s *Story) allocator() *idAllocator {
 	if s.content.Compass != nil {
 		for _, thread := range s.content.Compass.Threads {
 			a.reserve(threadPrefix, thread.ID)
+		}
+	}
+	// 长线在罗盘文档里，两份提案都改罗盘时本就冲突，不必让。
+	for _, ref := range s.pending {
+		switch ref.Kind {
+		case model.DocumentPlan, model.DocumentManuscript:
+			for _, prefix := range []string{volumePrefix, arcPrefix, chapterPrefix} {
+				a.reserve(prefix, ref.ID)
+			}
+		case model.DocumentEntity:
+			a.reserve(entityPrefix, ref.ID)
+		case model.DocumentCanon:
+			a.reserve(factPrefix, ref.ID)
 		}
 	}
 	return a

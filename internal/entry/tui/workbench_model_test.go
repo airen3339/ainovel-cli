@@ -40,25 +40,25 @@ func TestModelPanelSwitchesConnectionModelAndThinking(t *testing.T) {
 		t.Fatal("/model must open the panel")
 	}
 	view := frame(m)
-	requireContains(t, view, "模型 · ←→ 切换 · Tab 换行 · Enter 应用 · Esc 取消", "‹ 默认 ›", "deepseek", "deepseek-v4-flash", "思考强度", "高", "正在写的这一步用原来的模型")
+	requireContains(t, view, "模型 · ←→ 切换 · Tab 换行 · Enter 应用 · Esc 取消", "‹ 默认 ›", "deepseek", "deepseek-v4-flash", "思考强度", "high", "正在写的这一步用原来的模型")
 	// 连接换到 proxy 后模型列表跟着换；思考强度从 high 起步向右一档是 xhigh。
 	m, _ = press(t, m, tea.KeyTab)
 	m, _ = press(t, m, tea.KeyRight)
 	requireContains(t, frame(m), "‹ proxy ›", "gpt-5")
 	m = pressTimes(t, m, tea.KeyTab, 2)
 	m, _ = press(t, m, tea.KeyRight)
-	requireContains(t, frame(m), "‹ 极高 ›")
+	requireContains(t, frame(m), "‹ xhigh ›")
 	m, _ = press(t, m, tea.KeyEnter)
 	if m.bench.modelPanel != nil {
 		t.Fatal("Enter must close the panel on success")
 	}
-	if m.bench.notice != "已切换：默认 → proxy/gpt-5 · 思考 极高 · 当前任务写完后生效" {
+	if m.bench.notice != "已切换：默认 → proxy/gpt-5 · 思考 xhigh · 当前任务写完后生效" {
 		t.Fatalf("notice = %q", m.bench.notice)
 	}
 	if saved := savedConfig(t, m); saved.Provider != "proxy" || saved.Model != "gpt-5" || saved.Thinking != "xhigh" {
 		t.Fatalf("saved = %#v", saved)
 	}
-	requireContains(t, frame(m), "gpt-5 · 思考 极高", m.bench.notice)
+	requireContains(t, frame(m), "gpt-5 · 思考 xhigh", m.bench.notice)
 	// 空闲时的提示改为下个任务生效；思考强度没动过就不回写（存储意图不因面板重列被抹）。
 	m.bench.writing = false
 	m, _ = submit(t, m, "/model")
@@ -67,7 +67,7 @@ func TestModelPanelSwitchesConnectionModelAndThinking(t *testing.T) {
 	m, _ = press(t, m, tea.KeyShiftTab)
 	m, _ = press(t, m, tea.KeyLeft) // 连接回到 deepseek
 	m, _ = press(t, m, tea.KeyEnter)
-	if !strings.HasSuffix(m.bench.notice, "· 下个任务生效") || !strings.HasPrefix(m.bench.notice, "已切换：默认 → deepseek/deepseek-v4-flash · 思考 极高") {
+	if !strings.HasSuffix(m.bench.notice, "· 下个任务生效") || !strings.HasPrefix(m.bench.notice, "已切换：默认 → deepseek/deepseek-v4-flash · 思考 xhigh") {
 		t.Fatalf("notice = %q", m.bench.notice)
 	}
 	if saved := savedConfig(t, m); saved.Provider != "deepseek" || saved.Thinking != "xhigh" {
@@ -86,13 +86,13 @@ func TestModelPanelRoleOverrideAndFollowDefault(t *testing.T) {
 	m, _ = press(t, m, tea.KeyRight)
 	requireContains(t, frame(m), "‹ deepseek-reasoner ›")
 	m, _ = press(t, m, tea.KeyEnter)
-	if m.bench.notice != "已切换：Writer → deepseek/deepseek-reasoner · 思考 高 · 当前任务写完后生效" {
+	if m.bench.notice != "已切换：Writer → deepseek/deepseek-reasoner · 思考 high · 当前任务写完后生效" {
 		t.Fatalf("notice = %q", m.bench.notice)
 	}
 	if saved := savedConfig(t, m); saved.Roles["writer"] != (appconfig.RoleConfig{Provider: "deepseek", Model: "deepseek-reasoner"}) || saved.Model != "deepseek-v4-flash" {
 		t.Fatalf("saved = %#v", saved)
 	}
-	requireContains(t, frame(m), "deepseek/deepseek-v4-flash · 思考 高 · 角色 1")
+	requireContains(t, frame(m), "deepseek/deepseek-v4-flash · 思考 high · 角色 1")
 	// 再打开时预选已覆盖的连接；换回「跟随默认」清除覆盖。
 	m, _ = submit(t, m, "/model writer")
 	requireContains(t, frame(m), "deepseek-reasoner")
