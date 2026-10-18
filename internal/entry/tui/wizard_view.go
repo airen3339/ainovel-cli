@@ -3,7 +3,7 @@ package tui
 import (
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 	appconfig "github.com/voocel/ainovel-cli/internal/infra/config"
 )
 
@@ -154,7 +154,7 @@ func (s *wizardScreen) addWizardInput(m model, i, width int, add func(string)) {
 	if m.wizard.step == i {
 		input.Prompt = "› "
 	}
-	input.Width = max(1, width-4)
+	input.SetWidth(max(1, width-4))
 	add(style.Render(label))
 	input.SetCursor(input.Position())
 	s.hits = append(s.hits, wizardHit{2, len(s.lines), width, i})

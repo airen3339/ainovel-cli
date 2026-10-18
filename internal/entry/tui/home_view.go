@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/voocel/ainovel-cli/internal/app/workbench"
 	domainmodel "github.com/voocel/ainovel-cli/internal/domain/model"
 )
@@ -242,7 +242,8 @@ func (m model) libraryColumn(width, rows int) (homeColumn, int, int) {
 	}
 	if home.searching {
 		field := home.search
-		field.Width, field.Prompt = min(28, width/2), "/ "
+		field.SetWidth(min(28, width/2))
+		field.Prompt = "/ "
 		field.SetCursor(field.Position())
 		c.add(alignRight(title, field.View(), width))
 	} else {
@@ -432,17 +433,17 @@ func (m model) beginLibrarySearch() (tea.Model, tea.Cmd) {
 }
 
 // handleSearchKey 搜索框：输入即筛选并选中第一部；Enter 确定，Esc 清空并回到作品库。
-func (m model) handleSearchKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) handleSearchKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	h := &m.home
-	switch key.Type {
-	case tea.KeyEsc, tea.KeyEnter:
-		if key.Type == tea.KeyEsc {
+	switch key.String() {
+	case "esc", "enter":
+		if key.String() == "esc" {
 			h.search.SetValue("")
 		}
 		h.searching = false
 		h.search.Blur()
 		h.focus = focusLibrary
-		if indices := m.libraryIndices(); len(indices) > 0 && key.Type == tea.KeyEsc {
+		if indices := m.libraryIndices(); len(indices) > 0 && key.String() == "esc" {
 			h.cursor = indices[0]
 		}
 		return m, nil
@@ -455,24 +456,24 @@ func (m model) handleSearchKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
-func (m model) moveLibrary(key tea.KeyType) model {
+func (m model) moveLibrary(key string) model {
 	indices := m.libraryIndices()
 	if len(indices) == 0 {
 		return m
 	}
 	pos := max(0, slices.Index(indices, m.home.cursor))
 	switch key {
-	case tea.KeyUp:
+	case "up":
 		pos--
-	case tea.KeyDown:
+	case "down":
 		pos++
-	case tea.KeyHome:
+	case "home":
 		pos = 0
-	case tea.KeyEnd:
+	case "end":
 		pos = len(indices) - 1
-	case tea.KeyPgUp:
+	case "pgup":
 		pos -= m.homeFrame().capacity
-	case tea.KeyPgDown:
+	case "pgdown":
 		pos += m.homeFrame().capacity
 	}
 	m.home.cursor = indices[min(max(0, pos), len(indices)-1)]
@@ -481,23 +482,24 @@ func (m model) moveLibrary(key tea.KeyType) model {
 
 // handleHomeMouse 滚轮翻作品库；点击：故事框聚焦、选项直接选中、作品直接打开，
 // 其余控件与回车同一入口。
-func (m model) handleHomeMouse(mouse tea.MouseMsg) (tea.Model, tea.Cmd) {
+func (m model) handleHomeMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if m.home.mode != homeMain || m.home.searching {
 		return m, nil
 	}
+	mouse := msg.Mouse()
 	frame := m.homeFrame()
-	if mouse.Button == tea.MouseButtonWheelUp || mouse.Button == tea.MouseButtonWheelDown {
+	if mouse.Button == tea.MouseWheelUp || mouse.Button == tea.MouseWheelDown {
 		if !frame.list.contains(mouse.X, mouse.Y) {
 			return m, nil
 		}
 		m.home.setFocus(focusLibrary)
-		key := tea.KeyDown
-		if mouse.Button == tea.MouseButtonWheelUp {
-			key = tea.KeyUp
+		key := "down"
+		if mouse.Button == tea.MouseWheelUp {
+			key = "up"
 		}
 		return m.moveLibrary(key), nil
 	}
-	if mouse.Action != tea.MouseActionPress || mouse.Button != tea.MouseButtonLeft {
+	if !leftClick(msg) {
 		return m, nil
 	}
 	for _, hit := range frame.hits {

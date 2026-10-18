@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"testing"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 )
 
 func TestBenchThemeContrast(t *testing.T) {
@@ -20,13 +20,13 @@ func TestBenchThemeContrast(t *testing.T) {
 		{"dark", true, "#181818"}, {"dark warm", true, "#24211D"},
 	} {
 		t.Run(theme.name, func(t *testing.T) {
-			resolve := func(c lipgloss.AdaptiveColor) string {
+			resolve := func(c adaptiveColor) string {
 				if theme.dark {
 					return c.Dark
 				}
 				return c.Light
 			}
-			for role, color := range map[string]lipgloss.AdaptiveColor{
+			for role, color := range map[string]adaptiveColor{
 				"text": benchColors.Text, "muted": benchColors.Muted,
 				"accent": benchColors.Accent, "warning": benchColors.Warning, "error": benchColors.Error, "success": benchColors.Success,
 			} {
@@ -50,11 +50,11 @@ func TestBenchThemePreservesTerminalSurface(t *testing.T) {
 		if _, ok := style.GetBackground().(lipgloss.NoColor); !ok {
 			t.Errorf("%s overrides terminal background", name)
 		}
-		if _, ok := style.GetForeground().(lipgloss.AdaptiveColor); !ok {
+		if _, ok := style.GetForeground().(adaptiveColor); !ok {
 			t.Errorf("%s foreground does not adapt to terminal theme", name)
 		}
 	}
-	if _, ok := styles.Selected.GetBackground().(lipgloss.AdaptiveColor); !ok {
+	if _, ok := styles.Selected.GetBackground().(adaptiveColor); !ok {
 		t.Fatal("selection background must adapt with its foreground")
 	}
 }

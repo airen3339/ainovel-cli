@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	colorful "github.com/lucasb-eyer/go-colorful"
 )
 
@@ -82,7 +82,7 @@ func (p pulseState) flowLine(title string, width int) string {
 	center := math.Mod(p.flow, cycle) - flowRadius
 	var out strings.Builder
 	x := 0
-	paint := func(text string, base lipgloss.AdaptiveColor) {
+	paint := func(text string, base adaptiveColor) {
 		var run strings.Builder
 		level := -1
 		flush := func() {
@@ -120,7 +120,7 @@ func glowLevel(d float64) int {
 }
 
 // blendStyle 由 base 向辉光色混合 t（0–1）的前景样式；t 为 0 时保留自适应色。
-func blendStyle(base lipgloss.AdaptiveColor, t float64) lipgloss.Style {
+func blendStyle(base adaptiveColor, t float64) lipgloss.Style {
 	if t <= 0 {
 		return lipgloss.NewStyle().Foreground(base)
 	}
@@ -128,11 +128,7 @@ func blendStyle(base lipgloss.AdaptiveColor, t float64) lipgloss.Style {
 }
 
 // tone 取自适应色在当前背景下的那一个；调色板都是合法的十六进制色。
-func tone(c lipgloss.AdaptiveColor) colorful.Color {
-	hex := c.Light
-	if lipgloss.HasDarkBackground() {
-		hex = c.Dark
-	}
-	color, _ := colorful.Hex(hex)
+func tone(c adaptiveColor) colorful.Color {
+	color, _ := colorful.Hex(c.hex())
 	return color
 }

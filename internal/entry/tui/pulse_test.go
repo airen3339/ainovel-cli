@@ -5,9 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/muesli/termenv"
 )
 
 // 节拍只有一条：重复启动不再起第二条，创作停下即停，换了作品的旧节拍作废。
@@ -60,14 +59,12 @@ func TestPulseFlowsFasterWhileHearing(t *testing.T) {
 
 // 光带不改文字：标题原样、横线铺满给定宽度（最亮处加粗）；光带所到之处与别处着色不同，且会移动。
 func TestFlowLineMovesLightWithoutChangingText(t *testing.T) {
-	renderer := lipgloss.DefaultRenderer()
-	profile, dark := renderer.ColorProfile(), renderer.HasDarkBackground()
-	t.Cleanup(func() { renderer.SetColorProfile(profile); renderer.SetHasDarkBackground(dark) })
-	renderer.SetColorProfile(termenv.TrueColor)
+	dark := darkBackground
+	t.Cleanup(func() { darkBackground = dark })
 	title, width := "AI 创作现场 · 正在规划故事蓝图", 80
 	want := title + " " + strings.Repeat("─", width-lipgloss.Width(title)-1)
 	for _, isDark := range []bool{false, true} {
-		renderer.SetHasDarkBackground(isDark)
+		darkBackground = isDark
 		var frames []string
 		for _, flow := range []float64{0, flowRadius + 10, flowRadius + 50} {
 			line := pulseState{flow: flow}.flowLine(title, width)

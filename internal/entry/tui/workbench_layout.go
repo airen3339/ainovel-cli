@@ -5,8 +5,8 @@ import (
 	"strconv"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/voocel/ainovel-cli/internal/app/novel"
@@ -333,15 +333,11 @@ func (m model) benchFooter(l benchLayout) []string {
 	b := m.bench
 	inner := l.width - 2
 	input := b.input
-	input.Width = max(1, inner-5)
+	input.SetWidth(max(1, inner-5))
 	input.Placeholder = m.inputPlaceholder()
-	input.TextStyle = benchTheme.Text.Background(benchColors.InputBackground)
-	input.PlaceholderStyle = lipgloss.NewStyle().Foreground(benchColors.Faint).Background(benchColors.InputBackground)
-	input.Cursor.Style = benchTheme.Text
-	input.Cursor.TextStyle = input.TextStyle
 	if input.Value() != "" {
-		// textinput 用 TextStyle 涂满整个宽度；灰底只跟着文字走。
-		input.Width = min(input.Width, max(1, lipgloss.Width(input.Value())))
+		// textinput 用正文样式涂满整个宽度；灰底只跟着文字走。
+		input.SetWidth(min(input.Width(), max(1, lipgloss.Width(input.Value()))))
 		input.SetCursor(input.Position())
 	}
 	feedback := ""

@@ -13,10 +13,9 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/muesli/termenv"
 	"github.com/voocel/ainovel-cli/internal/app/binding"
 	"github.com/voocel/ainovel-cli/internal/app/chief"
 	"github.com/voocel/ainovel-cli/internal/app/workbench"
@@ -44,10 +43,12 @@ func withCandidate(m model, stale bool) model {
 	return m
 }
 
-func frame(m model) string { return ansi.Strip(m.View()) }
+func frame(m model) string { return ansi.Strip(m.screen()) }
 
+// requireContains 按屏幕上看到的文字比对：样式的转义序列会把相邻两段不同样式的字隔开。
 func requireContains(t *testing.T, view string, wants ...string) {
 	t.Helper()
+	view = ansi.Strip(view)
 	for _, want := range wants {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
@@ -56,12 +57,10 @@ func requireContains(t *testing.T, view string, wants ...string) {
 }
 
 func TestWorkbenchFramesFitSizesThemesAndStates(t *testing.T) {
-	renderer := lipgloss.DefaultRenderer()
-	profile, dark := renderer.ColorProfile(), renderer.HasDarkBackground()
-	t.Cleanup(func() { renderer.SetColorProfile(profile); renderer.SetHasDarkBackground(dark) })
-	renderer.SetColorProfile(termenv.TrueColor)
+	dark := darkBackground
+	t.Cleanup(func() { darkBackground = dark })
 	for _, isDark := range []bool{false, true} {
-		renderer.SetHasDarkBackground(isDark)
+		darkBackground = isDark
 		for _, size := range [][2]int{{120, 36}, {150, 40}, {200, 50}} {
 			states := map[string]model{"writing": studioModel(t, size[0], size[1])}
 			states["decision"] = withCandidate(studioModel(t, size[0], size[1]), false)
@@ -74,7 +73,7 @@ func TestWorkbenchFramesFitSizesThemesAndStates(t *testing.T) {
 			panel, _ := studioModel(t, size[0], size[1]).openModelPanel("writer")
 			states["panel"] = panel.(model)
 			for name, m := range states {
-				view := m.View()
+				view := m.screen()
 				if lipgloss.Height(view) != size[1] {
 					t.Fatalf("%s %v: height %d", name, size, lipgloss.Height(view))
 				}
@@ -748,7 +747,7 @@ func TestMouseHitsUseTheSharedLayout(t *testing.T) {
 		t.Fatal("clicking the prose tab must switch back")
 	}
 	// 创作中的主要操作是「Esc 暂停」：点它直接暂停，不往输入框里填东西。
-	if clicked, cmd := m.Update(tea.MouseMsg{X: 3, Y: l.footerY + 2, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}); cmd == nil || clicked.(model).bench.input.Value() != "" {
+	if clicked, cmd := m.Update(tea.MouseClickMsg{X: 3, Y: l.footerY + 2, Button: tea.MouseLeft}); cmd == nil || clicked.(model).bench.input.Value() != "" {
 		t.Fatal("clicking 「Esc 暂停」 must pause")
 	}
 
@@ -761,13 +760,13 @@ func TestMouseHitsUseTheSharedLayout(t *testing.T) {
 	decided.bench.activity.Entries[1].Err = "写入失败"
 	decided.bench.activity.Entries[1].OperationID = "writing"
 	// 创作停下后末行是当下处境，报错步就在它上面一行。
-	if _, cmd := decided.Update(tea.MouseMsg{X: l.mainX + 4, Y: l.sceneY + benchSceneRows - 2, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}); cmd == nil {
+	if _, cmd := decided.Update(tea.MouseClickMsg{X: l.mainX + 4, Y: l.sceneY + benchSceneRows - 2, Button: tea.MouseLeft}); cmd == nil {
 		t.Fatal("clicking the failed step must open diagnostics")
 	}
 	// 等待计时在标题线上，不占正文行；点击标题线、处境行与其余行都不能越界或误命中。
 	decided.bench.activity.Waiting = true
 	for y := l.sceneY; y < l.sceneY+benchSceneRows; y++ {
-		_, cmd := decided.Update(tea.MouseMsg{X: l.mainX + 4, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+		_, cmd := decided.Update(tea.MouseClickMsg{X: l.mainX + 4, Y: y, Button: tea.MouseLeft})
 		if hit := cmd != nil; hit != (y == l.sceneY+benchSceneRows-2) {
 			t.Fatalf("scene row %d hit=%v while waiting", y-l.sceneY, hit)
 		}
@@ -779,7 +778,7 @@ func TestMouseHitsUseTheSharedLayout(t *testing.T) {
 		ID: 9, OperationID: "writing", Kind: activity.Notice, Tone: activity.ToneFail, Text: "第 4 章《门后的声音》这次没能写完", Done: true,
 		At: decided.bench.activity.Entries[1].At.Add(time.Minute),
 	})
-	if _, cmd := decided.Update(tea.MouseMsg{X: l.mainX + 4, Y: l.sceneY + benchSceneRows - 2, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft}); cmd == nil {
+	if _, cmd := decided.Update(tea.MouseClickMsg{X: l.mainX + 4, Y: l.sceneY + benchSceneRows - 2, Button: tea.MouseLeft}); cmd == nil {
 		t.Fatal("clicking a failed task notice must open diagnostics")
 	}
 }
@@ -855,10 +854,10 @@ func TestLeavingWorkbenchReleasesBookCaches(t *testing.T) {
 	m.bench = longWorkbench(t, 500).bench
 	m.bench.writing = false // 创作进行中 Esc 先暂停，停下后才离开
 	oldCache := m.bench.rowsCache
-	_ = m.View()
+	_ = m.screen()
 	closed := false
 	m.bench.activityOff = func() { closed = true }
-	next, _ := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	next, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 	m = next.(model)
 	if !closed || m.page != pageHome || len(m.bench.snap.Manuscript) != 0 || m.bench.rowsCache == oldCache || m.bench.refresh.reader != nil {
 		t.Fatal("leaving retained the workbench cache or subscription")
@@ -895,11 +894,11 @@ func TestRefreshCoalescesWhileQueryIsInFlight(t *testing.T) {
 
 func BenchmarkWorkbenchView(b *testing.B) {
 	m := studioModel(&testing.T{}, 150, 40)
-	_ = m.View()
+	_ = m.screen()
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = m.View()
+		_ = m.screen()
 	}
 }
 
@@ -908,11 +907,11 @@ func BenchmarkLongWorkbench(b *testing.B) {
 		b.Run(fmt.Sprint(count), func(b *testing.B) {
 			m := longWorkbench(b, count)
 			m.findChapter(fmt.Sprint(count), false)
-			_ = m.View()
+			_ = m.screen()
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_ = m.View()
+				_ = m.screen()
 			}
 		})
 	}
@@ -929,7 +928,7 @@ func BenchmarkLongWorkbenchStreaming(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		m.bench.activity.Output[1].Text = []byte(prefix + fmt.Sprint(i))
 		m.bench.activity.Output[1].Version = uint64(i + 2)
-		_ = m.View()
+		_ = m.screen()
 	}
 }
 
@@ -1013,6 +1012,6 @@ func BenchmarkLongTalk(b *testing.B) {
 	m.bench.thread.Busy, m.bench.thread.Reply = true, "正在回"
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_ = m.View()
+		_ = m.screen()
 	}
 }

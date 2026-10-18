@@ -3,7 +3,8 @@ package tui
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/lipgloss/v2"
 )
 
 // spinnerFrames 是进行中步骤与顶栏的转圈，随创作动画的节拍换帧（pulse.go）。
@@ -14,9 +15,14 @@ func newInput(placeholder string) textinput.Model {
 	input := textinput.New()
 	input.Placeholder = placeholder
 	input.Prompt = "❯ "
-	input.PromptStyle = benchTheme.Focus
-	input.PlaceholderStyle = benchTheme.Muted
+	input.SetStyles(inputStyles(lipgloss.NewStyle(), benchTheme.Muted, true))
 	return input
+}
+
+// inputStyles 是输入框的样式：聚焦与否长一个样，光标是正文色的块。
+func inputStyles(text, placeholder lipgloss.Style, blink bool) textinput.Styles {
+	state := textinput.StyleState{Prompt: benchTheme.Focus, Text: text, Placeholder: placeholder}
+	return textinput.Styles{Focused: state, Blurred: state, Cursor: textinput.CursorStyle{Color: benchColors.Text, Blink: blink}}
 }
 
 // progressBar 用 ▰▱ 渲染章节进度，写完部分着品牌色。

@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	appconfig "github.com/voocel/ainovel-cli/internal/infra/config"
 )
 
@@ -64,7 +64,7 @@ func TestModelPanelSwitchesConnectionModelAndThinking(t *testing.T) {
 	m, _ = submit(t, m, "/model")
 	m = pressTimes(t, m, tea.KeyTab, 2)
 	m, _ = press(t, m, tea.KeyLeft) // proxy 只有 gpt-5：循环回自身
-	m, _ = press(t, m, tea.KeyShiftTab)
+	m, _ = pressKey(t, m, shiftTab)
 	m, _ = press(t, m, tea.KeyLeft) // 连接回到 deepseek
 	m, _ = press(t, m, tea.KeyEnter)
 	if !strings.HasSuffix(m.bench.notice, "· 下个任务生效") || !strings.HasPrefix(m.bench.notice, "已切换：默认 → deepseek/deepseek-v4-flash · 思考 xhigh") {
@@ -125,7 +125,7 @@ func TestModelPanelEscapeErrorsAndMouse(t *testing.T) {
 	m, _ = submit(t, m, "/model")
 	l := m.benchLayout()
 	start := max(l.bodyY+benchTabRows, l.bodyY+benchTabRows+l.contentRows-modelPanelRows)
-	updated, _ := m.Update(tea.MouseMsg{X: l.mainX + 2, Y: start + 1 + int(panelThinking), Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	updated, _ := m.Update(tea.MouseClickMsg{X: l.mainX + 2, Y: start + 1 + int(panelThinking), Button: tea.MouseLeft})
 	m = updated.(model)
 	if m.bench.modelPanel == nil || m.bench.modelPanel.focus != panelThinking {
 		t.Fatalf("clicking a panel row must focus it: %+v", m.bench.modelPanel)

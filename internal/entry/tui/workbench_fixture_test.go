@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/voocel/ainovel-cli/internal/app/novel"
 	"github.com/voocel/ainovel-cli/internal/app/workbench"
 	domainmodel "github.com/voocel/ainovel-cli/internal/domain/model"
@@ -135,16 +135,16 @@ func longWorkbench(tb testing.TB, count int) model {
 }
 
 func clickBench(m model, x, y int) model {
-	updated, _ := m.Update(tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	updated, _ := m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
 	return updated.(model)
 }
 
 func wheelBench(m model, x, y int, up bool) model {
-	button := tea.MouseButtonWheelDown
+	button := tea.MouseWheelDown
 	if up {
-		button = tea.MouseButtonWheelUp
+		button = tea.MouseWheelUp
 	}
-	updated, _ := m.Update(tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionPress, Button: button})
+	updated, _ := m.Update(tea.MouseWheelMsg{X: x, Y: y, Button: button})
 	return updated.(model)
 }
 

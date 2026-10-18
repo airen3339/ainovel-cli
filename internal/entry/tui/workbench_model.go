@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 )
 
 // thinkingLabel 是思考强度档位的显示名：档位就用各家通用的英文名，空档位是 auto（沿用模型
@@ -157,20 +157,20 @@ func (m model) syncModelPanelLevels(p *modelPanel) {
 	p.levelIdx = min(p.levelIdx, len(p.levels)-1)
 }
 
-func (m model) handleModelPanelKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) handleModelPanelKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	p := m.bench.modelPanel
-	switch key.Type {
-	case tea.KeyEsc:
+	switch key.String() {
+	case "esc":
 		m.bench.modelPanel = nil
-	case tea.KeyTab, tea.KeyDown:
+	case "tab", "down":
 		p.focus = (p.focus + 1) % panelFieldCount
-	case tea.KeyShiftTab, tea.KeyUp:
+	case "shift+tab", "up":
 		p.focus = (p.focus + panelFieldCount - 1) % panelFieldCount
-	case tea.KeyLeft:
+	case "left":
 		m.cycleModelPanel(p, -1)
-	case tea.KeyRight:
+	case "right":
 		m.cycleModelPanel(p, 1)
-	case tea.KeyEnter:
+	case "enter":
 		return m.applyModelPanel(p), nil
 	}
 	return m, nil

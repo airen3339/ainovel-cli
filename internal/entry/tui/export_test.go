@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	projectdoc "github.com/voocel/ainovel-cli/internal/app/project"
 	domainmodel "github.com/voocel/ainovel-cli/internal/domain/model"
 )

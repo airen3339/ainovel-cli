@@ -4,7 +4,7 @@ import (
 	"strconv"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 )
 
 const benchHelp = `创作控制台
@@ -43,7 +43,7 @@ F1 / F2 / F3              对话、正文、活动视图（也可点标签）
 之后回车，或跟主编说完一句话，都从停下的地方接着写。
 终端原生划选复制通常需要按住 Shift。`
 
-func (m model) handleBenchKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) handleBenchKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.bench.diag != nil {
 		return m.handleDiagnosticsKey(key)
 	}
@@ -52,7 +52,7 @@ func (m model) handleBenchKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 	bench := &m.bench
 	if bench.reading {
-		if key.Type == tea.KeyEsc {
+		if key.String() == "esc" {
 			bench.reading = false
 			return m, nil
 		}
@@ -61,51 +61,67 @@ func (m model) handleBenchKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	// 输入框常驻聚焦：导航键归面板，其余一律进文本框，没有单键快捷操作。
-	switch key.Type {
-	case tea.KeyEsc:
+	switch key.String() {
+	case "esc":
 		return m.escape()
-	case tea.KeyEnter:
+	case "enter":
 		return m.submitInput()
-	case tea.KeyF1:
+	case "f1":
 		m.switchView(viewTalk)
 		return m, nil
-	case tea.KeyF2:
+	case "f2":
 		m.switchView(viewProse)
 		return m, nil
-	case tea.KeyF3:
+	case "f3":
 		m.switchView(viewActivity)
 		return m, nil
-	case tea.KeyTab, tea.KeyShiftTab:
+	case "tab", "shift+tab":
 		bench.pane = 1 - bench.pane
 		return m, nil
-	case tea.KeyUp:
+	case "up":
 		return m.scrollPane(bench.pane, -1), nil
-	case tea.KeyDown:
+	case "down":
 		return m.scrollPane(bench.pane, 1), nil
-	case tea.KeyPgUp, tea.KeyPgDown:
+	case "pgup", "pgdown":
 		if bench.pane == benchPaneOutline {
-			return m.navigateOutline(key.Type), nil
+			return m.navigateOutline(key.String()), nil
 		}
 		delta := max(1, m.benchLayout().contentRows-1)
-		if key.Type == tea.KeyPgUp {
+		if key.String() == "pgup" {
 			delta = -delta
 		}
 		return m.scrollPane(benchPaneMain, delta), nil
-	case tea.KeyHome, tea.KeyEnd:
+	case "home", "end":
 		if bench.input.Value() != "" {
 			break
 		}
 		if bench.pane == benchPaneOutline {
-			return m.navigateOutline(key.Type), nil
+			return m.navigateOutline(key.String()), nil
 		}
 		delta := -1 << 20
-		if key.Type == tea.KeyEnd {
+		if key.String() == "end" {
 			delta = 1 << 20
 		}
 		return m.scrollPane(benchPaneMain, delta), nil
 	}
 	var cmd tea.Cmd
 	bench.input, cmd = bench.input.Update(key)
+	return m, cmd
+}
+
+// handleBenchPaste 把粘贴交给正在输入的那一栏：诊断页的保存路径或常驻输入框；阅读与模型面板
+// 里没有输入框。
+func (m model) handleBenchPaste(paste tea.PasteMsg) (tea.Model, tea.Cmd) {
+	b := &m.bench
+	var cmd tea.Cmd
+	switch {
+	case b.diag != nil:
+		if b.diag.input != nil {
+			*b.diag.input, cmd = b.diag.input.Update(paste)
+		}
+	case b.modelPanel == nil && !b.reading:
+		b.input, cmd = b.input.Update(paste)
+	}
 	return m, cmd
 }
 
@@ -359,31 +375,32 @@ func (m model) runCommand(text string) (tea.Model, tea.Cmd) {
 
 // handleBenchMouse 滚轮滚动指针所在栏；点击目录选章或折叠、切标签、读候选稿、查报错诊断、填主要操作。
 // 命中坐标全部来自同一份布局。阅读态转发给正文视口。
-func (m model) handleBenchMouse(mouse tea.MouseMsg) (tea.Model, tea.Cmd) {
+func (m model) handleBenchMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if m.bench.diag != nil {
-		return m.handleDiagnosticsMouse(mouse)
+		return m.handleDiagnosticsMouse(msg)
 	}
 	bench := &m.bench
 	if bench.reading {
 		var cmd tea.Cmd
-		bench.body, cmd = bench.body.Update(mouse)
+		bench.body, cmd = bench.body.Update(msg)
 		return m, cmd
 	}
+	mouse := msg.Mouse()
 	l := m.benchLayout()
 	if l.inRail(mouse.X) {
 		return m, nil // 右栏只读，不滚不点
 	}
 	switch {
-	case mouse.Button == tea.MouseButtonWheelUp || mouse.Button == tea.MouseButtonWheelDown:
+	case mouse.Button == tea.MouseWheelUp || mouse.Button == tea.MouseWheelDown:
 		if !l.inBody(mouse.Y) {
 			return m, nil
 		}
 		delta := 1
-		if mouse.Button == tea.MouseButtonWheelUp {
+		if mouse.Button == tea.MouseWheelUp {
 			delta = -1
 		}
 		return m.scrollPane(l.paneAt(mouse.X), delta), nil
-	case mouse.Action != tea.MouseActionPress || mouse.Button != tea.MouseButtonLeft:
+	case !leftClick(msg):
 		return m, nil
 	}
 	if field, ok := m.modelPanelFieldAt(l, mouse.X, mouse.Y); ok {

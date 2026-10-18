@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 	"github.com/voocel/ainovel-cli/internal/app/workbench"
 	domainmodel "github.com/voocel/ainovel-cli/internal/domain/model"
 )

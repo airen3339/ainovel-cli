@@ -5,7 +5,7 @@ import (
 	"strconv"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 
 	"github.com/voocel/ainovel-cli/internal/app/workbench"
 	domainmodel "github.com/voocel/ainovel-cli/internal/domain/model"

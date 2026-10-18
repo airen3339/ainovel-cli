@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	domainmodel "github.com/voocel/ainovel-cli/internal/domain/model"
@@ -47,16 +47,7 @@ func Run(parent context.Context, deps Deps) error {
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	m := newModel(ctx, deps)
-	// AltScreen 全屏渲染是“进入应用”的关键：不开则界面内联在滚动缓冲区里，
-	// 看起来像普通输出。鼠标捕获与键盘操作共同由下面的选项启用。
-	program := tea.NewProgram(
-		m,
-		tea.WithContext(ctx), tea.WithInput(deps.Input), tea.WithOutput(deps.Output),
-		tea.WithAltScreen(),
-		// 鼠标热区（M3，用户拍板滚轮+点击）：代价是终端原生划选复制需按住
-		// Shift；键盘始终覆盖全部操作。
-		tea.WithMouseCellMotion(),
-	)
+	program := tea.NewProgram(m, tea.WithContext(ctx), tea.WithInput(deps.Input), tea.WithOutput(deps.Output))
 	_, err := program.Run()
 	cancel()
 	deps.API.Chief.Wait(shutdownGrace)
@@ -139,11 +130,11 @@ func (m *model) openBench(projectID string) tea.Cmd {
 func (m model) Init() tea.Cmd {
 	switch m.page {
 	case pageHome:
-		return m.loadLibraryCmd()
+		return tea.Batch(tea.RequestBackgroundColor, m.loadLibraryCmd())
 	case pageWorkbench:
-		return m.refreshBenchCmd()
+		return tea.Batch(tea.RequestBackgroundColor, m.refreshBenchCmd())
 	}
-	return nil
+	return tea.RequestBackgroundColor
 }
 
 func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
@@ -155,9 +146,13 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.layoutDiagnostics()
 		}
 		if m.bench.reading {
-			m.bench.body.Width, m.bench.body.Height = max(1, m.width-4), max(1, m.height-1)
-			m.bench.body.SetContent(strings.Join(readingLines(m.bench.bodyText, m.bench.body.Width), "\n"))
+			m.bench.body.SetWidth(max(1, m.width-4))
+			m.bench.body.SetHeight(max(1, m.height-1))
+			m.bench.body.SetContent(strings.Join(readingLines(m.bench.bodyText, m.bench.body.Width()), "\n"))
 		}
+		return m, nil
+	case tea.BackgroundColorMsg:
+		darkBackground = message.IsDark()
 		return m, nil
 	case tea.MouseMsg:
 		// 门槛以下没有可命中的布局，鼠标事件无处归属。
@@ -167,8 +162,8 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	case quitExpiredMsg:
 		m.quitArmed = false
 		return m, nil
-	case tea.KeyMsg:
-		if message.Type == tea.KeyCtrlC {
+	case tea.KeyPressMsg:
+		if message.String() == "ctrl+c" {
 			if !m.quitArmed {
 				m.quitArmed = true
 				return m, tea.Tick(quitWindow, func(time.Time) tea.Msg { return quitExpiredMsg{} })
@@ -187,6 +182,12 @@ func (m model) Update(message tea.Msg) (tea.Model, tea.Cmd) {
 	default:
 		return m.updateWorkbench(message)
 	}
+}
+
+// leftClick 是左键按下；滚轮、拖动与松开都不算点击。
+func leftClick(msg tea.MouseMsg) bool {
+	click, ok := msg.(tea.MouseClickMsg)
+	return ok && click.Button == tea.MouseLeft
 }
 
 // 终端门槛（页面设计 §2）：达标后所有页面按固定几何排版，不做窄屏降级；
@@ -222,7 +223,17 @@ func (m model) keyHint(hint string) string {
 	return hint
 }
 
-func (m model) View() string {
+// View 全屏渲染是“进入应用”的关键：不开则界面内联在滚动缓冲区里，看起来像普通输出。
+// 鼠标热区（M3，用户拍板滚轮+点击）的代价是终端原生划选复制需按住 Shift；键盘始终覆盖
+// 全部操作。
+func (m model) View() tea.View {
+	view := tea.NewView(m.screen())
+	view.AltScreen = true
+	view.MouseMode = tea.MouseModeCellMotion
+	return view
+}
+
+func (m model) screen() string {
 	if m.tooSmall() {
 		return m.viewTooSmall()
 	}

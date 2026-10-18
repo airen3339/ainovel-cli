@@ -7,7 +7,8 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/voocel/ainovel-cli/internal/app/chief"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	domainmodel "github.com/voocel/ainovel-cli/internal/domain/model"
@@ -53,8 +54,8 @@ func TestHeldLeaseIsExplainedInCreationLanguage(t *testing.T) {
 // 时限内再按一次才退出。
 func TestCtrlCAsksForASecondPressBeforeQuitting(t *testing.T) {
 	m := studioModel(t, 150, 40)
-	m, cmd := press(t, m, tea.KeyCtrlC)
-	if view := m.View(); cmd == nil || !strings.Contains(view, "再按一次 Ctrl+C 退出") || strings.Contains(view, "Esc 暂停") {
+	m, cmd := pressKey(t, m, ctrlC)
+	if view := ansi.Strip(m.screen()); cmd == nil || !strings.Contains(view, "再按一次 Ctrl+C 退出") || strings.Contains(view, "Esc 暂停") {
 		t.Fatalf("the first Ctrl+C must only arm the quit: cmd=%v", cmd)
 	}
 	if _, ok := m.actionAt(1); ok {
@@ -62,11 +63,11 @@ func TestCtrlCAsksForASecondPressBeforeQuitting(t *testing.T) {
 	}
 	updated, _ := m.Update(quitExpiredMsg{})
 	m = updated.(model)
-	if view := m.View(); strings.Contains(view, "再按一次") || !strings.Contains(view, "Esc 暂停") {
+	if view := ansi.Strip(m.screen()); strings.Contains(view, "再按一次") || !strings.Contains(view, "Esc 暂停") {
 		t.Fatal("the hint must come back once the window expires")
 	}
-	m, _ = press(t, m, tea.KeyCtrlC)
-	_, cmd = press(t, m, tea.KeyCtrlC)
+	m, _ = pressKey(t, m, ctrlC)
+	_, cmd = pressKey(t, m, ctrlC)
 	if _, ok := cmd().(tea.QuitMsg); !ok {
 		t.Fatal("a second Ctrl+C within the window must quit")
 	}

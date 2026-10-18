@@ -7,10 +7,9 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
-	"github.com/muesli/termenv"
 	domainmodel "github.com/voocel/ainovel-cli/internal/domain/model"
 )
 
@@ -45,7 +44,7 @@ func clickHit(t *testing.T, m model, match func(homeHit) bool) (model, tea.Cmd) 
 	t.Helper()
 	for _, hit := range m.homeFrame().hits {
 		if match(hit) {
-			next, cmd := m.Update(tea.MouseMsg{X: hit.x, Y: hit.y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+			next, cmd := m.Update(tea.MouseClickMsg{X: hit.x, Y: hit.y, Button: tea.MouseLeft})
 			return next.(model), cmd
 		}
 	}
@@ -54,10 +53,8 @@ func clickHit(t *testing.T, m model, match func(homeHit) bool) (model, tea.Cmd) 
 }
 
 func TestHomeFramesFitSizesThemesAndStates(t *testing.T) {
-	renderer := lipgloss.DefaultRenderer()
-	profile, dark := renderer.ColorProfile(), renderer.HasDarkBackground()
-	t.Cleanup(func() { renderer.SetColorProfile(profile); renderer.SetHasDarkBackground(dark) })
-	renderer.SetColorProfile(termenv.TrueColor)
+	dark := darkBackground
+	t.Cleanup(func() { darkBackground = dark })
 	states := map[string]func(m model) model{
 		"composer": func(m model) model { return m },
 		"library": func(m model) model {
@@ -81,7 +78,7 @@ func TestHomeFramesFitSizesThemesAndStates(t *testing.T) {
 		},
 	}
 	for _, isDark := range []bool{false, true} {
-		renderer.SetHasDarkBackground(isDark)
+		darkBackground = isDark
 		for _, size := range [][2]int{{120, 36}, {150, 40}, {240, 60}} {
 			for name, state := range states {
 				m := state(homeFixture(t, size[0], size[1], 100))
@@ -105,18 +102,18 @@ func TestHomeFramesFitSizesThemesAndStates(t *testing.T) {
 // 首页把选择全部摊开并各附一句说明：键盘左右切换、鼠标直接点选，在篇幅行敲数字即固定篇幅。
 func TestHomeChoicesAreVisibleExplainedAndSelectable(t *testing.T) {
 	m := homeFixture(t, 150, 40, 0)
-	requireContains(t, ansi.Strip(m.View()),
+	requireContains(t, ansi.Strip(m.screen()),
 		"● AI 决定", "○ 固定章数", "● 自动推进", "○ 里程碑确认", "○ 逐章确认",
 		"写到合适处收官", "只在越界时停下来问你", "AI 不会改写", "开始创作 ↵",
 	)
 	m = tabTo(t, m, focusApproval)
 	m, _ = press(t, m, tea.KeyRight)
-	requireContains(t, ansi.Strip(m.View()), "● 里程碑确认", "蓝图和每个新故事弧先给你过目")
+	requireContains(t, ansi.Strip(m.screen()), "● 里程碑确认", "蓝图和每个新故事弧先给你过目")
 	m = clickOption(t, m, focusApproval, 2)
 	if m.home.approval != domainmodel.ApprovalManual || m.home.focus != focusApproval {
 		t.Fatalf("click did not choose manual: %v", m.home.approval)
 	}
-	requireContains(t, ansi.Strip(m.View()), "● 逐章确认", "蓝图和每一章都等你确认")
+	requireContains(t, ansi.Strip(m.screen()), "● 逐章确认", "蓝图和每一章都等你确认")
 
 	m = tabTo(t, m, focusLength)
 	m, _ = pressRune(t, m, '4')
@@ -124,7 +121,7 @@ func TestHomeChoicesAreVisibleExplainedAndSelectable(t *testing.T) {
 	if !m.home.fixed || m.home.chapters != 40 {
 		t.Fatalf("digits must fix the length: fixed=%v chapters=%d", m.home.fixed, m.home.chapters)
 	}
-	requireContains(t, ansi.Strip(m.View()), "● 固定 40 章", "全书写满 40 章收官")
+	requireContains(t, ansi.Strip(m.screen()), "● 固定 40 章", "全书写满 40 章收官")
 	m, _ = press(t, m, tea.KeyBackspace)
 	m, _ = press(t, m, tea.KeyLeft)
 	if m.home.fixed || m.home.chapters != 4 {
@@ -151,14 +148,14 @@ func TestHomeChoicesAreVisibleExplainedAndSelectable(t *testing.T) {
 // 作品库每部作品两行：标题；进度、状态与相对时间。空作品库讲清楚接下来会发生什么。
 func TestHomeLibraryRowsAndEmptyState(t *testing.T) {
 	m := homeFixture(t, 150, 40, 0)
-	requireContains(t, ansi.Strip(m.View()), "还没有作品", "AI 先规划蓝图", "关键处等你确认")
+	requireContains(t, ansi.Strip(m.screen()), "还没有作品", "AI 先规划蓝图", "关键处等你确认")
 	now := time.Now()
 	m.home.library = []libraryEntry{
 		{id: "b1", premise: "亡者来信", written: 12, target: 40, state: domainmodel.RunWaitingUser, updated: now.Add(-3 * time.Hour)},
 		{id: "b2", premise: "修仙界最后一个炼丹师", written: 3, state: domainmodel.RunPaused, updated: now.Add(-5 * 24 * time.Hour)},
 		{id: "b3", premise: "还没开始的书"},
 	}
-	requireContains(t, ansi.Strip(m.View()),
+	requireContains(t, ansi.Strip(m.screen()),
 		"作品库  3 部", "亡者来信", "12 / 40 章", "◇ 等你决定", "3 小时前",
 		"已写 3 章 · 篇幅由 AI 定", "‖ 已暂停", "5 天前", "○ 未开始",
 	)
@@ -206,7 +203,7 @@ func TestHomeSearchAndMouseSelectCorrectBook(t *testing.T) {
 func TestHomePagingWheelAndLateLoadKeepUserIntent(t *testing.T) {
 	m := homeFixture(t, 150, 40, 100)
 	frame := m.homeFrame()
-	next, _ := m.Update(tea.MouseMsg{X: frame.list.x + 2, Y: frame.list.y, Button: tea.MouseButtonWheelDown})
+	next, _ := m.Update(tea.MouseWheelMsg{X: frame.list.x + 2, Y: frame.list.y, Button: tea.MouseWheelDown})
 	m = next.(model)
 	if m.home.focus != focusLibrary || m.home.cursor != 1 {
 		t.Fatalf("wheel over the library must select the next book: focus=%d cursor=%d", m.home.focus, m.home.cursor)
@@ -238,7 +235,7 @@ func TestEntryFormsKeepActiveInputAndFeedbackVisible(t *testing.T) {
 		m.wizard.inputs[2].SetValue("secret-key-should-not-appear")
 		for step := range wizardFields {
 			m.wizard.step = step
-			view := m.View()
+			view := m.screen()
 			if lipgloss.Width(view) > size[0] || lipgloss.Height(view) != size[1] || strings.Contains(view, "secret-key-should-not-appear") || !strings.Contains(view, "连接失败") {
 				t.Fatalf("invalid form at %v step %d", size, step)
 			}
@@ -250,9 +247,9 @@ func TestEntryFormsKeepActiveInputAndFeedbackVisible(t *testing.T) {
 func TestHomeLongStoryInputKeepsCursorEndVisible(t *testing.T) {
 	m := homeFixture(t, 150, 40, 0)
 	m = typeText(t, m, "BEGINONLY"+strings.Repeat("雨夜来信", 60))
-	m.View()
+	m.screen()
 	m = typeText(t, m, "TAIL")
-	view := ansi.Strip(m.View())
+	view := ansi.Strip(m.screen())
 	if !strings.Contains(view, "TAIL") || strings.Contains(view, "BEGINONLY") {
 		t.Fatal("input did not scroll to the cursor")
 	}

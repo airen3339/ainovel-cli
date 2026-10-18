@@ -7,10 +7,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/charmbracelet/bubbles/cursor"
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/voocel/ainovel-cli/internal/app/chief"
 	"github.com/voocel/ainovel-cli/internal/app/novel"
 	projectdoc "github.com/voocel/ainovel-cli/internal/app/project"
@@ -256,11 +256,12 @@ func newWorkbenchState(projectID string, gen int, session *chief.Session) workbe
 	}
 }
 
-// newBenchInput 是常驻输入框：静态光标不挂闪烁定时器，焦点永不离开。
+// newBenchInput 是常驻输入框：静态光标不挂闪烁定时器，焦点永不离开；灰底只跟着文字走。
 func newBenchInput() textinput.Model {
 	input := newInput("")
 	input.Prompt = "› "
-	input.Cursor.SetMode(cursor.CursorStatic)
+	input.SetStyles(inputStyles(benchTheme.Text.Background(benchColors.InputBackground),
+		lipgloss.NewStyle().Foreground(benchColors.Faint).Background(benchColors.InputBackground), false))
 	input.Focus()
 	return input
 }
@@ -494,7 +495,9 @@ func (m model) applyWorkbench(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m.applyDiagnosticsShared(message)
 	case tea.MouseMsg:
 		return m.handleBenchMouse(message)
-	case tea.KeyMsg:
+	case tea.PasteMsg:
+		return m.handleBenchPaste(message)
+	case tea.KeyPressMsg:
 		return m.handleBenchKey(message)
 	}
 	return m, nil
@@ -599,8 +602,8 @@ func (m model) continueRunWith(params chief.WriteParams) (tea.Model, tea.Cmd) {
 
 // openBody 用整屏视口展示长文本，Esc 关闭。
 func (m model) openBody(content string) model {
-	body := viewport.New(max(1, m.width-4), max(1, m.height-1))
-	body.SetContent(strings.Join(readingLines(content, body.Width), "\n"))
+	body := viewport.New(viewport.WithWidth(max(1, m.width-4)), viewport.WithHeight(max(1, m.height-1)))
+	body.SetContent(strings.Join(readingLines(content, body.Width()), "\n"))
 	m.bench.body = body
 	m.bench.bodyText = content
 	m.bench.reading = true

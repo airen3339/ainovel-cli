@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	"github.com/charmbracelet/bubbles/viewport"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	"charm.land/bubbles/v2/viewport"
+	tea "charm.land/bubbletea/v2"
 	"github.com/voocel/ainovel-cli/internal/app/diag"
 	domainmodel "github.com/voocel/ainovel-cli/internal/domain/model"
 )
@@ -47,7 +47,7 @@ func (m model) openDiagnostics() (tea.Model, tea.Cmd) {
 func (m model) openOperationDiagnostics(operationID string) (tea.Model, tea.Cmd) {
 	m.bench.diagEpoch++
 	ctx, cancel := context.WithCancel(m.ctx)
-	m.bench.diag = &diagnosticsState{ctx: ctx, cancel: cancel, epoch: m.bench.diagEpoch, request: diag.Request{ProjectID: m.bench.projectID, RunID: m.bench.run().ID, OperationID: operationID}, body: viewport.New(1, 1)}
+	m.bench.diag = &diagnosticsState{ctx: ctx, cancel: cancel, epoch: m.bench.diagEpoch, request: diag.Request{ProjectID: m.bench.projectID, RunID: m.bench.run().ID, OperationID: operationID}, body: viewport.New(viewport.WithWidth(1), viewport.WithHeight(1))}
 	m.layoutDiagnostics()
 	return m, m.loadDiagnosticsCmd()
 }
@@ -117,7 +117,7 @@ func (m model) formatDiagnostics() {
 		fmt.Fprintf(&b, "\n任务 · 本页 %d 项（j/k 选择，Enter 查看执行记录）\n", len(r.Operations))
 		// Keep row positions in wrapped viewport coordinates for mouse selection.
 		d.operationLines = nil
-		line := len(readingLines(b.String(), d.body.Width)) - 1
+		line := len(readingLines(b.String(), d.body.Width())) - 1
 		for i, o := range r.Operations {
 			d.operationLines = append(d.operationLines, line)
 			var item strings.Builder
@@ -129,7 +129,7 @@ func (m model) formatDiagnostics() {
 			if o.Error != "" {
 				fmt.Fprintf(&item, "  错误：%s\n", o.Error)
 			}
-			line += len(readingLines(item.String(), d.body.Width)) - 1
+			line += len(readingLines(item.String(), d.body.Width())) - 1
 			b.WriteString(item.String())
 		}
 		if r.NextOperationID != "" {
@@ -165,26 +165,27 @@ func (m model) formatDiagnostics() {
 		fmt.Fprintf(&b, "  %s · %s：%s\n", diagnosticLabel(c.Source), diagnosticLabel(c.Status), c.Detail)
 	}
 	d.text = b.String()
-	d.body.SetContent(strings.Join(readingLines(d.text, d.body.Width), "\n"))
+	d.body.SetContent(strings.Join(readingLines(d.text, d.body.Width()), "\n"))
 }
 
 func (m model) layoutDiagnostics() {
 	d := m.bench.diag
-	d.body.Width, d.body.Height = max(1, m.width-4), max(1, m.height-4)
+	d.body.SetWidth(max(1, m.width-4))
+	d.body.SetHeight(max(1, m.height-4))
 	// Reflow only on resize or receipt, never on animation/activity frames.
 	if d.text != "" {
 		m.formatDiagnostics()
 	}
 }
 
-func (m model) handleDiagnosticsKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) handleDiagnosticsKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	d := m.bench.diag
 	if d.input != nil {
-		switch key.Type {
-		case tea.KeyEsc:
+		switch key.String() {
+		case "esc":
 			d.input = nil
 			return m, nil
-		case tea.KeyEnter:
+		case "enter":
 			path := strings.TrimSpace(d.input.Value())
 			if path == "" {
 				d.err = "请输入分享报告保存路径"
@@ -202,7 +203,7 @@ func (m model) handleDiagnosticsKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		*d.input, cmd = d.input.Update(key)
 		return m, cmd
 	}
-	if key.Type == tea.KeyEsc {
+	if key.String() == "esc" {
 		// Leaving invalidates the response even if the underlying read is still finishing.
 		if d.request.OperationID != "" && !d.busy {
 			d.request.OperationID = ""
@@ -222,7 +223,7 @@ func (m model) handleDiagnosticsKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.loadDiagnosticsCmd()
 	case "e":
 		input := newInput("./diagnostics.json")
-		input.Width = max(1, m.width-8)
+		input.SetWidth(max(1, m.width-8))
 		input.Focus()
 		d.input = &input
 		return m, textinput.Blink
@@ -251,7 +252,7 @@ func (m model) handleDiagnosticsKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			}
 			d.cursor = max(0, min(len(d.report.Operations)-1, d.cursor+delta))
 			m.formatDiagnostics()
-			d.body.SetYOffset(max(0, d.operationLines[d.cursor]-d.body.Height/2))
+			d.body.SetYOffset(max(0, d.operationLines[d.cursor]-d.body.Height()/2))
 			return m, nil
 		}
 	case "enter":
@@ -281,25 +282,26 @@ func (m model) applyDiagnosticsShared(msg diagnosticsSharedMsg) (tea.Model, tea.
 	return m, nil
 }
 
-func (m model) handleDiagnosticsMouse(mouse tea.MouseMsg) (tea.Model, tea.Cmd) {
+func (m model) handleDiagnosticsMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	mouse := msg.Mouse()
 	d := m.bench.diag
 	if d.input != nil || d.busy {
 		return m, nil
 	}
-	if mouse.Y < 2 || mouse.Y >= 2+d.body.Height {
+	if mouse.Y < 2 || mouse.Y >= 2+d.body.Height() {
 		return m, nil
 	}
-	if mouse.Action == tea.MouseActionPress && mouse.Button == tea.MouseButtonLeft && d.request.OperationID == "" {
-		row := mouse.Y - 2 + d.body.YOffset
+	if leftClick(msg) && d.request.OperationID == "" {
+		row := mouse.Y - 2 + d.body.YOffset()
 		for i, line := range d.operationLines {
 			if row == line {
 				d.cursor = i
-				return m.handleDiagnosticsKey(tea.KeyMsg{Type: tea.KeyEnter})
+				return m.handleDiagnosticsKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 			}
 		}
 	}
 	var cmd tea.Cmd
-	d.body, cmd = d.body.Update(mouse)
+	d.body, cmd = d.body.Update(msg)
 	return m, cmd
 }
 
@@ -313,7 +315,7 @@ func (m model) viewDiagnostics() string {
 		title += " · 读取中…"
 	}
 	lines := []string{benchTheme.Title.Render(fitLine(title, m.width)), benchTheme.Muted.Render(fitLine("本地详情可能含私有内容 · e 按异常采集分享报告（不受页码影响）", m.width))}
-	lines = append(lines, fitBlock(d.body.View(), m.width, d.body.Height)...)
+	lines = append(lines, fitBlock(d.body.View(), m.width, d.body.Height())...)
 	status := benchTheme.Success.Render(d.notice)
 	if d.err != "" {
 		status = benchTheme.Error.Render(d.err)

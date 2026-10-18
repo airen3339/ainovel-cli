@@ -10,9 +10,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/app/chief"
@@ -108,19 +109,35 @@ func testConfig() appconfig.Config {
 
 func typeText(t *testing.T, m model, text string) model {
 	t.Helper()
-	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(text)})
+	updated, _ := m.Update(textKey(text))
 	return updated.(model)
 }
 
-func press(t *testing.T, m model, key tea.KeyType) (model, tea.Cmd) {
+// textKey 是一次敲进一段文字的按键：测试里整段录入，省得逐字按。
+func textKey(text string) tea.KeyPressMsg {
+	code, _ := utf8.DecodeRuneInString(text)
+	return tea.KeyPressMsg{Code: code, Text: text}
+}
+
+var (
+	shiftTab = tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift}
+	ctrlC    = tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl}
+)
+
+func press(t *testing.T, m model, code rune) (model, tea.Cmd) {
 	t.Helper()
-	updated, cmd := m.Update(tea.KeyMsg{Type: key})
+	return pressKey(t, m, tea.KeyPressMsg{Code: code})
+}
+
+func pressKey(t *testing.T, m model, key tea.KeyPressMsg) (model, tea.Cmd) {
+	t.Helper()
+	updated, cmd := m.Update(key)
 	return updated.(model), cmd
 }
 
 func pressRune(t *testing.T, m model, r rune) (model, tea.Cmd) {
 	t.Helper()
-	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	updated, cmd := m.Update(textKey(string(r)))
 	return updated.(model), cmd
 }
 
@@ -145,7 +162,7 @@ func tabTo(t *testing.T, m model, focus int) model {
 	return m
 }
 
-func pressTimes(t *testing.T, m model, key tea.KeyType, times int) model {
+func pressTimes(t *testing.T, m model, key rune, times int) model {
 	t.Helper()
 	for i := 0; i < times; i++ {
 		m, _ = press(t, m, key)
@@ -289,7 +306,7 @@ func TestTypingOnPreselectedLibraryFocusesPremiseInput(t *testing.T) {
 	updated, _ := m.Update(libraryLoadedMsg{entries: []libraryEntry{{id: "book-1", premise: "旧书"}}})
 	m = updated.(model)
 	m.home.focus = focusLibrary
-	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("写")})
+	updated, _ = m.Update(textKey("写"))
 	m = updated.(model)
 	if m.home.focus != focusPremise || m.home.premise.Value() != "写" {
 		t.Fatalf("focus=%d premise=%q, want premise input focused with first rune", m.home.focus, m.home.premise.Value())
@@ -397,7 +414,7 @@ func TestOpenWaitingProjectRestoresDecisionCard(t *testing.T) {
 	if decision == nil || !decision.hasProposal || !decision.continueAfter {
 		t.Fatalf("decision card not restored: %#v", decision)
 	}
-	if !strings.Contains(m.View(), "等你决定") {
+	if !strings.Contains(m.screen(), "等你决定") {
 		t.Fatal("决定卡未出现在视图中")
 	}
 }
@@ -418,7 +435,7 @@ func TestDecisionRequiresExplicitApproveAndOtherWordsGoToTheChief(t *testing.T) 
 		})
 	}
 	present()
-	if !strings.Contains(ansi.Strip(m.View()), "等你决定") || !strings.Contains(ansi.Strip(m.View()), "y 通过") {
+	if !strings.Contains(ansi.Strip(m.screen()), "等你决定") || !strings.Contains(ansi.Strip(m.screen()), "y 通过") {
 		t.Fatal("决定卡或输入指引未出现在视图中")
 	}
 	// 空回车：不提交，打开全部内容。
@@ -462,7 +479,7 @@ func TestHomeSettingsCreateProjectWithFullIntent(t *testing.T) {
 	m = typeText(t, m, "都市悬疑读者")          // 受众
 	m = pressTimes(t, m, tea.KeyEnter, 5) // 期待体验/必须/禁止/结局方向留空，最后一项回车完成
 	// 填完回到首页并停在「开始创作」上，已填的项目写在设定行里。
-	if m.home.mode != homeMain || m.home.focus != focusStart || !strings.Contains(ansi.Strip(m.View()), "已填 受众") {
+	if m.home.mode != homeMain || m.home.focus != focusStart || !strings.Contains(ansi.Strip(m.screen()), "已填 受众") {
 		t.Fatalf("settings did not return to start: mode=%v focus=%d", m.home.mode, m.home.focus)
 	}
 	m, cmd := press(t, m, tea.KeyEnter)
@@ -572,7 +589,7 @@ func TestWorkbenchTwoPaneOutlineDetailAndCandidateReading(t *testing.T) {
 	}
 	// 快照刷新会把光标锚定在第一个章行（此处直接注入快照，手动对齐）。
 	m.bench.cursor = anchorOutlineCursor(m.outlineRows(), "", 0)
-	view := m.View()
+	view := ansi.Strip(m.screen())
 	for _, want := range []string{"作品目录", "卷一", "✓ 01", "◇ 02"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("workbench view missing %q", want)
@@ -623,7 +640,7 @@ func TestOutlineFoldingCollapsesSubtreeAndAnchorsCursor(t *testing.T) {
 		t.Fatalf("cursor should reach volume header, got %d", m.bench.cursor)
 	}
 	m, _ = press(t, m, tea.KeyEnter)
-	view := m.View()
+	view := m.screen()
 	if !strings.Contains(view, "▸ 卷一") || !strings.Contains(view, "1/2") || !strings.Contains(view, "◇") {
 		t.Fatalf("collapsed header must summarize subtree:\n%s", view)
 	}
@@ -640,7 +657,7 @@ func TestOutlineFoldingCollapsesSubtreeAndAnchorsCursor(t *testing.T) {
 
 	// 展开恢复；未规划占位行（4、5）不可选：光标到最后一章后不再下移。
 	m, _ = press(t, m, tea.KeyEnter)
-	if view := m.View(); !strings.Contains(view, "第一章") {
+	if view := m.screen(); !strings.Contains(view, "第一章") {
 		t.Fatalf("expand must restore subtree:\n%s", view)
 	}
 	for i := 0; i < 10; i++ {
@@ -793,15 +810,15 @@ func TestMouseWheelScrollsAndClickSelectsOutline(t *testing.T) {
 	m.bench.cursor = anchorOutlineCursor(m.outlineRows(), "", 0) // c1，行 3（行 0 是全书）
 
 	click := func(x, y int) {
-		updated, _ := m.Update(tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+		updated, _ := m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
 		m = updated.(model)
 	}
 	wheel := func(x, y int, up bool) {
-		button := tea.MouseButtonWheelDown
+		button := tea.MouseWheelDown
 		if up {
-			button = tea.MouseButtonWheelUp
+			button = tea.MouseWheelUp
 		}
-		updated, _ := m.Update(tea.MouseMsg{X: x, Y: y, Action: tea.MouseActionPress, Button: button})
+		updated, _ := m.Update(tea.MouseWheelMsg{X: x, Y: y, Button: button})
 		m = updated.(model)
 	}
 
@@ -813,7 +830,7 @@ func TestMouseWheelScrollsAndClickSelectsOutline(t *testing.T) {
 	}
 	// 点击卷二头行（行 5）折叠：光标落在头行，弧二与第三章消失。
 	click(5, l.outlineY+5)
-	if !m.bench.collapsed["v2"] || m.bench.cursor != 5 || strings.Contains(m.View(), "第三章") {
+	if !m.bench.collapsed["v2"] || m.bench.cursor != 5 || strings.Contains(m.screen(), "第三章") {
 		t.Fatalf("click header must collapse: collapsed=%v cursor=%d", m.bench.collapsed, m.bench.cursor)
 	}
 	// 目录上滚轮：光标上移到第 2 章（行 4）。
@@ -943,7 +960,7 @@ func TestTypingTalksToTheChief(t *testing.T) {
 	}
 	updated, _ := m.Update(sessionMsg{gen: m.bench.gen})
 	m = updated.(model)
-	requireContains(t, ansi.Strip(m.View()), "› 第一卷每章结尾留钩子", "✓ 记下要求 · 第 1 卷《第一卷》 ·「每章结尾留钩子」", "记下了，第一卷每章结尾都会留钩子。")
+	requireContains(t, ansi.Strip(m.screen()), "› 第一卷每章结尾留钩子", "✓ 记下要求 · 第 1 卷《第一卷》 ·「每章结尾留钩子」", "记下了，第一卷每章结尾都会留钩子。")
 	project, err := api.Projects.Project(ctx, "book-1", 0)
 	if err != nil || len(project.Directives) != 1 || project.Directives[0].Scope != "plan_node:volume-1" ||
 		project.Directives[0].Text != "每章结尾留钩子" {
@@ -987,7 +1004,7 @@ func TestWorkbenchActivityFeedRendersAndUnsubscribes(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("activity wakeup must re-arm the watcher")
 	}
-	view := m.View()
+	view := m.screen()
 	for _, want := range []string{"查阅设定与前情", "落笔章节工作稿", "已接收 2.0K"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("view missing %q:\n%s", want, view)
@@ -1001,7 +1018,7 @@ func TestWorkbenchActivityFeedRendersAndUnsubscribes(t *testing.T) {
 	publish(activity.TurnStart, nil)
 	updated, _ = m.Update(activityMsg{gen: m.bench.gen, open: true})
 	m = updated.(model)
-	if view := m.View(); !strings.Contains(view, "等待模型回应") || !m.bench.pulse.heard.After(heard) {
+	if view := m.screen(); !strings.Contains(view, "等待模型回应") || !m.bench.pulse.heard.After(heard) {
 		t.Fatalf("waiting indicator missing or the wakeup went unheard:\n%s", view)
 	}
 
@@ -1059,14 +1076,14 @@ func TestWorkbenchRendersStreamingProsePreview(t *testing.T) {
 
 	updated, _ = m.Update(activityMsg{gen: m.bench.gen, open: true})
 	m = updated.(model)
-	view := ansi.Strip(m.View())
+	view := ansi.Strip(m.screen())
 	for _, want := range []string{"实时预览 · 最终以入稿版本为准", "正文  少年在山野间奔跑，晨雾未散。"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("scene missing %q:\n%s", want, view)
 		}
 	}
 	m, _ = press(t, m, tea.KeyF3)
-	view = ansi.Strip(m.View())
+	view = ansi.Strip(m.screen())
 	for _, want := range []string{"正文预览 · 未入稿", "少年在山野间奔跑，晨雾未散。"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("activity view missing %q:\n%s", want, view)
@@ -1097,7 +1114,7 @@ func TestActivityShowsThinkingExcerptAndErrorReason(t *testing.T) {
 
 	updated, _ = m.Update(activityMsg{gen: m.bench.gen, open: true})
 	m = updated.(model)
-	view := ansi.Strip(m.View())
+	view := ansi.Strip(m.screen())
 	for _, want := range []string{
 		"给出审阅结论遇到问题", "裁定范围与任务范围不一致", "思考  需要回到第三章补一处伏笔",
 	} {
@@ -1157,7 +1174,7 @@ func TestRewriteCandidateTakesPrecedenceOverOldAuthorityChapter(t *testing.T) {
 	}
 	m.bench.cursor = anchorOutlineCursor(m.outlineRows(), "", 0)
 	m, _ = press(t, m, tea.KeyEnter)
-	view := m.View()
+	view := m.screen()
 	if !strings.Contains(view, "重写后的正文") || !strings.Contains(view, "候选稿") {
 		t.Fatalf("view must show rewrite candidate:\n%s", view)
 	}
@@ -1218,7 +1235,7 @@ func TestActivityFeedScrollPausesFollowAndResumes(t *testing.T) {
 	if m.bench.activityHeld == nil {
 		t.Fatal("scrolling up must hold the timeline")
 	}
-	if view := ansi.Strip(m.View()); !strings.Contains(view, "已暂停跟随") {
+	if view := ansi.Strip(m.screen()); !strings.Contains(view, "已暂停跟随") {
 		t.Fatalf("paused-follow indicator missing:\n%s", view)
 	}
 	// 新活动到达：持有的快照不变，读者所在处不动。
@@ -1230,7 +1247,7 @@ func TestActivityFeedScrollPausesFollowAndResumes(t *testing.T) {
 		t.Fatal("new activity moved the held timeline")
 	}
 	m = pressTimes(t, m, tea.KeyDown, 3)
-	if m.bench.activityHeld != nil || !strings.Contains(ansi.Strip(m.View()), "跟随最新") {
+	if m.bench.activityHeld != nil || !strings.Contains(ansi.Strip(m.screen()), "跟随最新") {
 		t.Fatal("scrolling back to the bottom must resume following")
 	}
 }
@@ -1288,7 +1305,7 @@ func TestOutlineViewportFollowsCursorAndPaneFocusCycles(t *testing.T) {
 	snap.Manuscript = []domainmodel.ManuscriptChapter{{ID: "ch-25", Number: 25, Blocks: blocks}}
 	m.bench.snap = snap
 	m.bench.cursor = 26 // 行索引：0 是全书，1 是卷头行，章 N 在第 N+1 行
-	view := m.View()
+	view := m.screen()
 	if !strings.Contains(view, "25  第25回") || !strings.Contains(view, "前面还有") {
 		t.Fatalf("outline viewport must follow cursor:\n%s", view)
 	}
@@ -1331,7 +1348,7 @@ func TestManualSelectionPinsMainPaneDuringWriting(t *testing.T) {
 	if !m.bench.pinned || m.bench.cursor != 2 {
 		t.Fatalf("selection during writing must pin: pinned=%v cursor=%d", m.bench.pinned, m.bench.cursor)
 	}
-	view := m.View()
+	view := m.screen()
 	if !strings.Contains(view, "第二章内容") {
 		t.Fatalf("pinned main pane must show selected chapter:\n%s", view)
 	}

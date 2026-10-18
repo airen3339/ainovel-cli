@@ -7,15 +7,15 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	appconfig "github.com/voocel/ainovel-cli/internal/infra/config"
 )
 
 func TestWizardPresetMouseAndKeyboard(t *testing.T) {
 	deps, _ := newTestDeps(t, false)
 	m := newModel(context.Background(), deps)
-	next, _ := m.Update(tea.MouseMsg{X: 10, Y: 8, Action: tea.MouseActionPress, Button: tea.MouseButtonLeft})
+	next, _ := m.Update(tea.MouseClickMsg{X: 10, Y: 8, Button: tea.MouseLeft})
 	m = next.(model)
 	if m.wizard.choosing || m.wizard.inputs[0].Value() != "deepseek" || m.wizard.step != 1 {
 		t.Fatal("provider click did not open model field")
@@ -23,13 +23,13 @@ func TestWizardPresetMouseAndKeyboard(t *testing.T) {
 	m = typeText(t, m, "my-model")
 	m, _ = press(t, m, tea.KeyTab)
 	m = typeText(t, m, "private-key")
-	m, _ = press(t, m, tea.KeyShiftTab)
+	m, _ = pressKey(t, m, shiftTab)
 	if m.wizard.step != 1 || m.wizard.inputs[2].Value() != "private-key" {
 		t.Fatal("navigation lost field values")
 	}
 	for _, size := range [][2]int{{150, 40}, {180, 50}} {
 		m.width, m.height = size[0], size[1]
-		view := m.View()
+		view := m.screen()
 		if lipgloss.Width(view) > size[0] || lipgloss.Height(view) != size[1] || !strings.Contains(view, "保存并开始") || strings.Contains(view, "private-key") {
 			t.Fatalf("bad layout at %v: %s", size, view)
 		}
@@ -76,7 +76,7 @@ func TestWizardValidatesAddressAndRedactsProviderErrors(t *testing.T) {
 	m = next.(model)
 	next, _ = m.Update(cmd())
 	m = next.(model)
-	if strings.Contains(m.View(), "secret-value") || !strings.Contains(m.wizard.err, "[已隐藏]") {
+	if strings.Contains(m.screen(), "secret-value") || !strings.Contains(m.wizard.err, "[已隐藏]") {
 		t.Fatal("provider error leaked key")
 	}
 }
@@ -88,7 +88,7 @@ func TestWizardResponsiveControlsAndCollapsedAddress(t *testing.T) {
 		m.width, m.height = size[0], size[1]
 		m.wizard = newWizardState(appconfig.Config{}.WithProvider("custom", "my-model", appconfig.ProviderConfig{Type: "openai", BaseURL: "https://example.com/v1"}), "", false)
 		m.wizard.custom = true
-		view := m.View()
+		view := m.screen()
 		if lipgloss.Width(view) > m.width || lipgloss.Height(view) != m.height || !strings.Contains(view, "保存并开始") {
 			t.Fatalf("controls clipped at %v", size)
 		}
@@ -99,7 +99,7 @@ func TestWizardResponsiveControlsAndCollapsedAddress(t *testing.T) {
 			if hit.y >= m.height-3 {
 				t.Fatalf("offscreen control at %v", size)
 			}
-			updated, _ := m.Update(tea.MouseMsg{X: hit.x, Y: hit.y, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+			updated, _ := m.Update(tea.MouseClickMsg{X: hit.x, Y: hit.y, Button: tea.MouseLeft})
 			next := updated.(model)
 			if hit.action < 4 && next.wizard.step != hit.action {
 				t.Fatalf("mouse focus mismatch at %v", size)
@@ -117,7 +117,7 @@ func TestWizardResponsiveControlsAndCollapsedAddress(t *testing.T) {
 	if m.wizard.step != 8 {
 		t.Fatal("collapsed address traps focus")
 	}
-	m, _ = press(t, m, tea.KeyShiftTab)
+	m, _ = pressKey(t, m, shiftTab)
 	m, _ = press(t, m, tea.KeyEnter)
 	m, _ = press(t, m, tea.KeyTab)
 	if !m.wizard.advanced || m.wizard.step != 3 {
@@ -176,7 +176,7 @@ func TestWizardWideColumnsStayAligned(t *testing.T) {
 		for _, choosing := range []bool{true, false} {
 			m.wizard = newWizardState(appconfig.Config{Provider: "openai", Model: "custom-model"}, "", false)
 			m.wizard.choosing = choosing
-			lines := strings.Split(m.View(), "\n")
+			lines := strings.Split(m.screen(), "\n")
 			for row := 3; row < 12; row++ {
 				prefix, _, ok := strings.Cut(lines[row], "│")
 				if !ok || lipgloss.Width(prefix) != max(76, width/2) {
@@ -206,7 +206,7 @@ func TestWizardProtocolIsSelectionOnly(t *testing.T) {
 	m.width = 160
 	for _, hit := range m.wizardLayout().hits {
 		if hit.action == 22 {
-			next, _ = m.Update(tea.MouseMsg{X: hit.x, Y: hit.y, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+			next, _ = m.Update(tea.MouseClickMsg{X: hit.x, Y: hit.y, Button: tea.MouseLeft})
 			m = next.(model)
 			break
 		}

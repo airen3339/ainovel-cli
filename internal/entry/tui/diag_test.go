@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
 	"github.com/voocel/ainovel-cli/internal/app/diag"
 	domainmodel "github.com/voocel/ainovel-cli/internal/domain/model"
 )
@@ -26,12 +26,12 @@ func TestDiagnosticsBusyAndStalePage(t *testing.T) {
 	epoch := m.bench.diag.epoch
 	ctx := m.bench.diag.ctx
 	for _, key := range []string{"d", "r", "n", "e"} {
-		_, cmd := m.handleDiagnosticsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(key)})
+		_, cmd := m.handleDiagnosticsKey(textKey(key))
 		if cmd != nil {
 			t.Fatalf("busy accepted %s", key)
 		}
 	}
-	updated, _ := m.handleDiagnosticsKey(tea.KeyMsg{Type: tea.KeyEsc})
+	updated, _ := m.handleDiagnosticsKey(tea.KeyPressMsg{Code: tea.KeyEsc})
 	m = updated.(model)
 	if ctx.Err() != context.Canceled {
 		t.Fatal("leaving diagnostic page did not cancel read context")
@@ -61,7 +61,7 @@ func TestDiagnosticsPaginationDrillAndCoverage(t *testing.T) {
 		!strings.Contains(m.bench.diag.text, "用量  ↑120K ↓9.0K · 缓存 50% · $0.12") {
 		t.Fatal(m.bench.diag.text)
 	}
-	updated, cmd := m.handleDiagnosticsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	updated, cmd := m.handleDiagnosticsKey(textKey("n"))
 	m = updated.(model)
 	if cmd == nil || m.bench.diag.request.After != "op-2" {
 		t.Fatal("missing task pagination cursor")
@@ -74,7 +74,7 @@ func TestDiagnosticsPaginationDrillAndCoverage(t *testing.T) {
 	if strings.Contains(m.bench.diag.text, "op-1") {
 		t.Fatal("old task page retained")
 	}
-	updated, cmd = m.handleDiagnosticsKey(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, cmd = m.handleDiagnosticsKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(model)
 	if cmd == nil || m.bench.diag.request.OperationID != "op-3" {
 		t.Fatal("task not selected")
@@ -93,7 +93,7 @@ func TestDiagnosticsPaginationDrillAndCoverage(t *testing.T) {
 			t.Fatalf("missing %q:\n%s", want, m.bench.diag.text)
 		}
 	}
-	updated, cmd = m.handleDiagnosticsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("n")})
+	updated, cmd = m.handleDiagnosticsKey(textKey("n"))
 	m = updated.(model)
 	if cmd == nil || m.bench.diag.request.TranscriptAfter != 100 {
 		t.Fatal("missing transcript pagination cursor")
@@ -106,18 +106,18 @@ func TestDiagnosticsMouseAndShareInput(t *testing.T) {
 	updated, _ := m.applyDiagnostics(diagnosticsMsg{gen: 1, epoch: m.bench.diag.epoch, report: report})
 	m = updated.(model)
 	line := m.bench.diag.operationLines[0]
-	updated, cmd := m.handleDiagnosticsMouse(tea.MouseMsg{Y: line + 2, Button: tea.MouseButtonLeft, Action: tea.MouseActionPress})
+	updated, cmd := m.handleDiagnosticsMouse(tea.MouseClickMsg{Y: line + 2, Button: tea.MouseLeft})
 	m = updated.(model)
 	if cmd == nil || m.bench.diag.request.OperationID != "op" {
 		t.Fatal("mouse did not drill into task")
 	}
 	m.bench.diag.busy = false
-	updated, _ = m.handleDiagnosticsKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("e")})
+	updated, _ = m.handleDiagnosticsKey(textKey("e"))
 	m = updated.(model)
 	if m.bench.diag.input == nil {
 		t.Fatal("missing share path input")
 	}
-	updated, cmd = m.handleDiagnosticsKey(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, cmd = m.handleDiagnosticsKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = updated.(model)
 	if cmd != nil || m.bench.diag.err == "" {
 		t.Fatal("empty path was accepted")

@@ -5,12 +5,11 @@ import (
 	"slices"
 	"strings"
 	"time"
-	"unicode"
 
-	"github.com/charmbracelet/bubbles/textarea"
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/voocel/ainovel-cli/internal/app/chief"
 	projectdoc "github.com/voocel/ainovel-cli/internal/app/project"
 	domainmodel "github.com/voocel/ainovel-cli/internal/domain/model"
@@ -124,13 +123,12 @@ func newPremiseInput(width int) textarea.Model {
 	input.SetHeight(premiseRows)
 	input.KeyMap.InsertNewline.SetEnabled(false)
 	surface := lipgloss.NewStyle().Background(benchColors.InputBackground)
-	style := textarea.Style{
+	style := textarea.StyleState{
 		Base: surface, CursorLine: surface, EndOfBuffer: surface, Prompt: surface,
 		Text:        surface.Foreground(benchColors.Text),
 		Placeholder: surface.Foreground(benchColors.Faint),
 	}
-	input.FocusedStyle, input.BlurredStyle = style, style
-	input.Cursor.Style = benchTheme.Text
+	input.SetStyles(textarea.Styles{Focused: style, Blurred: style, Cursor: textarea.CursorStyle{Color: benchColors.Text, Blink: true}})
 	input.Focus()
 	return input
 }
@@ -226,7 +224,9 @@ func (m model) updateHome(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.refreshBenchCmd(), watch)
 	case tea.MouseMsg:
 		return m.handleHomeMouse(message)
-	case tea.KeyMsg:
+	case tea.PasteMsg:
+		return m.handleHomePaste(message)
+	case tea.KeyPressMsg:
 		switch m.home.mode {
 		case homeSettings:
 			return m.handleSettingsKey(message)
@@ -238,7 +238,7 @@ func (m model) updateHome(message tea.Msg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m model) handleHomeKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) handleHomeKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	home := &m.home
 	if home.searching {
 		return m.handleSearchKey(key)
@@ -260,24 +260,24 @@ func (m model) handleHomeKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if home.confirmDelete != "" {
 		home.confirmDelete, home.notice = "", ""
 	}
-	switch key.Type {
-	case tea.KeyTab, tea.KeyShiftTab:
+	switch key.String() {
+	case "tab", "shift+tab":
 		delta := 1
-		if key.Type == tea.KeyShiftTab {
+		if key.String() == "shift+tab" {
 			delta = -1
 		}
 		ring := m.focusRing()
 		index := max(0, slices.Index(ring, home.focus))
 		return m, home.setFocus(ring[(index+delta+len(ring))%len(ring)])
-	case tea.KeyEnter:
+	case "enter":
 		return m.activate(home.focus)
-	case tea.KeyUp, tea.KeyDown, tea.KeyPgUp, tea.KeyPgDown, tea.KeyHome, tea.KeyEnd:
+	case "up", "down", "pgup", "pgdown", "home", "end":
 		if home.focus == focusLibrary {
-			return m.moveLibrary(key.Type), nil
+			return m.moveLibrary(key.String()), nil
 		}
-	case tea.KeyLeft, tea.KeyRight:
+	case "left", "right":
 		delta := 1
-		if key.Type == tea.KeyLeft {
+		if key.String() == "left" {
 			delta = -1
 		}
 		switch home.focus {
@@ -289,23 +289,23 @@ func (m model) handleHomeKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 			home.approval = approvalOrder[(index+delta+len(approvalOrder))%len(approvalOrder)]
 			return m, nil
 		}
-	case tea.KeyBackspace:
+	case "backspace":
 		if home.focus == focusLength && home.fixed {
 			home.chapters /= 10
 			return m, nil
 		}
 	}
 	// 在篇幅行直接敲数字就是固定篇幅并填章数。
-	if home.focus == focusLength && len(key.Runes) == 1 && unicode.IsDigit(key.Runes[0]) {
+	if home.focus == focusLength && len(key.Text) == 1 && key.Text[0] >= '0' && key.Text[0] <= '9' {
 		home.fixed = true
 		if home.chapters < 1000 {
-			home.chapters = home.chapters*10 + int(key.Runes[0]-'0')
+			home.chapters = home.chapters*10 + int(key.Text[0]-'0')
 		}
 		return m, nil
 	}
 	// 焦点在别处时直接打字＝想写新书：自动聚焦故事输入框并录入，
 	// 免得作品库预选把首次输入吞掉。
-	if home.focus != focusPremise && key.Type == tea.KeyRunes {
+	if home.focus != focusPremise && key.Text != "" {
 		home.setFocus(focusPremise)
 	}
 	if home.focus == focusPremise {
@@ -314,6 +314,24 @@ func (m model) handleHomeKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 	return m, nil
+}
+
+// handleHomePaste 把粘贴交给正在输入的那一栏；焦点不在输入框时与直接打字一样落进故事输入。
+func (m model) handleHomePaste(paste tea.PasteMsg) (tea.Model, tea.Cmd) {
+	home := &m.home
+	var cmd tea.Cmd
+	switch {
+	case home.mode == homeSettings:
+		home.settings[home.settingStep], cmd = home.settings[home.settingStep].Update(paste)
+	case home.mode == homeImport:
+		home.importIn, cmd = home.importIn.Update(paste)
+	case home.searching:
+		home.search, cmd = home.search.Update(paste)
+	default:
+		home.setFocus(focusPremise)
+		home.premise, cmd = home.premise.Update(paste)
+	}
+	return m, cmd
 }
 
 // focusRing 是 Tab 遍历的控件；作品库没有可选作品时跳过它。
@@ -361,18 +379,18 @@ func (m model) activate(focus int) (tea.Model, tea.Cmd) {
 }
 
 // handleSettingsKey 更多设定：回车或 Tab 到下一项，最后一项回车、或 Esc 随时带着已填内容回首页。
-func (m model) handleSettingsKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) handleSettingsKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	home := &m.home
 	step := home.settingStep
-	switch key.Type {
-	case tea.KeyEsc:
+	switch key.String() {
+	case "esc":
 		return m.closeSettings()
-	case tea.KeyEnter, tea.KeyTab, tea.KeyDown:
-		if key.Type == tea.KeyEnter && step == len(home.settings)-1 {
+	case "enter", "tab", "down":
+		if key.String() == "enter" && step == len(home.settings)-1 {
 			return m.closeSettings()
 		}
 		step = min(step+1, len(home.settings)-1)
-	case tea.KeyShiftTab, tea.KeyUp:
+	case "shift+tab", "up":
 		step = max(step-1, 0)
 	default:
 		var cmd tea.Cmd
@@ -392,15 +410,15 @@ func (m model) closeSettings() (tea.Model, tea.Cmd) {
 	return m, home.setFocus(focusStart)
 }
 
-func (m model) handleImportKey(key tea.KeyMsg) (tea.Model, tea.Cmd) {
+func (m model) handleImportKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	home := &m.home
-	switch key.Type {
-	case tea.KeyEsc:
+	switch key.String() {
+	case "esc":
 		if !home.importing {
 			home.mode = homeMain
 		}
 		return m, nil
-	case tea.KeyEnter:
+	case "enter":
 		path := strings.TrimSpace(home.importIn.Value())
 		if path == "" || home.importing {
 			return m, nil
@@ -496,7 +514,7 @@ func (m model) viewHomeSettings() string {
 	for i, field := range settingFields {
 		input := m.home.settings[i]
 		if i == m.home.settingStep {
-			input.Width = max(1, width-4)
+			input.SetWidth(max(1, width-4))
 			input.SetCursor(input.Position())
 			lines = append(lines, benchTheme.Accent.Bold(true).Render("▎ "+field.label), "  "+input.View(), "")
 			continue
@@ -513,7 +531,7 @@ func (m model) viewHomeSettings() string {
 
 func (m model) viewHomeImport() string {
 	input := m.home.importIn
-	input.Width = max(1, m.entryWidth()-4)
+	input.SetWidth(max(1, m.entryWidth()-4))
 	input.SetCursor(input.Position())
 	lines := []string{benchTheme.Muted.Render("从导出的作品文件继续创作。"), "", input.View(), ""}
 	if m.home.importing {

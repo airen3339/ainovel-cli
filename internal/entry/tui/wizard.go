@@ -6,8 +6,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/textinput"
-	tea "github.com/charmbracelet/bubbletea"
+	"charm.land/bubbles/v2/textinput"
+	tea "charm.land/bubbletea/v2"
 	appconfig "github.com/voocel/ainovel-cli/internal/infra/config"
 )
 
@@ -190,7 +190,7 @@ func (m model) updateWizard(message tea.Msg) (tea.Model, tea.Cmd) {
 		return m.finishWizard(verified)
 	}
 	if m.wizard.verifying {
-		if key, ok := message.(tea.KeyMsg); ok && key.Type == tea.KeyEsc {
+		if key, ok := message.(tea.KeyPressMsg); ok && key.String() == "esc" {
 			m.wizard.cancel()
 			m.wizard.verifying = false
 			m.wizard.request = nil
@@ -198,10 +198,11 @@ func (m model) updateWizard(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if mouse, ok := message.(tea.MouseMsg); ok {
-		if mouse.Action != tea.MouseActionPress || mouse.Button != tea.MouseButtonLeft {
+	if msg, ok := message.(tea.MouseMsg); ok {
+		if !leftClick(msg) {
 			return m, nil
 		}
+		mouse := msg.Mouse()
 		layout := m.wizardLayout()
 		for _, hit := range layout.hits {
 			if mouse.Y != hit.y || mouse.X < hit.x || mouse.X >= hit.x+hit.width {
@@ -220,17 +221,17 @@ func (m model) updateWizard(message tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	if key, ok := message.(tea.KeyMsg); ok {
+	if key, ok := message.(tea.KeyPressMsg); ok {
 		m.wizard.notice = ""
 		if m.wizard.choosing {
-			switch key.Type {
-			case tea.KeyUp, tea.KeyShiftTab:
+			switch key.String() {
+			case "up", "shift+tab":
 				m.wizard.provider = (m.wizard.provider + len(m.wizardChoices()) - 1) % len(m.wizardChoices())
-			case tea.KeyDown, tea.KeyTab:
+			case "down", "tab":
 				m.wizard.provider = (m.wizard.provider + 1) % len(m.wizardChoices())
-			case tea.KeyEnter:
+			case "enter":
 				return m.chooseWizardProvider()
-			case tea.KeyEsc:
+			case "esc":
 				// 首次配置没有可返回的页面：退出走 Ctrl+C。
 				if m.wizard.fromHome {
 					m.page = pageHome
@@ -239,9 +240,9 @@ func (m model) updateWizard(message tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if m.wizard.step == 0 && (key.Type == tea.KeyLeft || key.Type == tea.KeyRight) {
+		if m.wizard.step == 0 && (key.String() == "left" || key.String() == "right") {
 			delta := 1
-			if key.Type == tea.KeyLeft {
+			if key.String() == "left" {
 				delta = -1
 			}
 			next := 0
@@ -255,15 +256,15 @@ func (m model) updateWizard(message tea.Msg) (tea.Model, tea.Cmd) {
 			m.wizard.endpoint = ""
 			return m, nil
 		}
-		switch key.Type {
-		case tea.KeyEsc:
+		switch key.String() {
+		case "esc":
 			m.wizard.choosing = true
 			return m, nil
-		case tea.KeyTab, tea.KeyDown:
+		case "tab", "down":
 			return m.moveWizardFocus(1)
-		case tea.KeyShiftTab, tea.KeyUp:
+		case "shift+tab", "up":
 			return m.moveWizardFocus(-1)
-		case tea.KeyEnter:
+		case "enter":
 			if m.wizard.step >= 4 && m.wizard.step != 7 {
 				return m.activateWizard(m.wizard.step)
 			}

@@ -7,8 +7,7 @@ import (
 	"strconv"
 	"strings"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/lipgloss/v2"
 	"github.com/voocel/ainovel-cli/internal/app/workbench"
 	domainmodel "github.com/voocel/ainovel-cli/internal/domain/model"
 	appconfig "github.com/voocel/ainovel-cli/internal/infra/config"
@@ -467,7 +466,7 @@ func (m *model) clickOutlineRow(index int) {
 }
 
 // navigateOutline 目录焦点下的 Home/End/PgUp/PgDn。
-func (m model) navigateOutline(key tea.KeyType) model {
+func (m model) navigateOutline(key string) model {
 	rows := m.outlineRows()
 	if len(rows) == 0 {
 		return m
@@ -475,13 +474,13 @@ func (m model) navigateOutline(key tea.KeyType) model {
 	page := max(1, m.benchLayout().outlineRows)
 	index := m.bench.cursor
 	switch key {
-	case tea.KeyHome:
+	case "home":
 		index = 0
-	case tea.KeyEnd:
+	case "end":
 		index = len(rows) - 1
-	case tea.KeyPgUp:
+	case "pgup":
 		index = max(0, index-page)
-	case tea.KeyPgDown:
+	case "pgdown":
 		index = min(len(rows)-1, index+page)
 	}
 	for index > 0 && rows[index].placeholder {
