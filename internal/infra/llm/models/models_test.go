@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain/model"
 	"github.com/voocel/litellm"
@@ -125,5 +126,12 @@ func TestClassifyTagsModelServiceFailuresWithoutRewording(t *testing.T) {
 	}
 	if Classify(nil) != nil {
 		t.Fatal("Classify(nil) must stay nil")
+	}
+}
+
+// Cloudflare 的源站故障（中转站常见的 521–524）要求等 120 秒：按它等，而不是一次也不重试。
+func TestRetryWaitsTheTwoMinutesCloudflareAsksFor(t *testing.T) {
+	if delay, ok := Retry().Delay(1, 120*time.Second); !ok || delay != 120*time.Second {
+		t.Fatalf("delay = %v, ok = %v", delay, ok)
 	}
 }

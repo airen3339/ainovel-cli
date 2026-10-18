@@ -52,6 +52,9 @@ type workbenchState struct {
 	snap                 workbench.WorkbenchSnapshot
 	loaded               bool
 	cursor               int // 目录可见行索引（含卷/弧头行；快照刷新后按身份重新锚定）
+	// outlineTop 是滚轮翻到的目录窗口起点，outlineScrolled 为真时生效：翻目录只挪窗口，不换选中章。
+	outlineScrolled bool
+	outlineTop      int
 	// collapsed 是折叠的卷/弧节点（键 PlanNode.ID）；快照每轮整体替换，折叠状态只能活在这里。
 	collapsed map[string]bool
 	pane      benchPane

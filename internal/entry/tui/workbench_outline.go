@@ -320,8 +320,12 @@ func (m model) currentChapter() int {
 	return last
 }
 
-// selectOutline 手动选章：固定正文视图在该章，不被创作进度抢走。
+// selectOutline 手动选章：固定正文视图在该章，不被创作进度抢走。选中翻出来的那一行时目录
+// 不动；选到窗口外（键盘走出去、按章号跳转）时窗口回到随选中行居中。
 func (m *model) selectOutline(index int) {
+	if start, end := m.bench.outlineWindow(len(m.outlineRows()), m.benchLayout().outlineRows); index < start || index >= end {
+		m.bench.outlineScrolled = false
+	}
 	m.bench.cursor = index
 	m.bench.pinned = true
 	m.bench.proseOffset, m.bench.proseHold = 0, false
@@ -492,15 +496,31 @@ func (m model) navigateOutline(key string) model {
 	return m
 }
 
-// outlineWindow 目录视口（视图与鼠标命中共用）：装不下时窗口随选中行居中。
-func outlineWindow(total, capacity, selected int) (start, end int) {
+// outlineWindow 目录视口（视图与鼠标命中共用）：装不下时窗口随选中行居中，滚轮翻过就停在
+// 翻到的地方。
+func (b *workbenchState) outlineWindow(total, capacity int) (start, end int) {
 	if total <= capacity {
 		return 0, total
 	}
 	capacity = max(1, capacity)
-	selected = min(max(0, selected), total-1)
-	start = min(max(0, selected-capacity/2), total-capacity)
+	start = min(max(0, b.cursor), total-1) - capacity/2
+	if b.outlineScrolled {
+		start = b.outlineTop
+	}
+	start = min(max(0, start), total-capacity)
 	return start, start + capacity
+}
+
+// scrollOutline 滚轮翻目录：只挪窗口，选中章与正文都不动。
+func (m model) scrollOutline(delta int) model {
+	total, capacity := len(m.outlineRows()), m.benchLayout().outlineRows
+	if total <= capacity {
+		return m
+	}
+	start, _ := m.bench.outlineWindow(total, capacity)
+	m.bench.outlineTop = min(max(0, start+delta), total-max(1, capacity))
+	m.bench.outlineScrolled = true
+	return m
 }
 
 // outlineRowAt 把目录区坐标映射为行下标。
@@ -509,7 +529,7 @@ func (m model) outlineRowAt(l benchLayout, x, y int) (int, bool) {
 		return 0, false
 	}
 	rows := m.outlineRows()
-	start, end := outlineWindow(len(rows), l.outlineRows, m.bench.cursor)
+	start, end := m.bench.outlineWindow(len(rows), l.outlineRows)
 	if index := start + y - l.outlineY; index < end {
 		return index, true
 	}
@@ -528,7 +548,7 @@ func (m model) directoryColumn(l benchLayout) []string {
 	width := l.leftWidth - 1
 	rows := m.outlineRows()
 	lines := []string{paneTitle("作品目录", m.bench.pane == benchPaneOutline)}
-	start, end := outlineWindow(len(rows), l.outlineRows, m.bench.cursor)
+	start, end := m.bench.outlineWindow(len(rows), l.outlineRows)
 	top := ""
 	if start > 0 {
 		top = benchTheme.Muted.Render(fmt.Sprintf("   ↑ 前面还有 %d 项", start))

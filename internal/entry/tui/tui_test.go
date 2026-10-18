@@ -783,8 +783,57 @@ func TestFoldPreferencePersistsAcrossReopen(t *testing.T) {
 	}
 }
 
+// 目录超过一屏时滚轮只翻窗口：选中章、视图与正文都不动；点翻出来的章就地选中、窗口不跳，
+// 选到窗口外或 Esc 回到跟随时窗口重新随选中行居中。
+func TestWheelOverLongOutlineScrollsWithoutSelecting(t *testing.T) {
+	deps, _ := newTestDeps(t, true)
+	m := newModel(context.Background(), deps)
+	m.page, m.width, m.height = pageWorkbench, 180, 40
+	m.bench = testBench(m, "book-long")
+	m.bench.loaded = true
+	outline := []workbench.OutlineNode{
+		{Node: domainmodel.PlanNode{ID: "v1", Kind: domainmodel.PlanVolume, Title: "卷一"}},
+		{Node: domainmodel.PlanNode{ID: "a1", Kind: domainmodel.PlanArc, ParentID: "v1", Title: "弧一"}},
+	}
+	for n := 1; n <= 60; n++ {
+		outline = append(outline, workbench.OutlineNode{
+			Node:   domainmodel.PlanNode{ID: fmt.Sprintf("c%d", n), Kind: domainmodel.PlanChapter, Turn: "转折", ParentID: "a1", Title: fmt.Sprintf("第%d章", n)},
+			Number: n, State: workbench.ChapterConfirmed,
+		})
+	}
+	m.bench.snap = workbench.WorkbenchSnapshot{ProjectID: "book-long", Intent: domainmodel.Intent{Premise: "长目录"}, Length: novel.Length{Fixed: 60, Final: 60}, Outline: outline}
+	m.bench.cursor = anchorOutlineCursor(m.outlineRows(), "", 0)
+	m.switchView(viewActivity)
+
+	l := m.benchLayout()
+	rows, cursor := len(m.outlineRows()), m.bench.cursor
+	if rows <= l.outlineRows {
+		t.Fatalf("outline must overflow: %d rows, %d visible", rows, l.outlineRows)
+	}
+	for range 10 {
+		m = wheelBench(m, 5, l.outlineY+2, false)
+	}
+	start, _ := m.bench.outlineWindow(rows, l.outlineRows)
+	if start != 10 || m.bench.cursor != cursor || m.bench.view != viewActivity || m.bench.pinned {
+		t.Fatalf("wheel must only move the window: start=%d cursor=%d view=%d pinned=%v", start, m.bench.cursor, m.bench.view, m.bench.pinned)
+	}
+	m = clickBench(m, 5, l.outlineY)
+	if now, _ := m.bench.outlineWindow(rows, l.outlineRows); m.bench.cursor != start || now != start {
+		t.Fatalf("clicking a revealed chapter selects it in place: cursor=%d window=%d", m.bench.cursor, now)
+	}
+	m, _ = press(t, m, tea.KeyHome)
+	if now, _ := m.bench.outlineWindow(rows, l.outlineRows); m.bench.cursor != 0 || now != 0 || m.bench.outlineScrolled {
+		t.Fatalf("selecting outside the window recenters it: cursor=%d window=%d", m.bench.cursor, now)
+	}
+	m = wheelBench(m, 5, l.outlineY+2, false)
+	m, _ = press(t, m, tea.KeyEsc)
+	if m.bench.outlineScrolled {
+		t.Fatal("Esc back to following must recenter the outline")
+	}
+}
+
 func TestMouseWheelScrollsAndClickSelectsOutline(t *testing.T) {
-	// 鼠标：滚轮=指针所在栏的 ↑/↓ 语义（主区创作中翻活动历史）；
+	// 鼠标：滚轮滚指针所在栏（目录只翻窗口，主区创作中翻活动历史）；
 	// 点击章行选中、点击头行折叠、点击标签切视图；坐标全部来自固定布局。
 	deps, api := newTestDeps(t, true)
 	hub := activity.NewHub()
@@ -833,9 +882,9 @@ func TestMouseWheelScrollsAndClickSelectsOutline(t *testing.T) {
 	if !m.bench.collapsed["v2"] || m.bench.cursor != 5 || strings.Contains(m.screen(), "第三章") {
 		t.Fatalf("click header must collapse: collapsed=%v cursor=%d", m.bench.collapsed, m.bench.cursor)
 	}
-	// 目录上滚轮：光标上移到第 2 章（行 4）。
+	// 目录一屏装得下：滚轮无可翻，也不换选中章（长目录见 TestWheelOverLongOutlineScrollsWithoutSelecting）。
 	wheel(5, l.outlineY, true)
-	if m.bench.cursor != 4 {
+	if m.bench.cursor != 5 {
 		t.Fatalf("wheel over outline: cursor=%d", m.bench.cursor)
 	}
 	// 点击「活动」标签切视图；活动视图里滚轮向上冻结跟随，向下到底恢复。
@@ -868,7 +917,7 @@ func TestMouseWheelScrollsAndClickSelectsOutline(t *testing.T) {
 	// 正文视图里滚轮只动正文，不碰目录。
 	click(tabs[1].x0, l.tabsY)
 	wheel(l.mainX+5, l.contentY+3, true)
-	if m.bench.cursor != 4 || m.bench.view != viewProse {
+	if m.bench.cursor != 5 || m.bench.view != viewProse {
 		t.Fatalf("wheel over prose leaked: cursor=%d view=%d", m.bench.cursor, m.bench.view)
 	}
 }
@@ -1143,6 +1192,24 @@ func TestActivityTimelineShowsTheWholeToolError(t *testing.T) {
 	squash := func(text string) string { return strings.Join(strings.Fields(text), "") }
 	if squash(shown.String()) != squash(cause) || !strings.Contains(shown.String(), "\n第二条") {
 		t.Fatalf("error not shown whole:\n%s", shown.String())
+	}
+}
+
+// 重试与失败同样在时间线上写出原始错误：首行照旧说发生了什么，原文悬挂在下面。
+func TestActivityTimelineShowsRetryAndFailureCauses(t *testing.T) {
+	raw := "compat: wzw.pp.ua | 521: Web server is down (HTTP 521)"
+	at := time.Now()
+	for head, entry := range map[string]activity.Entry{
+		"↻ 连接不稳定，正在第 2 次重试":      {Kind: activity.Retry, Attempt: 2, Err: raw, Done: true, At: at},
+		"! 审阅这次没能完成：模型服务繁忙或临时故障": {Kind: activity.Notice, Tone: activity.ToneFail, Text: "审阅这次没能完成：模型服务繁忙或临时故障", Err: raw, Done: true, At: at},
+	} {
+		lines := model{}.stepLines(entry, 100)
+		if len(lines) != 2 || !strings.Contains(ansi.Strip(lines[0]), head) || strings.TrimSpace(ansi.Strip(lines[1])) != raw {
+			t.Fatalf("cause not shown under %s:\n%s", entry.Kind, ansi.Strip(strings.Join(lines, "\n")))
+		}
+	}
+	if lines := (model{}).stepLines(activity.Entry{Kind: activity.Notice, Tone: activity.ToneDone, Text: "第 1 章已入稿", Done: true, At: at}, 100); len(lines) != 1 {
+		t.Fatalf("a notice without an error stays one line: %d", len(lines))
 	}
 }
 

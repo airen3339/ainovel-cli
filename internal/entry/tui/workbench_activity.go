@@ -119,21 +119,27 @@ func (m model) stepLine(entry activity.Entry, width int, clock bool) string {
 	return alignRight(prefix+body, benchTheme.Muted.Render(elapsed), width)
 }
 
-// stepLines 活动视图里的一步。时间线是完整记录：出错的一步首行说哪一步出了问题，错误原文
-// 在下面写全、悬挂缩进，保留原有的分行；现场条只给一行（点击下钻诊断）。
+// stepLines 活动视图里的一步。时间线是完整记录：出错的工具调用、重试与失败，首行说哪一步
+// 出了问题，错误原文在下面写全、悬挂缩进，保留原有的分行；现场条只给一行（点击下钻诊断）。
 func (m model) stepLines(entry activity.Entry, width int) []string {
-	if entry.Kind != activity.ToolStart || entry.Err == "" {
+	if entry.Err == "" || entry.Kind != activity.ToolStart && entry.Kind != activity.Retry && entry.Kind != activity.Notice {
 		return []string{m.stepLine(entry, width, true)}
 	}
 	prefix := ""
 	if !entry.At.IsZero() {
 		prefix = benchTheme.Muted.Render(entry.At.Local().Format("15:04:05")) + "  "
 	}
-	head := benchTheme.Warning.Render("! " + toolActivityLabel(entry.Tool) + "遇到问题，模型正在自纠")
-	lines := []string{alignRight(prefix+head, benchTheme.Muted.Render(entryElapsed(entry)), width)}
+	head, style := m.stepLine(entry, width, true), benchTheme.Warning
+	switch {
+	case entry.Kind == activity.ToolStart:
+		head = alignRight(prefix+style.Render("! "+toolActivityLabel(entry.Tool)+"遇到问题，模型正在自纠"), benchTheme.Muted.Render(entryElapsed(entry)), width)
+	case entry.Tone == activity.ToneFail:
+		style = benchTheme.Error
+	}
+	lines := []string{head}
 	indent := strings.Repeat(" ", lipgloss.Width(prefix)+2)
 	for _, line := range readingLines(entry.Err, width-len(indent)) {
-		lines = append(lines, indent+benchTheme.Warning.Render(line))
+		lines = append(lines, indent+style.Render(line))
 	}
 	return lines
 }

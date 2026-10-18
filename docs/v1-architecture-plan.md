@@ -1612,7 +1612,7 @@ v0 由 AI 定篇幅：指南针加滚动续卷，模型宣布完结，确定性�
 - 根因有二。其一，§6.2 写了“网络/限流由统一分类器决定退避”，但 Worker 的 agentcore 配置没设 `Retry`，零值即不重试；单次判断（语义合规）也不重试，失败即“不可用”，同样停下等用户。v0 在 subagent 层就近重试 7 次，v1 重建时丢了。其二，续期要求租约未过期，把“过期”当成了“失去”：没人回收时任务明明还归原执行者。
 
 **决定**：
-1. **模型调用就地退避重试**：`models.Retry` 是唯一的策略——暂时性失败（断网、域名解析失败、连接中断、限流、服务暂时不可用，按 litellm 的暂时性判断）间隔从 2 秒翻倍到 1 分钟、共 8 次，约三分钟；服务端给出等待时间时照它等。Agent 会话（Worker 与主编）由 agent loop 执行，单次判断由 `llm.Structured` 执行，现场都显示“连接不稳定，正在第 N 次重试”。重试用尽才算这次执行失败，再交给 D56 的会话级重开，所以一次网络故障不再一秒内烧光重开预算。合盖睡眠时计时随进程暂停，醒来接着等。
+1. **模型调用就地退避重试**：`models.Retry` 是唯一的策略——暂时性失败（断网、域名解析失败、连接中断、限流、服务暂时不可用，按 litellm 的暂时性判断）间隔从 2 秒翻倍到 1 分钟、共 8 次，约三分钟；服务端给出等待时间时照它等，上限两分钟（2026-10-18：Cloudflare 的源站故障 521–524 要求等 120 秒，原先沿用 litellm 默认的 1 分钟上限，超过就一次也不重试，中转站源站宕机时三次重开两秒内烧光；守护 `TestRetryWaitsTheTwoMinutesCloudflareAsksFor`）。Agent 会话（Worker 与主编）由 agent loop 执行，单次判断由 `llm.Structured` 执行，现场都显示“连接不稳定，正在第 N 次重试”。重试用尽才算这次执行失败，再交给 D56 的会话级重开，所以一次网络故障不再一秒内烧光重开预算。合盖睡眠时计时随进程暂停，醒来接着等。
 2. **续期认归属，不认时钟**：任务仍在执行、执行者与 attempt 都没变，续期就接得上；租约过期只给别人回收的权利。回收与续期是同一行上的条件更新，先到者为准；回收之后 attempt 变了，续期与之后的写入照旧被 D42 的围栏拒绝。
 3. 持久化格式不变，schema 不升。
 
@@ -1638,6 +1638,8 @@ v0 由 AI 定篇幅：指南针加滚动续卷，模型宣布完结，确定性�
 - `TestRuntimeTagsRefusedModelCalls`：密钥失效的执行只请求一次，带 `model_refused`，错误文字等于 litellm 原文。
 - `TestDriverDoesNotReopenFailuresRequiringIntervention`：`model_refused` 立即停下、`model_unreachable` 用满重开预算；原因按类别说、不含原始错误与任务号。
 - `TestRestoreKeepsFailedTurnsAndExecutionFailures`：模型服务的失败不当作失败原因带回。
+
+2026-10-18 补充：活动视图是完整记录，只给类别时用户无从判断出了什么错（实测中转站源站宕机，时间线只剩“模型服务繁忙或临时故障”）。失败旁白的首行仍按类别说；类别替掉了原文时，原始错误随旁白发出（`activity.Event.Err`），在活动视图里悬挂在首行下面；重试行同样把重试原因写在下面。现场条、决定卡与主编回话仍只说类别。守护：`TestFailureNarrationCarriesTheRawError`、`TestActivityTimelineShowsRetryAndFailureCauses`。
 - `TestChiefExplainsAnUnreachableModelService`：主编回话失败显示类别说明。
 
 ### D77：主编改书——修改与撤销都是带来源的提案（2026-10-12）

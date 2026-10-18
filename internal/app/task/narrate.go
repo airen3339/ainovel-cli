@@ -40,11 +40,15 @@ func (s *Manager) settle(work creation.WorkItem, result operationengine.RunResul
 	case model.OperationAwaitingApproval:
 		s.notify(operation, activity.ToneWait, work.Reasons.Waiting)
 	case model.OperationFailed:
-		text := work.Reasons.Failure
+		// 原因按类别说（D76）；类别替掉了原文时，原文随旁白一起发出，活动里看得到具体出了什么错。
+		text, raw := work.Reasons.Failure, ""
 		if cause := operation.FailureCode.Explain(operation.Error); cause != "" {
 			text += "：" + clip(cause, 80)
+			if cause != operation.Error {
+				raw = clip(operation.Error, 200)
+			}
 		}
-		s.notify(operation, activity.ToneFail, text)
+		s.publish(operation, activity.ToneFail, text, raw)
 	case model.OperationStale:
 		s.notify(operation, activity.ToneInfo, "这一步依据的内容已经变了，改按最新内容重来")
 	case model.OperationPaused:
@@ -91,12 +95,17 @@ func outcomeDetail(result operationengine.RunResult) string {
 }
 
 func (s *Manager) notify(operation model.Operation, tone activity.Tone, text string) {
+	s.publish(operation, tone, text, "")
+}
+
+// publish 发出一条旁白；raw 是失败的原始错误，没有为空。
+func (s *Manager) publish(operation model.Operation, tone activity.Tone, text, raw string) {
 	if s.activity == nil {
 		return
 	}
 	s.activity.Publish(activity.Event{
 		ProjectID: operation.Target.ID, RunID: operation.RunID, OperationID: operation.ID,
-		Kind: activity.Notice, Tone: tone, Text: text, At: time.Now().UTC(),
+		Kind: activity.Notice, Tone: tone, Text: text, Err: raw, At: time.Now().UTC(),
 	})
 }
 

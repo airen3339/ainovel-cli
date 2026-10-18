@@ -813,6 +813,8 @@ type scriptedQuickExecutor struct {
 	calls          int
 	authorityStore *store.Store
 	onExecute      func(operation model.Operation)
+	// fail 非空时每次执行都以它失败，用来验证失败的去向与旁白。
+	fail error
 	// blockChapter/blockRemaining：让若干次审阅对指定正文章节给出阻塞发现，
 	// 用来验证审阅-重写闭环。
 	blockChapter   string
@@ -877,6 +879,9 @@ func (e *scriptedQuickExecutor) Execute(ctx context.Context, operation model.Ope
 	e.calls++
 	if e.onExecute != nil {
 		e.onExecute(operation)
+	}
+	if e.fail != nil {
+		return model.OperationOutcome{}, e.fail
 	}
 	var patches []model.Patch
 	switch operation.Kind {

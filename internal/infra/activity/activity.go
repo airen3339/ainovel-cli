@@ -65,7 +65,7 @@ type Event struct {
 	CallID      string // 同一次工具调用的配对键：delta 与执行起止靠它对上
 	Detail      string // ToolStart：这次调用作用的对象，如「第 3 章」，由发布侧按参数写成
 	Section     string // Item：结构化产出所属的栏目，如「大纲」「设定」「审阅」
-	Err         string // ToolEnd 出错摘要 / Retry 原因
+	Err         string // ToolEnd 出错摘要 / Retry 原因 / Notice：失败的原始错误
 	Attempt     int    // Retry：第几次
 	Text        string // Text/Prose：文字增量；Item/Notice：写好的一行
 	Tone        Tone   // Notice：这条旁白的性质
@@ -226,7 +226,7 @@ func (s *Snapshot) fold(event Event) {
 	case Notice:
 		s.append(Entry{
 			OperationID: event.OperationID, Kind: Notice,
-			Text: event.Text, Tone: event.Tone, Done: true, At: event.At,
+			Text: event.Text, Tone: event.Tone, Err: event.Err, Done: true, At: event.At,
 		})
 		return
 	}

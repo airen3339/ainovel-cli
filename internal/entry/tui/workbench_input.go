@@ -137,7 +137,7 @@ func (m model) escape() (tea.Model, tea.Cmd) {
 		b.notice = "已打断主编"
 		return m, nil
 	}
-	if b.view == viewActivity || b.pinned || b.proseHold || b.activityHeld != nil || b.talkHeld {
+	if b.view == viewActivity || b.pinned || b.proseHold || b.activityHeld != nil || b.talkHeld || b.outlineScrolled {
 		m.follow()
 		return m, nil
 	}
@@ -162,7 +162,7 @@ func (m *model) follow() {
 	if b.view != viewTalk {
 		b.view = viewProse
 	}
-	b.pane, b.pinned = benchPaneMain, false
+	b.pane, b.pinned, b.outlineScrolled = benchPaneMain, false, false
 	b.talkHeld, b.talkOffset = false, 0
 	b.activityHeld, b.activityOffset = nil, 0
 	b.proseOffset, b.proseHold = 0, false
@@ -171,7 +171,7 @@ func (m *model) follow() {
 	}
 }
 
-// scrollPane 按焦点区分派滚动：目录移动选中章，主区滚正文或活动。
+// scrollPane 按焦点区分派键盘滚动：目录移动选中章，主区滚正文或活动；滚轮翻目录走 scrollOutline。
 func (m model) scrollPane(pane benchPane, delta int) model {
 	if pane == benchPaneOutline {
 		step := 1
@@ -399,7 +399,10 @@ func (m model) handleBenchMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 		if mouse.Button == tea.MouseWheelUp {
 			delta = -1
 		}
-		return m.scrollPane(l.paneAt(mouse.X), delta), nil
+		if l.paneAt(mouse.X) == benchPaneOutline {
+			return m.scrollOutline(delta), nil
+		}
+		return m.scrollPane(benchPaneMain, delta), nil
 	case !leftClick(msg):
 		return m, nil
 	}

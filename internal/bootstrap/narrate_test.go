@@ -2,6 +2,7 @@ package bootstrap_test
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -69,5 +70,34 @@ func TestManualApprovalNarratesTheWait(t *testing.T) {
 	}
 	if len(recorder.notices) != 2 || recorder.notices[1].Tone != activity.ToneWait || recorder.notices[1].Text != "故事蓝图已拟好，等你确认后继续" {
 		t.Fatalf("notices = %#v", recorder.notices)
+	}
+}
+
+// 失败的旁白按类别说原因（D76），类别替掉原文时把原文一起带上：活动里看得到到底出了什么错。
+func TestFailureNarrationCarriesTheRawError(t *testing.T) {
+	raw := "compat: wzw.pp.ua | 521: Web server is down (HTTP 521)"
+	executor := &scriptedQuickExecutor{now: testTime(), fail: &model.Failure{Code: model.FailureModelBusy, Err: errors.New(raw)}}
+	api := newQuickTestApp(t, executor)
+	recorder := &noticeRecorder{}
+	api.Tasks.SetActivitySink(recorder)
+	command := novelapp.QuickWriteCommand{
+		ProjectID: "failing-book", UserID: "user-1", Premise: "一个失忆的邮差替亡者送完最后一封信",
+		Chapters: 2, WorkerID: "quick-worker", LeaseDuration: time.Minute, CreatedAt: testTime(),
+	}
+	if _, err := api.Novels.QuickWrite(context.Background(), command); err != nil {
+		t.Fatalf("quick write: %v", err)
+	}
+	failures := 0
+	for _, event := range recorder.notices {
+		if event.Tone != activity.ToneFail {
+			continue
+		}
+		failures++
+		if event.Text != "故事蓝图这次没能完成：模型服务繁忙或临时故障" || event.Err != raw {
+			t.Fatalf("failure notice = %q, raw = %q", event.Text, event.Err)
+		}
+	}
+	if failures == 0 {
+		t.Fatalf("no failure narrated: %#v", recorder.notices)
 	}
 }
