@@ -90,7 +90,7 @@ func TestHomeFramesFitSizesThemesAndStates(t *testing.T) {
 					t.Fatalf("footer missing at %v %s", size, name)
 				}
 				for _, hit := range frame.hits {
-					if hit.y < 0 || hit.y >= size[1]-homeFooter || hit.x < 0 || hit.x+hit.width > size[0] {
+					if hit.y < 0 || hit.y >= size[1]-pageFooter || hit.x < 0 || hit.x+hit.width > size[0] {
 						t.Fatalf("invalid hit %v %s %+v", size, name, hit)
 					}
 				}
@@ -145,7 +145,9 @@ func TestHomeChoicesAreVisibleExplainedAndSelectable(t *testing.T) {
 	}
 }
 
-// 作品库每部作品两行：标题；进度、状态与相对时间。空作品库讲清楚接下来会发生什么。
+// 作品库每部作品一行，各列对齐：书名、进度（全书章数已知时有进度条）、章数、状态与相对时间。
+// 运行标着进行中却没有任务在写，是上次没停就退出了，标「待续写」而不是「创作中」。
+// 空作品库讲清楚接下来会发生什么。
 func TestHomeLibraryRowsAndEmptyState(t *testing.T) {
 	m := homeFixture(t, 150, 40, 0)
 	requireContains(t, ansi.Strip(m.screen()), "还没有作品", "AI 先规划蓝图", "关键处等你确认")
@@ -154,11 +156,23 @@ func TestHomeLibraryRowsAndEmptyState(t *testing.T) {
 		{id: "b1", premise: "亡者来信", written: 12, target: 40, state: domainmodel.RunWaitingUser, updated: now.Add(-3 * time.Hour)},
 		{id: "b2", premise: "修仙界最后一个炼丹师", written: 3, state: domainmodel.RunPaused, updated: now.Add(-5 * 24 * time.Hour)},
 		{id: "b3", premise: "还没开始的书"},
+		{id: "b4", premise: "上次没停就退出", written: 82, state: domainmodel.RunRunning},
+		{id: "b5", premise: "别处正在写", written: 7, state: domainmodel.RunRunning, writing: true},
 	}
-	requireContains(t, ansi.Strip(m.screen()),
-		"作品库  3 部", "亡者来信", "12 / 40 章", "◇ 等你决定", "3 小时前",
-		"已写 3 章 · 篇幅由 AI 定", "‖ 已暂停", "5 天前", "○ 未开始",
+	view := ansi.Strip(m.screen())
+	requireContains(t, view,
+		"作品库  5 部", "亡者来信", "12/40 章", "◇ 等你决定", "3 小时前",
+		"3 章", "‖ 已暂停", "5 天前", "○ 未开始", "◌ 待续写", "◉ 创作中",
 	)
+	var columns []int
+	for _, line := range strings.Split(view, "\n") {
+		if at := strings.Index(line, " 章 "); at >= 0 {
+			columns = append(columns, lipgloss.Width(line[:at]))
+		}
+	}
+	if len(columns) != 4 || columns[0] != columns[1] || columns[1] != columns[2] || columns[2] != columns[3] {
+		t.Fatalf("chapter counts must line up: %v", columns)
+	}
 }
 
 func TestRelativeTime(t *testing.T) {
@@ -194,9 +208,60 @@ func TestHomeSearchAndMouseSelectCorrectBook(t *testing.T) {
 		t.Fatal("click stole focus from search input")
 	}
 	m, _ = press(t, m, tea.KeyEnter)
+	m, _ = clickHome(t, m, focusLibrary)
+	if m.page != pageHome || m.home.focus != focusLibrary || m.home.cursor != 99 {
+		t.Fatal("single click must only select the book")
+	}
 	m, cmd := clickHome(t, m, focusLibrary)
 	if m.page != pageWorkbench || m.bench.projectID != "book-099" || cmd == nil {
-		t.Fatal("filtered click opened wrong book")
+		t.Fatal("double click opened wrong book")
+	}
+}
+
+// 双击只认同一部作品、且在时限内：慢两下、点两部不同的作品都只是选中。
+func TestHomeDoubleClickNeedsSameBookInTime(t *testing.T) {
+	m := homeFixture(t, 150, 40, 3)
+	row := func(index int) func(homeHit) bool {
+		return func(hit homeHit) bool { return hit.row == index }
+	}
+	m, _ = clickHit(t, m, row(0))
+	m, _ = clickHit(t, m, row(1))
+	if m.page != pageHome || m.home.cursor != 1 {
+		t.Fatal("clicks on two books must only move the selection")
+	}
+	m.home.clicked.at = time.Now().Add(-2 * doubleClick)
+	m, _ = clickHit(t, m, row(1))
+	if m.page != pageHome {
+		t.Fatal("a slow second click must not open the book")
+	}
+	m, _ = clickHit(t, m, row(1))
+	if m.page != pageWorkbench || m.bench.projectID != "book-001" {
+		t.Fatal("double click did not open the selected book")
+	}
+}
+
+// 占位按阅读折行（行首不落标点），每一行都铺满输入面底色；有字后不再出现占位。
+func TestHomePremisePlaceholderFillsSurface(t *testing.T) {
+	m := homeFixture(t, 213, 54, 0)
+	surface := lipgloss.NewStyle().Background(benchColors.InputBackground)
+	rows := premiseView(m.home.premise, surface)
+	if len(rows) != premiseRows {
+		t.Fatalf("rows = %d, want %d", len(rows), premiseRows)
+	}
+	for i, row := range rows {
+		if got := lipgloss.Width(row); got != m.home.premise.Width() {
+			t.Fatalf("row %d width = %d, want %d", i, got, m.home.premise.Width())
+		}
+		if strings.Contains(row, "\x1b[m ") {
+			t.Fatalf("row %d has cells without the surface background: %q", i, row)
+		}
+	}
+	if second := strings.TrimSpace(ansi.Strip(rows[1])); strings.HasPrefix(second, "，") {
+		t.Fatalf("placeholder line starts with punctuation: %q", second)
+	}
+	m = typeText(t, m, "雨夜")
+	if strings.Contains(ansi.Strip(strings.Join(premiseView(m.home.premise, surface), "\n")), "邮差") {
+		t.Fatal("placeholder still shown after typing")
 	}
 }
 

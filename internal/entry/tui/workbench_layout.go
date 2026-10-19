@@ -7,7 +7,6 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"github.com/charmbracelet/x/ansi"
 
 	"github.com/voocel/ainovel-cli/internal/app/novel"
 )
@@ -348,13 +347,8 @@ func (m model) benchFooter(l benchLayout) []string {
 		feedback = benchTheme.Accent.Render(oneLine(b.notice))
 	}
 	hints := m.keyHint(m.actionHints())
-	rule := benchRule(l.width)
-	if strings.TrimSpace(ansi.Strip(feedback)) != "" {
-		feedback = truncate(feedback, inner-4)
-		rule = benchRule(2) + " " + feedback + " " + benchRule(max(0, l.width-lipgloss.Width(feedback)-4))
-	}
 	return []string{
-		rule,
+		feedbackRule(feedback, l.width),
 		" " + input.View(),
 		" " + alignRight(hints, m.usageLabel(l, inner-lipgloss.Width(hints)-2), inner),
 	}

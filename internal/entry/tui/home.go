@@ -17,7 +17,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/infra/jsonc"
 )
 
-// 首页（workbench §4）：左边写一个新故事，右边是作品库。新故事的输入只有一句话、
+// 首页（workbench §4）：上面写一个新故事，下面是作品库。新故事的输入只有一句话、
 // 篇幅、推进方式与可选设定；它们只产生不同的初始化输入，最终创建相同的 Project 与
 // CreationRun。选项全部摊开并附一句说明，不藏在要猜的标签后面。
 type homeMode int
@@ -58,7 +58,9 @@ type homeState struct {
 	importing   bool
 	library     []libraryEntry
 	cursor      int
-	loaded      bool
+	// clicked 是上一次单击的作品：同一部在 doubleClick 内再点一次即打开。
+	clicked libraryClick
+	loaded  bool
 	// lastOpened 是上次打开的作品：作品库加载后预选它，回车即恢复落点。
 	lastOpened string
 	// confirmDelete 是待二次确认删除的作品 ID：再按 d 执行，按其他键取消。
@@ -73,8 +75,16 @@ type libraryEntry struct {
 	target  int
 	written int
 	state   domainmodel.CreationRunState // 空表示还没开始创作
+	writing bool                         // 此刻确有任务在写（可能在另一个进程）
 	updated time.Time
 }
+
+type libraryClick struct {
+	row int
+	at  time.Time
+}
+
+const doubleClick = 500 * time.Millisecond
 
 type libraryLoadedMsg struct {
 	entries []libraryEntry
@@ -114,11 +124,12 @@ func newHomeState(width int) homeState {
 	}
 }
 
-// newPremiseInput 是首页的故事输入：多行自动折行，回车留给「开始创作」。
+const premisePlaceholder = "一句话说想写什么。比如：一个失忆的邮差替亡者送信，每送出一封，就想起一段自己的过去"
+
+// newPremiseInput 是首页的故事输入：多行自动折行，回车留给「开始创作」。占位由 premiseView 画。
 func newPremiseInput(width int) textarea.Model {
 	input := textarea.New()
 	input.SetWidth(width)
-	input.Placeholder = "一句话说想写什么。比如：一个失忆的邮差替亡者送信，每送出一封，就想起一段自己的过去"
 	input.ShowLineNumbers, input.Prompt = false, ""
 	input.SetHeight(premiseRows)
 	input.KeyMap.InsertNewline.SetEnabled(false)
@@ -162,7 +173,7 @@ func (m model) loadLibraryCmd() tea.Cmd {
 		for _, record := range records {
 			entries = append(entries, libraryEntry{
 				id: record.ID, premise: record.Premise, target: record.Target, written: record.Written,
-				state: record.State, updated: record.UpdatedAt,
+				state: record.State, writing: record.Writing, updated: record.UpdatedAt,
 			})
 		}
 		return libraryLoadedMsg{entries: entries}

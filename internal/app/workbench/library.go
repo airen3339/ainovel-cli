@@ -12,15 +12,18 @@ import (
 )
 
 // LibraryEntry 的 Target 是全书章数：用户固定或 AI 收官承诺；0 表示尚未确定（D63）。
+// Writing 表示此刻确有任务在执行（租约未过期，可能在另一个进程）：运行标着进行中却没有
+// 人在写，是上次没停就退出了，打开作品才接着写。
 type LibraryEntry struct {
 	ID, Premise     string
 	Written, Target int
 	State           model.CreationRunState
+	Writing         bool
 	UpdatedAt       time.Time
 }
 
 func (s *Query) Library(ctx context.Context) ([]LibraryEntry, error) {
-	summaries, err := s.store.ListProjectSummaries(ctx)
+	summaries, err := s.store.ListProjectSummaries(ctx, time.Now())
 	if err != nil {
 		return nil, err
 	}
@@ -30,7 +33,7 @@ func (s *Query) Library(ctx context.Context) ([]LibraryEntry, error) {
 		if err := json.Unmarshal(summary.Intent, &intent); err != nil {
 			return nil, fmt.Errorf("read library intent %s: %w", summary.ID, err)
 		}
-		entry := LibraryEntry{ID: summary.ID, Premise: intent.Premise, Written: summary.Written}
+		entry := LibraryEntry{ID: summary.ID, Premise: intent.Premise, Written: summary.Written, Writing: summary.Writing}
 		if len(summary.Compass) > 0 {
 			var compass model.Compass
 			if err := json.Unmarshal(summary.Compass, &compass); err != nil {

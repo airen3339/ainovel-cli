@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain/model"
 )
@@ -36,7 +37,7 @@ func TestLibrarySummaryCountsLatestLiveChapters(t *testing.T) {
 	if _, err := commitTestProposal(ctx, s, testChange("revision", target, 1, revisions...)); err != nil {
 		t.Fatal(err)
 	}
-	summaries, err := s.ListProjectSummaries(ctx)
+	summaries, err := s.ListProjectSummaries(ctx, operationTime())
 	if err != nil || len(summaries) != 1 || summaries[0].Written != 499 || summaries[0].Planned != 2 ||
 		string(summaries[0].Intent) != string(intent) || string(summaries[0].Compass) != string(compass) {
 		t.Fatalf("summary = %+v, %v", summaries, err)
@@ -45,7 +46,39 @@ func TestLibrarySummaryCountsLatestLiveChapters(t *testing.T) {
 	if _, err := commitTestProposal(ctx, s, testChange("drop-compass", target, 2, model.Patch{Document: compassRef, Operation: model.PatchDelete})); err != nil {
 		t.Fatal(err)
 	}
-	if summaries, err = s.ListProjectSummaries(ctx); err != nil || summaries[0].Compass != nil {
+	if summaries, err = s.ListProjectSummaries(ctx, operationTime()); err != nil || summaries[0].Compass != nil {
 		t.Fatalf("summary after compass delete = %+v, %v", summaries, err)
+	}
+}
+
+// 运行标着进行中不等于有人在写：只有持着未过期租约的任务才算此刻在写。
+func TestLibrarySummaryReportsWritingOnlyWhileLeaseHolds(t *testing.T) {
+	s := openOperationStore(t)
+	ctx := context.Background()
+	now := operationTime()
+	target := model.AuthorityTarget{Kind: model.AuthorityProject, ID: "book-1"}
+	intent := model.Patch{Document: model.DocumentRef{Kind: model.DocumentIntent, ID: "root"}, Operation: model.PatchPut, Content: json.RawMessage(`{"premise":"雨夜来信"}`)}
+	if _, err := commitTestProposal(ctx, s, testChange("initial", target, 0, intent)); err != nil {
+		t.Fatal(err)
+	}
+	writing := func(at time.Time) bool {
+		t.Helper()
+		summaries, err := s.ListProjectSummaries(ctx, at)
+		if err != nil || len(summaries) != 1 {
+			t.Fatalf("summaries = %+v, %v", summaries, err)
+		}
+		return summaries[0].Writing
+	}
+	if _, err := s.CreateOperation(ctx, testOperation("op", 1, now)); err != nil {
+		t.Fatal(err)
+	}
+	if writing(now) {
+		t.Fatal("a queued task is not writing")
+	}
+	if _, err := s.ClaimNextOperation(ctx, "worker-1", time.Minute, now); err != nil {
+		t.Fatal(err)
+	}
+	if !writing(now) || writing(now.Add(2*time.Minute)) {
+		t.Fatal("writing must follow the lease")
 	}
 }

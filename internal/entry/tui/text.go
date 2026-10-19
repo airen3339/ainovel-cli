@@ -13,6 +13,18 @@ func fitLine(text string, width int) string {
 	return ansi.Truncate(text, max(0, width), "…")
 }
 
+// padLine 截断并用空格补满到 width 列。
+func padLine(text string, width int) string {
+	text = fitLine(text, width)
+	return text + strings.Repeat(" ", max(0, width-lipgloss.Width(text)))
+}
+
+// padLeft 截断并靠右放进 width 列。
+func padLeft(text string, width int) string {
+	text = fitLine(text, width)
+	return strings.Repeat(" ", max(0, width-lipgloss.Width(text))) + text
+}
+
 // fitBlock 把已带样式的界面块裁成恰好 height 行、每行恰好 width 列（ANSI 感知折行）。
 // 正文与中文长文的折行走 readingLines，这里不承担阅读排版。
 func fitBlock(text string, width, height int) []string {
@@ -29,6 +41,15 @@ func fitBlock(text string, width, height int) []string {
 
 func benchRule(width int) string {
 	return benchTheme.Border.Render(strings.Repeat("─", max(0, width)))
+}
+
+// feedbackRule 是底栏分隔线：有反馈时嵌在线里，不另占一行。
+func feedbackRule(feedback string, width int) string {
+	if strings.TrimSpace(ansi.Strip(feedback)) == "" {
+		return benchRule(width)
+	}
+	feedback = truncate(feedback, width-6)
+	return benchRule(2) + " " + feedback + " " + benchRule(max(0, width-lipgloss.Width(feedback)-4))
 }
 
 // sectionTitle 分区标题线：标题后用边框色横线补满。

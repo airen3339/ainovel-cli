@@ -4,19 +4,22 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain/model"
 )
 
 // ProjectSummary reads only the intent, the compass (nil when absent) and the live
 // planned and written chapter counts. Manuscript bodies never leave SQLite when
-// listing the library.
+// listing the library. Writing means some task of the book holds an unexpired lease
+// right now, possibly in another process.
 type ProjectSummary struct {
 	ID      string
 	Intent  json.RawMessage
 	Compass json.RawMessage
 	Planned int
 	Written int
+	Writing bool
 }
 
 // liveCount 统计作品当前 Revision 上仍存在的某类文档（最新版本为 put），filter 追加内容条件。
@@ -30,7 +33,7 @@ func liveCount(filter string) string {
       AND newer.revision>d.revision AND newer.revision<=a.current_revision))`
 }
 
-func (s *Store) ListProjectSummaries(ctx context.Context) ([]ProjectSummary, error) {
+func (s *Store) ListProjectSummaries(ctx context.Context, now time.Time) ([]ProjectSummary, error) {
 	rows, err := s.db.QueryContext(ctx, `
  SELECT a.target_id,
   (SELECT d.content FROM document_versions d
@@ -43,12 +46,14 @@ func (s *Store) ListProjectSummaries(ctx context.Context) ([]ProjectSummary, err
    ORDER BY d.revision DESC LIMIT 1),
   `+liveCount(`
     AND json_extract(CAST(d.content AS TEXT),'$.kind')=?`)+`,
-  `+liveCount("")+`
+  `+liveCount("")+`,
+  EXISTS (SELECT 1 FROM operations o
+   WHERE o.target_kind=a.target_kind AND o.target_id=a.target_id AND o.state=? AND o.lease_until_unix_ms>?)
  FROM authority_streams a
  WHERE a.target_kind=? AND a.target_scope='' AND a.current_revision>0
  ORDER BY a.target_id`,
 		model.DocumentIntent, model.SingletonDocumentID, model.DocumentCompass, model.SingletonDocumentID,
-		model.DocumentPlan, model.PlanChapter, model.DocumentManuscript, model.AuthorityProject)
+		model.DocumentPlan, model.PlanChapter, model.DocumentManuscript, model.OperationRunning, now.UnixMilli(), model.AuthorityProject)
 	if err != nil {
 		return nil, fmt.Errorf("list project summaries: %w", err)
 	}
@@ -57,7 +62,7 @@ func (s *Store) ListProjectSummaries(ctx context.Context) ([]ProjectSummary, err
 	for rows.Next() {
 		var summary ProjectSummary
 		var compass []byte
-		if err := rows.Scan(&summary.ID, &summary.Intent, &compass, &summary.Planned, &summary.Written); err != nil {
+		if err := rows.Scan(&summary.ID, &summary.Intent, &compass, &summary.Planned, &summary.Written, &summary.Writing); err != nil {
 			return nil, fmt.Errorf("scan project summary: %w", err)
 		}
 		summary.Compass = compass

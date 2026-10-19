@@ -6,20 +6,42 @@ import (
 	"strings"
 	"time"
 
+	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/voocel/ainovel-cli/internal/app/workbench"
 	domainmodel "github.com/voocel/ainovel-cli/internal/domain/model"
 )
 
-// 首页几何：页眉（品牌、模型）、左栏写新故事、右栏作品库、底栏（反馈与按键）。
-// 每一行的文字与热区在同一遍里生成，渲染与鼠标命中不会漂移。
+// 首页几何：外框与工作台相同（顶栏品牌与模型、底栏反馈与按键）；主体是居中的一栏，
+// 上面写新故事，下面是作品库。每一行的文字与热区在同一遍里生成，渲染与鼠标命中不会漂移。
 
 const (
-	premiseRows = 3 // 故事输入框的可见行数
-	entryRows   = 3 // 作品库每部作品占的行数：标题、进度与状态、留白
-	homeHeader  = 3 // 品牌行、分隔线、留白
-	homeFooter  = 3 // 分隔线、反馈、按键
+	premiseRows   = 3   // 故事输入框的可见行数
+	homeColumnMax = 104 // 内容栏最宽：再宽的终端也不把作品行拉成长条
+	homeGutter    = 2   // 内容栏两侧留白：焦点竖线落在左侧，选中作品的底色带铺过两侧
+	homeLabel     = 8   // 选项行的标签列
+	homeOptionGap = 4   // 同一行选项之间的间隔
+)
+
+// 作品行的定宽列（书名占余下的宽度）：进度条、章数、状态、时间。
+const (
+	libraryBar   = 10
+	libraryCount = 11
+	libraryState = 10
+	libraryWhen  = 14
+)
+
+// settingsSummary 是更多设定未填时的摘要；它是选项行里最长的一段，说明列排在它后面。
+var (
+	settingsSummary = func() string {
+		labels := make([]string, len(settingFields))
+		for i, field := range settingFields {
+			labels[i] = field.label
+		}
+		return strings.Join(labels, " · ")
+	}()
+	homeNoteX = homeLabel + lipgloss.Width(settingsSummary) + homeOptionGap
 )
 
 type homeHit struct {
@@ -41,33 +63,36 @@ type homeFrame struct {
 	list     homeRect // 作品库列表区：滚轮在这里翻动
 }
 
-// homeLayout 是两栏的水平几何：内容区居中，左栏宽度随终端在 56–68 列之间。
-type homeLayout struct{ x, inner, left, gap, right int }
+// homeLayout 是内容栏的水平几何：x 是内容左缘，两侧各留 homeGutter 列。
+type homeLayout struct{ x, width int }
 
 func layoutHome(width int) homeLayout {
-	inner := min(160, max(1, width-6))
-	l := homeLayout{x: (max(1, width) - inner) / 2, inner: inner, gap: 4}
-	if inner >= 140 {
-		l.gap = 6
-	}
-	l.left = min(68, max(56, inner*2/5))
-	l.right = max(1, inner-l.left-l.gap)
-	return l
+	inner := min(homeColumnMax, max(1, width-2*homeGutter-4))
+	return homeLayout{x: (max(1, width) - inner) / 2, width: inner}
 }
 
 // premiseWidth 是故事输入框的文字宽度：输入面左右各留两格。
-func premiseWidth(width int) int { return max(1, layoutHome(width).left-4) }
+func premiseWidth(width int) int { return max(1, layoutHome(width).width-4) }
 
-// homeColumn 是一栏的行缓冲：热区按栏内坐标记录，拼页时再平移。
+// homeColumn 是内容栏的行缓冲：每行连同两侧留白，热区按内容左缘记录，拼页时再平移。
 type homeColumn struct {
 	width int
 	lines []string
 	hits  []homeHit
 }
 
-func (c *homeColumn) add(text string) { c.lines = append(c.lines, fitLine(text, c.width)) }
+func (c *homeColumn) add(text string) { c.mark(false, text) }
 
-// hit 登记下一行（即将 add 的那一行）上的热区。
+// mark 加一行；focused 时左侧留白画强调色竖线，标出焦点所在的控件。
+func (c *homeColumn) mark(focused bool, text string) {
+	gutter := strings.Repeat(" ", homeGutter)
+	if focused {
+		gutter = benchTheme.Accent.Render("▎") + " "
+	}
+	c.lines = append(c.lines, gutter+padLine(text, c.width)+strings.Repeat(" ", homeGutter))
+}
+
+// hit 登记下一行（即将加入的那一行）上的热区。
 func (c *homeColumn) hit(x, width, focus, row, option int) {
 	c.hits = append(c.hits, homeHit{x: x, y: len(c.lines), width: width, focus: focus, row: row, option: option})
 }
@@ -75,44 +100,36 @@ func (c *homeColumn) hit(x, width, focus, row, option int) {
 func (m model) homeFrame() homeFrame {
 	w, h := max(1, m.width), max(1, m.height)
 	l := layoutHome(w)
-	rows := max(1, h-homeHeader-homeFooter)
+	body := max(1, h-pageHeader-pageFooter)
 	var frame homeFrame
 
 	config := homeControl("模型设置", m.home.focus == focusConfig)
-	binding := benchTheme.Muted.Render(truncate(m.bindingLabel(), l.inner/2))
-	lines := []string{
-		alignRight(benchTheme.Accent.Bold(true).Render("AINOVEL"), binding+"   "+config, l.inner),
-		benchRule(l.inner), "",
-	}
+	binding := benchTheme.Muted.Render(truncate(m.bindingLabel(), w/2))
+	lines := pageTop("", binding+"   "+config, w)
 	configWidth := lipgloss.Width(config)
-	frame.hits = append(frame.hits, homeHit{x: l.x + l.inner - configWidth, y: 0, width: configWidth, focus: focusConfig, row: -1, option: -1})
+	frame.hits = append(frame.hits, homeHit{x: w - 1 - configWidth, y: 0, width: configWidth, focus: focusConfig, row: -1, option: -1})
 
-	composer := m.composerColumn(l.left)
-	library, listTop, capacity := m.libraryColumn(l.right, rows)
-	// 内容不满一屏时整体落在上三分之一处，不把空白全堆在底部；作品铺满时贴顶。
-	top := homeHeader + max(0, rows-max(len(composer.lines), len(library.lines)))/3
+	c := homeColumn{width: l.width}
+	m.composerSection(&c)
+	c.add("")
+	c.add("")
+	listTop, capacity := m.librarySection(&c, body-2)
+	// 内容不满一屏时整体落在上三分之一处；作品铺满时上下各留一行。
+	top := pageHeader + max(1, (body-len(c.lines))/3)
 	frame.capacity = capacity
-	frame.list = homeRect{x: l.x + l.left + l.gap, y: top + listTop, width: l.right, height: min(capacity*entryRows, homeHeader+rows-top-listTop)}
-	for y := homeHeader; y < homeHeader+rows; y++ {
-		left, right := lineAt(composer.lines, y-top), lineAt(library.lines, y-top)
-		lines = append(lines, left+strings.Repeat(" ", max(0, l.left-lipgloss.Width(left))+l.gap)+right)
+	frame.list = homeRect{x: l.x - homeGutter, y: top + listTop, width: l.width + 2*homeGutter, height: capacity}
+
+	pad := strings.Repeat(" ", l.x-homeGutter)
+	for y := pageHeader; y < pageHeader+body; y++ {
+		lines = append(lines, pad+lineAt(c.lines, y-top))
 	}
-	for _, hit := range composer.hits {
+	for _, hit := range c.hits {
 		hit.x, hit.y = hit.x+l.x, hit.y+top
-		frame.hits = append(frame.hits, hit)
-	}
-	for _, hit := range library.hits {
-		hit.x, hit.y = hit.x+l.x+l.left+l.gap, hit.y+top
-		if hit.y < homeHeader+rows { // 末一部作品的留白行可能落在屏外
+		if hit.y < pageHeader+body {
 			frame.hits = append(frame.hits, hit)
 		}
 	}
-
-	lines = append(lines, benchRule(l.inner), m.homeStatus(capacity), m.keyHint(benchTheme.Muted.Render(m.homeHint())))
-	pad := strings.Repeat(" ", l.x)
-	for i, line := range lines {
-		lines[i] = pad + fitLine(line, l.inner)
-	}
+	lines = append(lines, m.pageBottom(m.homeFeedback(), m.homeHint(), m.libraryPosition(capacity), w)...)
 	frame.text = strings.Join(fitBlock(strings.Join(lines, "\n"), w, h), "\n")
 	return frame
 }
@@ -124,20 +141,19 @@ func lineAt(lines []string, i int) string {
 	return lines[i]
 }
 
-// composerColumn 左栏：故事输入、篇幅、推进方式、更多设定与开始按钮。每个选项都摊开，
-// 下方一句话说明所选项意味着什么。
-func (m model) composerColumn(width int) homeColumn {
+// composerSection 新故事：故事输入，篇幅、推进与更多设定三行选项，开始按钮。选项全部摊开，
+// 每行右侧的说明列写清所选项意味着什么。
+func (m model) composerSection(c *homeColumn) {
 	home := m.home
-	c := homeColumn{width: width}
-	c.add(benchTheme.Title.Render("开始一个新故事"))
+	c.add(sectionHead(benchTheme.Title.Render("新故事"), "", c.width))
 	c.add("")
 
 	// 输入框是一块铺底色的面，上下各留一行、左右各留两格。
 	surface := lipgloss.NewStyle().Background(benchColors.InputBackground)
-	block := append([]string{""}, strings.Split(strings.TrimSuffix(home.premise.View(), "\n"), "\n")...)
+	block := append([]string{""}, premiseView(home.premise, surface)...)
 	for _, line := range append(block, "") {
-		c.hit(0, width, focusPremise, -1, -1)
-		c.add(surface.Render("  ") + line + surface.Render(strings.Repeat(" ", max(0, width-2-lipgloss.Width(line)))))
+		c.hit(0, c.width, focusPremise, -1, -1)
+		c.mark(home.focus == focusPremise, surface.Render("  ")+line+surface.Render(strings.Repeat(" ", max(0, c.width-2-lipgloss.Width(line)))))
 	}
 	c.add("")
 
@@ -149,14 +165,12 @@ func (m model) composerColumn(width int) homeColumn {
 		fixed, note, selected = "固定 __ 章", "直接输入章数：全书写满这么多章收官", 1
 	}
 	c.options(home.focus == focusLength, "篇幅", focusLength, []string{"AI 决定", fixed}, selected, note)
-	c.add("")
 
 	labels := make([]string, len(approvalOrder))
 	for i, policy := range approvalOrder {
 		labels[i] = workbench.ApprovalLabel(policy)
 	}
 	c.options(home.focus == focusApproval, "推进", focusApproval, labels, slices.Index(approvalOrder, home.approval), approvalNote(home.approval))
-	c.add("")
 
 	var filled []string
 	for i, input := range home.settings {
@@ -164,14 +178,12 @@ func (m model) composerColumn(width int) homeColumn {
 			filled = append(filled, settingFields[i].label)
 		}
 	}
-	summary := benchTheme.Muted.Render("受众 · 期待体验 · 必须出现 · 禁止出现 · 结局方向")
+	summary := benchTheme.Muted.Render(settingsSummary)
 	if len(filled) > 0 {
 		summary = benchTheme.Text.Render("已填 " + strings.Join(filled, "、"))
 	}
-	c.hit(0, width, focusSettings, -1, -1)
-	c.add(rowLabel(home.focus == focusSettings, "设定") + summary)
-	c.add(strings.Repeat(" ", 8) + benchTheme.Muted.Render("可选 · 你的原话会作为创作意图保留，AI 不会改写"))
-	c.add("")
+	c.hit(0, c.width, focusSettings, -1, -1)
+	c.mark(home.focus == focusSettings, noted(homeRowLabel(home.focus == focusSettings, "设定")+summary, "可选 · 你的原话原样保留，AI 不会改写"))
 	c.add("")
 
 	start := benchTheme.Accent.Bold(true).Render("开始创作 ↵")
@@ -179,26 +191,39 @@ func (m model) composerColumn(width int) homeColumn {
 		start = benchTheme.Selected.Render(" 开始创作 ↵ ")
 	}
 	size := lipgloss.Width(start)
-	c.hit(width-size, size, focusStart, -1, -1)
-	c.add(strings.Repeat(" ", max(0, width-size)) + start)
-	return c
+	c.hit(c.width-size, size, focusStart, -1, -1)
+	c.add(padLeft(start, c.width))
 }
 
-// rowLabel 是选项行的行首：焦点所在行用强调色竖线与标签，其余行灰色。
-func rowLabel(focused bool, label string) string {
-	if focused {
-		return benchTheme.Accent.Render("▎ ") + benchTheme.Accent.Bold(true).Render(label) + "  "
+// sectionHead 是分区标题行：标题后一道细线伸到靠右的控件前。
+func sectionHead(title, controls string, width int) string {
+	if controls != "" {
+		controls = "  " + controls
 	}
-	return "  " + benchTheme.Muted.Render(label) + "  "
+	return title + " " + benchRule(width-lipgloss.Width(title)-1-lipgloss.Width(controls)) + controls
 }
 
-// options 渲染一行单选（● 选中、○ 未选）与所选项的一句说明；每个选项可直接点选。
+// homeRowLabel 是选项行的标签列：焦点所在行用强调色。
+func homeRowLabel(focused bool, label string) string {
+	style := benchTheme.Muted
+	if focused {
+		style = benchTheme.Accent.Bold(true)
+	}
+	return padLine(style.Render(label), homeLabel)
+}
+
+// noted 把说明放进说明列，三行选项的说明上下对齐。
+func noted(text, note string) string {
+	return padLine(text, homeNoteX) + benchTheme.Muted.Render(note)
+}
+
+// options 渲染一行单选（● 选中、○ 未选）与所选项的说明；每个选项可直接点选。
 func (c *homeColumn) options(focused bool, label string, focus int, options []string, selected int, note string) {
-	line := rowLabel(focused, label)
-	c.hit(0, lipgloss.Width(line), focus, -1, -1)
+	line := homeRowLabel(focused, label)
+	c.hit(0, homeLabel, focus, -1, -1)
 	for i, option := range options {
 		if i > 0 {
-			line += "    "
+			line += strings.Repeat(" ", homeOptionGap)
 		}
 		text := benchTheme.Muted.Render("○ " + option)
 		if i == selected {
@@ -207,8 +232,25 @@ func (c *homeColumn) options(focused bool, label string, focus int, options []st
 		c.hit(lipgloss.Width(line), lipgloss.Width(text), focus, -1, i)
 		line += text
 	}
-	c.add(line)
-	c.add(strings.Repeat(" ", 8) + benchTheme.Muted.Render(note))
+	c.mark(focused, noted(line, note))
+}
+
+// premiseView 是故事输入的各行。bubbles textarea 的占位只有首行用占位色，续行与空行不铺底，
+// 折行也不避开行首标点：占位按阅读折行排，首行交给 textarea（光标停在首字上闪烁），其余行自己画。
+func premiseView(input textarea.Model, surface lipgloss.Style) []string {
+	var placeholder []string
+	if input.Value() == "" {
+		placeholder = readingLines(premisePlaceholder, input.Width())
+		input.Placeholder = placeholder[0]
+	}
+	rows := strings.Split(strings.TrimSuffix(input.View(), "\n"), "\n")
+	if placeholder != nil {
+		faint := surface.Foreground(benchColors.Faint)
+		for i := 1; i < len(rows); i++ {
+			rows[i] = faint.Render(padLine(lineAt(placeholder, i), input.Width()))
+		}
+	}
+	return rows
 }
 
 // approvalNote 说清每种推进方式会在哪里停下来等你（§5.4）。
@@ -232,20 +274,20 @@ func (h *homeState) choose(focus, option int) {
 	}
 }
 
-// libraryColumn 右栏：标题行（搜索与导入）、作品列表或空状态。返回列表起始行与一屏容量。
-func (m model) libraryColumn(width, rows int) (homeColumn, int, int) {
+// librarySection 作品库：标题行（搜索与导入）、作品表或空状态。rows 是内容栏可用的总行数；
+// 返回列表起始行与一屏容量。
+func (m model) librarySection(c *homeColumn, rows int) (int, int) {
 	home := m.home
-	c := homeColumn{width: width}
 	title := benchTheme.Title.Render("作品库")
 	if count := len(home.library); count > 0 {
 		title += benchTheme.Muted.Render(fmt.Sprintf("  %d 部", count))
 	}
 	if home.searching {
 		field := home.search
-		field.SetWidth(min(28, width/2))
+		field.SetWidth(min(28, c.width/2))
 		field.Prompt = "/ "
 		field.SetCursor(field.Position())
-		c.add(alignRight(title, field.View(), width))
+		c.add(sectionHead(title, field.View(), c.width))
 	} else {
 		search := "/ 搜索"
 		if query := home.search.Value(); query != "" {
@@ -253,13 +295,13 @@ func (m model) libraryColumn(width, rows int) (homeColumn, int, int) {
 		}
 		search, importing := homeControl(search, home.focus == focusSearch), homeControl("导入作品", home.focus == focusImport)
 		controls := search + "   " + importing
-		c.hit(width-lipgloss.Width(controls), lipgloss.Width(search), focusSearch, -1, -1)
-		c.hit(width-lipgloss.Width(importing), lipgloss.Width(importing), focusImport, -1, -1)
-		c.add(alignRight(title, controls, width))
+		c.hit(c.width-lipgloss.Width(controls), lipgloss.Width(search), focusSearch, -1, -1)
+		c.hit(c.width-lipgloss.Width(importing), lipgloss.Width(importing), focusImport, -1, -1)
+		c.add(sectionHead(title, controls, c.width))
 	}
 	c.add("")
 	top := len(c.lines)
-	capacity := max(1, (rows-top+1)/entryRows)
+	capacity := max(1, rows-top)
 
 	indices := m.libraryIndices()
 	switch {
@@ -270,40 +312,66 @@ func (m model) libraryColumn(width, rows int) (homeColumn, int, int) {
 		c.add("")
 		c.add(benchTheme.Muted.Render("Esc 清除搜索，显示全部作品"))
 	case len(indices) == 0:
-		c.add(benchTheme.Text.Render("还没有作品。"))
-		c.add("")
-		c.add(benchTheme.Muted.Render("在左边写下一个故事想法，回车就开始："))
+		c.add(benchTheme.Text.Render("还没有作品。") + benchTheme.Muted.Render("在上面写下一个故事想法，回车就开始："))
 		c.add("")
 		for i, step := range []string{
 			"AI 先规划蓝图：卷、故事弧、章节与终局",
 			"逐章写作；写完一段自动审阅，按意见重写",
 			"途中随时提要求、改方向，关键处等你确认",
 		} {
-			c.add(benchTheme.Accent.Render(fmt.Sprintf("  %d  ", i+1)) + benchTheme.Text.Render(step))
-			c.add("")
+			c.add(benchTheme.Accent.Render(fmt.Sprintf("%d  ", i+1)) + benchTheme.Text.Render(step))
 		}
 	default:
 		start, end := libraryWindow(indices, home.cursor, capacity)
 		now := time.Now()
 		for _, index := range indices[start:end] {
-			entry := home.library[index]
 			selected := home.focus == focusLibrary && index == home.cursor
-			marker, titleStyle := "  ", benchTheme.Text
-			if selected {
-				marker, titleStyle = benchTheme.Accent.Render("▎ "), benchTheme.Title
-			}
-			status := entryProgress(entry) + "   " + entryState(entry.state)
-			for _, line := range [entryRows]string{
-				marker + titleStyle.Render(truncate(entry.title(), width-2)),
-				marker + alignRight(status, benchTheme.Muted.Render(relativeTime(entry.updated, now)), width-2),
-				"",
-			} {
-				c.hit(0, width, focusLibrary, index, -1)
-				c.add(line)
-			}
+			c.hit(-homeGutter, c.width+2*homeGutter, focusLibrary, index, -1)
+			c.lines = append(c.lines, libraryRow(home.library[index], c.width, selected, now))
 		}
 	}
-	return c, top, capacity
+	return top, capacity
+}
+
+// libraryRow 是一部作品的一行（连同两侧留白）：书名、进度条（全书章数已知时）、章数、状态与
+// 相对时间，各列上下对齐。选中的作品整行铺选中底色。
+func libraryRow(entry libraryEntry, width int, selected bool, now time.Time) string {
+	done, rest, count := "", strings.Repeat(" ", libraryBar), ""
+	switch {
+	case entry.target > 0:
+		filled := min(libraryBar, max(0, entry.written)*libraryBar/entry.target)
+		done, rest = strings.Repeat("▰", filled), strings.Repeat("▱", libraryBar-filled)
+		count = fmt.Sprintf("%d/%d 章", entry.written, entry.target)
+	case entry.written > 0:
+		count = fmt.Sprintf("%d 章", entry.written)
+	}
+	state, tone := entryState(entry)
+	title := width - (3 + libraryBar + 1 + libraryCount + 4 + libraryState + 3 + libraryWhen)
+	cells := []struct {
+		text  string
+		style lipgloss.Style
+	}{
+		{strings.Repeat(" ", homeGutter), benchTheme.Text},
+		{padLine(entry.title(), title) + "   ", benchTheme.Text},
+		{done, benchTheme.Focus},
+		{rest, benchTheme.Muted},
+		{" " + padLeft(count, libraryCount), benchTheme.Muted},
+		{"    " + padLine(state, libraryState), tone},
+		{"   " + padLine(relativeTime(entry.updated, now), libraryWhen), benchTheme.Muted},
+		{strings.Repeat(" ", homeGutter), benchTheme.Text},
+	}
+	var row strings.Builder
+	if selected {
+		cells[0].text = "▎ "
+		for _, cell := range cells {
+			row.WriteString(cell.text)
+		}
+		return benchTheme.Selected.Render(row.String())
+	}
+	for _, cell := range cells {
+		row.WriteString(cell.style.Render(cell.text))
+	}
+	return row.String()
 }
 
 // libraryWindow 是作品列表的可见区间：装不下时让选中作品留在窗口中部。
@@ -320,31 +388,27 @@ func (e libraryEntry) title() string {
 	return oneLine(e.premise)
 }
 
-// entryProgress 全书章数已知时画进度条；篇幅交给 AI 且尚未收官时只有已写章数（D63）。
-func entryProgress(entry libraryEntry) string {
-	if entry.target == 0 {
-		return benchTheme.Muted.Render(fmt.Sprintf("已写 %d 章 · 篇幅由 AI 定", entry.written))
-	}
-	return progressBar(entry.written, entry.target, 10) + benchTheme.Muted.Render(fmt.Sprintf("  %d / %d 章", entry.written, entry.target))
-}
-
-// entryState 把最近一轮创作的状态画成带符号的彩色短语，与工作台的符号同一套。
-func entryState(state domainmodel.CreationRunState) string {
-	switch state {
+// entryState 是作品最近一轮创作的状态：带符号的短语与它的颜色，符号与工作台同一套。
+// 运行标着进行中却没有任务在写，是上次没停就退出了：打开作品即接着写。
+func entryState(entry libraryEntry) (string, lipgloss.Style) {
+	switch entry.state {
 	case "":
-		return benchTheme.Muted.Render("○ 未开始")
+		return "○ 未开始", benchTheme.Muted
 	case domainmodel.RunWaitingUser:
-		return benchTheme.Warning.Render("◇ " + runStateLabel(state))
+		return "◇ " + runStateLabel(entry.state), benchTheme.Warning
 	case domainmodel.RunRunning:
-		return benchTheme.Accent.Render("◉ " + runStateLabel(state))
+		if entry.writing {
+			return "◉ " + runStateLabel(entry.state), benchTheme.Focus
+		}
+		return "◌ 待续写", benchTheme.Accent
 	case domainmodel.RunCompleted:
-		return benchTheme.Success.Render("✓ " + runStateLabel(state))
+		return "✓ " + runStateLabel(entry.state), benchTheme.Success
 	case domainmodel.RunFailed:
-		return benchTheme.Error.Render("! " + runStateLabel(state))
+		return "! " + runStateLabel(entry.state), benchTheme.Error
 	case domainmodel.RunPaused:
-		return benchTheme.Muted.Render("‖ " + runStateLabel(state))
+		return "‖ " + runStateLabel(entry.state), benchTheme.Muted
 	default:
-		return benchTheme.Muted.Render("· " + runStateLabel(state))
+		return "· " + runStateLabel(entry.state), benchTheme.Muted
 	}
 }
 
@@ -372,14 +436,19 @@ func relativeTime(at, now time.Time) string {
 	}
 }
 
-// homeStatus 底栏反馈行：错误 > 提示 > 作品库位置。
-func (m model) homeStatus(capacity int) string {
+// homeFeedback 是嵌在底栏分隔线里的反馈：错误优先于提示。
+func (m model) homeFeedback() string {
 	switch {
 	case m.home.err != "":
-		return benchTheme.Error.Render(m.home.err)
+		return problemFeedback(m.home.err)
 	case m.home.notice != "":
 		return benchTheme.Accent.Render(m.home.notice)
 	}
+	return ""
+}
+
+// libraryPosition 作品库装不下时在底栏右侧标出可见区间。
+func (m model) libraryPosition(capacity int) string {
 	indices := m.libraryIndices()
 	if len(indices) <= capacity {
 		return ""
@@ -399,7 +468,7 @@ func (m model) homeHint() string {
 		focusApproval: "←→ 切换 · Enter 开始创作 · Tab 下一项",
 		focusSettings: "Enter 填写更多设定 · Tab 下一项",
 		focusStart:    "Enter 开始创作 · Tab 下一项",
-		focusLibrary:  "↑↓ 选择 · Enter 打开 · / 搜索 · d 删除",
+		focusLibrary:  "↑↓ 选择 · Enter 或双击打开 · / 搜索 · d 删除",
 		focusSearch:   "Enter 搜索作品 · Tab 下一项",
 		focusImport:   "Enter 导入作品文件 · Tab 下一项",
 		focusConfig:   "Enter 设置模型连接 · Tab 下一项",
@@ -480,7 +549,7 @@ func (m model) moveLibrary(key string) model {
 	return m
 }
 
-// handleHomeMouse 滚轮翻作品库；点击：故事框聚焦、选项直接选中、作品直接打开，
+// handleHomeMouse 滚轮翻作品库；点击：故事框聚焦、选项直接选中、作品单击选中双击打开，
 // 其余控件与回车同一入口。
 func (m model) handleHomeMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if m.home.mode != homeMain || m.home.searching {
@@ -502,6 +571,8 @@ func (m model) handleHomeMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if !leftClick(msg) {
 		return m, nil
 	}
+	last := m.home.clicked
+	m.home.clicked = libraryClick{}
 	for _, hit := range frame.hits {
 		if mouse.Y != hit.y || mouse.X < hit.x || mouse.X >= hit.x+hit.width {
 			continue
@@ -513,7 +584,11 @@ func (m model) handleHomeMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 			m.home.choose(hit.focus, hit.option)
 		case hit.row >= 0:
 			m.home.cursor = hit.row
-			return m.activate(focusLibrary)
+			now := time.Now()
+			if last.row == hit.row && now.Sub(last.at) <= doubleClick {
+				return m.activate(focusLibrary)
+			}
+			m.home.clicked = libraryClick{row: hit.row, at: now}
 		case hit.focus != focusPremise && hit.focus != focusLength && hit.focus != focusApproval:
 			return m.activate(hit.focus)
 		}
