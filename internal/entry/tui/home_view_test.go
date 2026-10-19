@@ -31,16 +31,16 @@ func homeFixture(t *testing.T, width, height, count int) model {
 
 func clickHome(t *testing.T, m model, focus int) (model, tea.Cmd) {
 	t.Helper()
-	return clickHit(t, m, func(hit homeHit) bool { return hit.focus == focus })
+	return clickHit(t, m, func(hit pageHit) bool { return hit.focus == focus })
 }
 
 func clickOption(t *testing.T, m model, focus, option int) model {
 	t.Helper()
-	m, _ = clickHit(t, m, func(hit homeHit) bool { return hit.focus == focus && hit.option == option })
+	m, _ = clickHit(t, m, func(hit pageHit) bool { return hit.focus == focus && hit.option == option })
 	return m
 }
 
-func clickHit(t *testing.T, m model, match func(homeHit) bool) (model, tea.Cmd) {
+func clickHit(t *testing.T, m model, match func(pageHit) bool) (model, tea.Cmd) {
 	t.Helper()
 	for _, hit := range m.homeFrame().hits {
 		if match(hit) {
@@ -221,8 +221,8 @@ func TestHomeSearchAndMouseSelectCorrectBook(t *testing.T) {
 // 双击只认同一部作品、且在时限内：慢两下、点两部不同的作品都只是选中。
 func TestHomeDoubleClickNeedsSameBookInTime(t *testing.T) {
 	m := homeFixture(t, 150, 40, 3)
-	row := func(index int) func(homeHit) bool {
-		return func(hit homeHit) bool { return hit.row == index }
+	row := func(index int) func(pageHit) bool {
+		return func(hit pageHit) bool { return hit.row == index }
 	}
 	m, _ = clickHit(t, m, row(0))
 	m, _ = clickHit(t, m, row(1))
@@ -289,22 +289,6 @@ func TestHomePagingWheelAndLateLoadKeepUserIntent(t *testing.T) {
 	m = next.(model)
 	if m.home.focus != focusPremise || m.home.premise.Value() != "正在输入新故事" {
 		t.Fatal("late load stole story input")
-	}
-}
-
-func TestEntryFormsKeepActiveInputAndFeedbackVisible(t *testing.T) {
-	for _, size := range [][2]int{{150, 40}, {180, 50}} {
-		m := homeFixture(t, size[0], size[1], 0)
-		m.page = pageWizard
-		m.wizard = newWizardState(m.api.Models.Config(), "连接失败", true)
-		m.wizard.inputs[2].SetValue("secret-key-should-not-appear")
-		for step := range wizardFields {
-			m.wizard.step = step
-			view := m.screen()
-			if lipgloss.Width(view) > size[0] || lipgloss.Height(view) != size[1] || strings.Contains(view, "secret-key-should-not-appear") || !strings.Contains(view, "连接失败") {
-				t.Fatalf("invalid form at %v step %d", size, step)
-			}
-		}
 	}
 }
 

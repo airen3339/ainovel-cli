@@ -1,187 +1,407 @@
 package tui
 
 import (
+	"fmt"
+	"net/url"
+	"os"
+	"slices"
 	"strings"
 
 	"charm.land/lipgloss/v2"
 	appconfig "github.com/voocel/ainovel-cli/internal/infra/config"
 )
 
-type wizardHit struct{ x, y, width, action int }
-type wizardScreen struct {
-	lines []string
-	hits  []wizardHit
+// 模型设置几何：外框与首页相同，内容是居中的一栏，紧贴顶栏下方从上往下排（表单不随内容
+// 多少上下浮动）。每一行的文字与热区在同一遍里生成。
+
+const (
+	wizardWidth = 76 // 内容栏最宽
+	wizardLabel = 10 // 表单与思考强度的标签列
+)
+
+type wizardFrame struct {
+	text     string
+	hits     []pageHit
+	list     homeRect // 列表区：滚轮在这里移动选中行
+	capacity int      // 列表一屏能放下的行数
 }
 
-// Drawing and hit testing share geometry.
-func (m model) wizardLayout() wizardScreen {
-	w := max(1, m.width-4)
-	fieldWidth := min(68, w)
-	screen := wizardScreen{}
-	add := func(line string) { screen.lines = append(screen.lines, "  "+fitLine(line, w)) }
-	control := func(line string, action int, selected bool) {
-		style := benchTheme.Text
-		prefix := "  "
-		if selected {
+// wizardSection 是一页内容之外的信息：底栏按键与右侧说明、列表在栏内的起始行与行数。
+type wizardSection struct {
+	hint, aside      string
+	listTop, listLen int
+	capacity         int
+}
+
+func (m model) viewWizard() string { return m.wizardFrame().text }
+
+func (m model) wizardFrame() wizardFrame {
+	w, h := max(1, m.width), max(1, m.height)
+	width := min(wizardWidth, max(1, w-2*pageGutter-4))
+	x := (w - width) / 2
+	body := max(1, h-pageHeader-pageFooter)
+	c := pageColumn{width: width}
+	var section wizardSection
+	switch m.wizard.step {
+	case wizardOverview:
+		section = m.overviewView(&c, body-1)
+	case wizardProviders:
+		section = m.providersView(&c)
+	case wizardConnection:
+		section = m.connectionView(&c)
+	default:
+		section = m.modelsView(&c, body-1)
+	}
+	top := pageHeader + 1
+	frame := wizardFrame{capacity: section.capacity}
+	frame.list = homeRect{x: x - pageGutter, y: top + section.listTop, width: width + 2*pageGutter, height: section.listLen}
+	lines := pageTop("模型设置", "", w)
+	pad := strings.Repeat(" ", x-pageGutter)
+	for y := pageHeader; y < pageHeader+body; y++ {
+		lines = append(lines, pad+lineAt(c.lines, y-top))
+	}
+	for _, hit := range c.hits {
+		hit.x, hit.y = hit.x+x, hit.y+top
+		if hit.y < pageHeader+body {
+			frame.hits = append(frame.hits, hit)
+		}
+	}
+	feedback := problemFeedback(m.wizard.err)
+	if feedback == "" && m.wizard.notice != "" {
+		feedback = benchTheme.Accent.Render(m.wizard.notice)
+	}
+	lines = append(lines, m.pageBottom(feedback, section.hint+" · Ctrl+C 退出", section.aside, w)...)
+	frame.text = strings.Join(fitBlock(strings.Join(lines, "\n"), w, h), "\n")
+	return frame
+}
+
+// --- 总览 ---
+
+func (m model) overviewView(c *pageColumn, rows int) wizardSection {
+	w := m.wizard
+	current := m.api.Models.Current("")
+	window := ""
+	if current.ContextWindow > 0 {
+		window = "上下文 " + formatWindow(current.ContextWindow)
+	}
+	c.add(sectionHead(benchTheme.Title.Render("当前"), "", c.width))
+	c.add("")
+	c.add(alignRight(benchTheme.Title.Render(current.Connection+" / "+current.Model), benchTheme.Muted.Render(window), c.width))
+
+	levels, at := m.thinkingLevels()
+	line := rowLabel(w.cursor == 0, "思考强度", wizardLabel)
+	for i, level := range levels {
+		text := " " + thinkingLabel(level) + " "
+		style := benchTheme.Muted
+		if i == at {
 			style = benchTheme.Selected
-			prefix = "› "
 		}
-		screen.hits = append(screen.hits, wizardHit{2, len(screen.lines), fieldWidth, action})
-		add(style.Width(fieldWidth).Render(fitLine(prefix+line, fieldWidth)))
+		c.hit(lipgloss.Width(line), lipgloss.Width(text), itemThinking, 0, i)
+		line += style.Render(text) + " "
 	}
-	add(benchTheme.Accent.Bold(true).Render("AINOVEL") + benchTheme.Muted.Render("  /  模型连接"))
-	add(benchRule(w))
-	add("")
-	if m.wizard.choosing {
-		add(benchTheme.Title.Render("选择你的模型服务商"))
-		add(benchTheme.Muted.Render("使用已有账号连接，随时可以更换。"))
-		add("")
-		choices := m.wizardChoices()
-		visible := min(len(choices), max(1, m.height-10))
-		start := max(0, min(m.wizard.provider-visible/2, len(choices)-visible))
-		for i := start; i < start+visible; i++ {
-			control(choices[i].label, i, i == m.wizard.provider)
+	if at < 0 {
+		line += benchTheme.Muted.Render(" 已设 " + thinkingLabel(m.api.Models.Config().Thinking) + "，这个模型不支持，按 auto 发")
+	}
+	c.mark(w.cursor == 0, line)
+	if roles := m.overriddenRoles(); roles != "" {
+		c.add(benchTheme.Muted.Render(roles + " 单独指定了模型 · 在工作台输入 /model 调整"))
+	}
+	c.add("")
+	c.add("")
+	c.add(sectionHead(benchTheme.Title.Render("连接与模型"), "", c.width))
+	c.add("")
+
+	// 连接之间空一行；列表装不下时按行数开窗，空行与末尾的配置位置也占行。
+	items := m.overviewItems()
+	listTop := len(c.lines)
+	capacity := max(1, rows-listTop-len(m.api.Models.Connections())-2)
+	start, end := listWindow(len(items)-1, max(0, w.cursor-1), capacity)
+	for i := start + 1; i <= end; i++ {
+		if i > start+1 && items[i].kind != itemModel && items[i].kind != itemAddModel {
+			c.add("")
 		}
+		c.item(m.overviewRow(items[i], c.width, i == w.cursor), items[i].kind, i)
+	}
+	listLen := len(c.lines) - listTop
+	c.add("")
+	c.add(benchTheme.Muted.Render("配置保存在 " + homePath(appconfig.ConfigPath(m.deps.ConfigDir))))
+	hint := map[int]string{
+		itemThinking:      "←→ 思考强度 · ↑↓ 选择",
+		itemConnection:    "Enter 编辑密钥与地址 · ↑↓ 选择",
+		itemModel:         "Enter 换用 · ↑↓ 选择",
+		itemAddModel:      "Enter 从服务商列出模型 · ↑↓ 选择",
+		itemAddConnection: "Enter 添加连接 · ↑↓ 选择",
+	}[items[w.cursor].kind]
+	if w.fromHome {
+		hint += " · Esc 返回"
+	}
+	return wizardSection{hint: hint, listTop: listTop, listLen: listLen, capacity: capacity}
+}
+
+func (m model) overviewRow(item overviewItem, width int, selected bool) string {
+	config := m.api.Models.Config()
+	switch item.kind {
+	case itemConnection:
+		left := []styled{{item.connection, benchTheme.Title}, {"   " + connectionLabel(item.connection, config.Providers[item.connection]), benchTheme.Muted}}
+		return listRow(left, []styled{{"编辑 ›", benchTheme.Muted}}, width, selected)
+	case itemModel:
+		mark, tone := "  ○ ", benchTheme.Muted
+		if item.connection == config.Provider && item.model == config.Model {
+			mark, tone = "  ● ", benchTheme.Accent
+		}
+		var right []styled
+		if window := m.api.Models.ContextWindow(item.connection, item.model); window > 0 {
+			right = []styled{{formatWindow(window), benchTheme.Muted}}
+		}
+		return listRow([]styled{{mark, tone}, {item.model, benchTheme.Text}}, right, width, selected)
+	case itemAddModel:
+		return listRow([]styled{{"  + 添加模型", benchTheme.Accent}}, nil, width, selected)
+	default:
+		return listRow([]styled{{"+ 添加连接", benchTheme.Accent}}, nil, width, selected)
+	}
+}
+
+// connectionLabel 说明一个连接连的是哪里：内置服务商写服务商名，中转写格式；有自定义地址时
+// 带上主机名。
+func connectionLabel(name string, pc appconfig.ProviderConfig) string {
+	kind := pc.Type
+	if kind == "" {
+		kind = name
+	}
+	label := kind
+	for _, preset := range wizardPresets {
+		if preset.kind == kind {
+			label = preset.label
+		}
+	}
+	if renamable(kind) && (name != kind || pc.BaseURL != "") {
+		for _, format := range wizardFormats {
+			if format.kind == kind {
+				label = format.label
+			}
+		}
+	}
+	if u, err := url.Parse(pc.BaseURL); err == nil && u.Host != "" {
+		label += " · " + u.Host
+	}
+	return label
+}
+
+// overriddenRoles 是单独指定了模型的角色名，按角色顺序。
+func (m model) overriddenRoles() string {
+	config := m.api.Models.Config()
+	var names []string
+	for _, role := range m.api.Models.Roles() {
+		if _, ok := config.Roles[role]; ok && role != "" {
+			names = append(names, roleNames[role])
+		}
+	}
+	return strings.Join(names, "、")
+}
+
+func homePath(path string) string {
+	if home, err := os.UserHomeDir(); err == nil && strings.HasPrefix(path, home) {
+		return "~" + strings.TrimPrefix(path, home)
+	}
+	return path
+}
+
+// --- 服务商 ---
+
+func (m model) providersView(c *pageColumn) wizardSection {
+	w := m.wizard
+	saved := len(m.api.Models.Connections()) > 0
+	if !saved {
+		c.add(benchTheme.Text.Render("先连上一个模型服务，就能开始写。") + benchTheme.Muted.Render("密钥只保存在本机。"))
+		c.add("")
+		c.add("")
+	}
+	c.add(sectionHead(benchTheme.Title.Render("选择服务商"), "", c.width))
+	c.add("")
+	listTop := len(c.lines)
+	for i, preset := range wizardPresets {
+		left := []styled{{padLine(preset.label, 16), benchTheme.Text}, {preset.note, benchTheme.Muted}}
+		c.item(listRow(left, nil, c.width, i == w.cursor), 0, i)
+	}
+	hint := "↑↓ 选择 · Enter 下一步"
+	if saved {
+		hint += " · Esc 返回"
+	}
+	return wizardSection{hint: hint, listTop: listTop, listLen: len(wizardPresets), capacity: len(wizardPresets)}
+}
+
+// --- 连接 ---
+
+var formLabels = map[formRow]string{rowFormat: "格式", rowAddress: "地址", rowKey: "API Key", rowEndpoint: "接口", rowName: "名称"}
+
+func (m model) connectionView(c *pageColumn) wizardSection {
+	w := m.wizard
+	name, _ := w.draft()
+	title := map[wizardMode]string{addConnection: "添加连接 · ", editConnection: "编辑连接 · ", addModel: "添加模型 · "}[w.mode]
+	if w.original == "" {
+		title += wizardPresets[w.preset].label
 	} else {
-		label := m.wizard.inputs[0].Value()
-		for _, provider := range wizardProviders {
-			if provider.id == label && label != "" {
-				label = provider.label
-				break
-			}
-		}
-		control(label+"    选择连接 ›", 6, m.wizard.step == 6)
-		add("")
-		for _, i := range []int{7, 0, 1, 2} {
-			if i == 0 && !m.wizard.custom {
-				continue
-			}
-			if i == 0 {
-				add(benchTheme.Muted.Render("协议类型 · ← → 选择"))
-				// 选项放不下一行就折到下一行；热区与绘制同一套坐标（行首两格留白）。
-				x := 2
-				parts := []string{}
-				for j, protocol := range wizardProtocols {
-					style := benchTheme.Muted.Padding(0, 1)
-					if protocol.id == m.wizard.inputs[0].Value() {
-						style = benchTheme.Selected.Padding(0, 1)
-					}
-					segment := style.Render(protocol.label)
-					if len(parts) > 0 && x-2+lipgloss.Width(segment) > w {
-						add(strings.Join(parts, " "))
-						x, parts = 2, nil
-					}
-					screen.hits = append(screen.hits, wizardHit{x, len(screen.lines), lipgloss.Width(segment), 20 + j})
-					parts = append(parts, segment)
-					x += lipgloss.Width(segment) + 1
+		title += name
+	}
+	c.add(sectionHead(benchTheme.Title.Render(title), "", c.width))
+	c.add("")
+	rows := w.formRows()
+	for _, row := range rows[:len(rows)-1] {
+		focused := w.row == row
+		line := rowLabel(focused, formLabels[row], wizardLabel)
+		switch row {
+		case rowFormat, rowEndpoint:
+			labels, selected := make([]string, 0, 3), 0
+			if row == rowFormat {
+				for _, format := range wizardFormats {
+					labels = append(labels, format.label)
 				}
-				add(strings.Join(parts, " "))
+				selected = w.format
 			} else {
-				screen.addWizardInput(m, i, fieldWidth, add)
+				for i, endpoint := range wizardEndpoints {
+					labels = append(labels, endpoint.label)
+					if endpoint.api == w.endpoint {
+						selected = i
+					}
+				}
 			}
-		}
-		arrow := "▸"
-		if m.wizard.advanced {
-			arrow = "▾"
-		}
-		addressLabel := arrow + " 自定义连接地址"
-		if !m.wizard.advanced && m.wizard.inputs[3].Value() != "" {
-			addressLabel += " · 已设置"
-		}
-		control(addressLabel, 5, m.wizard.step == 5)
-		if m.wizard.advanced {
-			screen.addWizardInput(m, 3, fieldWidth, add)
-		}
-		if m.wizard.inputs[0].Value() == "openai" {
-			endpoint := m.wizard.endpoint
-			if endpoint == "" {
-				endpoint = "chat"
+			for i, label := range labels {
+				text := benchTheme.Muted.Render("○ " + label)
+				if i == selected {
+					text = benchTheme.Accent.Render("● ") + benchTheme.Text.Bold(focused).Render(label)
+				}
+				c.hit(lipgloss.Width(line), lipgloss.Width(text), int(row), -1, i)
+				line += text + strings.Repeat(" ", homeOptionGap)
 			}
-			control("接口 · "+endpoint+"  ⇄", 8, m.wizard.step == 8)
+		default:
+			input := w.inputs[map[formRow]int{rowAddress: inputAddress, rowKey: inputKey, rowName: inputName}[row]]
+			input.SetWidth(max(1, c.width-wizardLabel-1))
+			input.SetCursor(input.Position())
+			line += input.View()
 		}
-		control("保存并开始 →", 4, m.wizard.step == 4)
-		button := "测试连接（可选）"
-		if m.wizard.verifying {
-			button = "正在验证连接…  Esc 取消"
-		}
-		control(button, 9, m.wizard.step == 9 || m.wizard.verifying)
+		c.hit(0, c.width, int(row), -1, -1)
+		c.mark(focused, line)
+		c.add("")
 	}
-	add("")
-	add(benchTheme.Muted.Render("配置保存在本机；仅测试连接会发送请求。"))
-	add(benchTheme.Muted.Render("保存：" + appconfig.ConfigPath(m.deps.ConfigDir)))
-	add(benchTheme.Muted.Render("重启时环境变量优先于配置文件。"))
-	notes := []string{
-		benchTheme.Accent.Render("连接，然后开始创作"),
-		"", "选择服务商 → 配置连接", "", "配置只需完成一次。", "",
-		benchTheme.Muted.Render("使用服务商提供的模型 ID。"),
-		benchTheme.Muted.Render("环境凭据或本地模型可不填密钥。"),
-		benchTheme.Muted.Render("中转服务需填写自定义地址。"),
+	c.add(benchTheme.Muted.Render(m.formHelp()))
+	c.add("")
+	c.add("")
+	button := "列出模型 ↵"
+	switch {
+	case w.listing:
+		button = "正在连接服务商…"
+	case w.mode == editConnection:
+		button = "保存 ↵"
 	}
-	column := max(76, m.width/2)
-	for i, note := range notes {
-		row := i + 3
-		if row >= len(screen.lines) {
-			break
-		}
-		// fitLine only truncates; pad the left column in terminal cells so
-		// short text and blank rows cannot pull the sidebar toward the form.
-		left := lipgloss.NewStyle().Width(column).Render(fitLine(screen.lines[row], column))
-		screen.lines[row] = left + benchTheme.Border.Render("│") + "  " + fitLine(note, max(1, m.width-column-5))
+	if w.row == rowSubmit {
+		button = benchTheme.Selected.Render(" " + button + " ")
+	} else {
+		button = benchTheme.Accent.Bold(true).Render(button)
 	}
-	return screen
+	size := lipgloss.Width(button)
+	c.hit(c.width-size, size, int(rowSubmit), -1, -1)
+	c.add(padLeft(button, c.width))
+
+	hint := "Tab 下一项 · Enter 列出模型 · Esc 返回"
+	switch {
+	case w.listing:
+		hint = "正在连接服务商 · Esc 取消"
+	case w.mode == editConnection:
+		hint = "Tab 下一项 · Enter 验证并保存 · Esc 返回"
+	}
+	if w.row == rowFormat || w.row == rowEndpoint {
+		hint = "←→ 选择 · " + hint
+	}
+	return wizardSection{hint: hint}
 }
 
-func (s *wizardScreen) addWizardInput(m model, i, width int, add func(string)) {
-	label := "连接名称"
-	if i == 7 && m.wizard.original != "" {
-		label = "连接名称 · 改名另存"
+// formHelp 是焦点所在行的一句说明。
+func (m model) formHelp() string {
+	w := m.wizard
+	switch w.row {
+	case rowFormat:
+		return "中转服务给的是哪种接口就选哪种，多数中转用 OpenAI 格式"
+	case rowAddress:
+		if w.preset == relayPreset {
+			return "中转或自部署服务的接口地址"
+		}
+		return "用官方地址就留空"
+	case rowKey:
+		return "密钥只保存在本机的配置文件里"
+	case rowEndpoint:
+		return "不确定就用 Chat Completions；Responses 是 OpenAI 的新接口"
+	case rowName:
+		return "用来在多个连接之间区分它"
 	}
-	if i != 7 {
-		label = wizardFields[i].label
+	if w.mode == editConnection {
+		return "回车先向服务商验证密钥，再保存"
 	}
-	if i == 0 {
-		label = "协议类型"
-	}
-	style := benchTheme.Muted
-	if m.wizard.step == i {
-		style = benchTheme.Accent
-	}
-	input := m.wizard.name
-	if i != 7 {
-		input = m.wizard.inputs[i]
-	}
-	input.Prompt = "  "
-	if m.wizard.step == i {
-		input.Prompt = "› "
-	}
-	input.SetWidth(max(1, width-4))
-	add(style.Render(label))
-	input.SetCursor(input.Position())
-	s.hits = append(s.hits, wizardHit{2, len(s.lines), width, i})
-	add(input.View())
-	add("")
+	return "回车向服务商列出这组密钥能用的模型，顺带验证密钥"
 }
 
-func (m model) viewWizard() string {
-	screen := m.wizardLayout()
-	lines := fitBlock(strings.Join(screen.lines, "\n"), m.width, m.height-3)
-	hint := "↑↓ 选择 · Enter 继续 · Ctrl+C 退出"
-	if m.wizard.fromHome {
-		hint = "↑↓ 选择 · Enter 继续 · Esc 返回"
+// --- 模型 ---
+
+func (m model) modelsView(c *pageColumn, rows int) wizardSection {
+	w := m.wizard
+	name, _ := w.draft()
+	count := ""
+	if !w.listing && len(w.options) > 0 {
+		count = benchTheme.Muted.Render(fmt.Sprintf("%d 个", len(w.options)))
 	}
-	if !m.wizard.choosing {
-		hint = "Tab 切换 · Enter 继续 · Esc 返回"
-		if m.wizard.step == 0 {
-			hint = "← → 选择协议 · Enter 继续"
-		}
+	c.add(sectionHead(benchTheme.Title.Render("选择模型 · "+name), count, c.width))
+	c.add("")
+	filter := w.filter
+	filter.SetWidth(max(1, c.width-4))
+	filter.SetCursor(filter.Position())
+	c.mark(true, filter.View())
+	c.add("")
+	if w.listing {
+		c.add(benchTheme.Muted.Render("正在向服务商获取模型列表…"))
+		return wizardSection{hint: "正在获取 · Esc 取消"}
 	}
-	if m.wizard.verifying {
-		hint = "正在连接 · Esc 取消验证"
+	if w.unlisted != "" {
+		c.add(benchTheme.Warning.Render("没能列出模型：") + benchTheme.Muted.Render(oneLine(w.unlisted)))
+		c.add(benchTheme.Muted.Render("直接输入模型 ID，回车使用"))
+		c.add("")
 	}
-	feedback := benchTheme.Error.Render(m.wizard.err)
-	if m.wizard.err == "" {
-		feedback = benchTheme.Success.Render(m.wizard.notice)
+	picks := w.pickerRows()
+	if slices.ContainsFunc(picks, func(row pickerRow) bool {
+		return row.option != nil && (row.option.ContextWindow > 0 || row.option.Input > 0)
+	}) {
+		c.add(padLeft(benchTheme.Muted.Render(pickerFacts("上下文", "$/百万 token 输入 / 输出")), c.width))
 	}
-	lines = append(lines, "  "+benchRule(m.width-4), "  "+fitLine(feedback, m.width-4), "  "+fitLine(m.keyHint(benchTheme.Muted.Render(hint)), m.width-4))
-	return strings.Join(fitBlock(strings.Join(lines, "\n"), m.width, m.height), "\n")
+	listTop := len(c.lines)
+	capacity := max(1, rows-listTop)
+	start, end := listWindow(len(picks), w.cursor, capacity)
+	for i := start; i < end; i++ {
+		c.item(w.pickerLine(picks[i], c.width, i == w.cursor), 0, i)
+	}
+	return wizardSection{hint: "输入筛选 · ↑↓ 选择 · Enter 使用 · Esc 返回", listTop: listTop, listLen: end - start, capacity: capacity}
+}
+
+func (w wizardState) pickerLine(row pickerRow, width int, selected bool) string {
+	if row.option == nil {
+		return listRow([]styled{{"↵ 直接使用「" + row.id + "」", benchTheme.Accent}}, nil, width, selected)
+	}
+	mark := "  "
+	if slices.Contains(w.models, row.id) {
+		mark = "✓ "
+	}
+	left := []styled{{mark, benchTheme.Accent}, {row.id, benchTheme.Text}}
+	if name := row.option.Name; name != "" && name != row.id {
+		left = append(left, styled{"  " + name, benchTheme.Muted})
+	}
+	window, price := "", ""
+	if row.option.ContextWindow > 0 {
+		window = formatWindow(row.option.ContextWindow)
+	}
+	if row.option.Input > 0 || row.option.Output > 0 {
+		price = fmt.Sprintf("$%.2f / $%.2f", row.option.Input, row.option.Output)
+	}
+	return listRow(left, []styled{{pickerFacts(window, price), benchTheme.Muted}}, width, selected)
+}
+
+// pickerFacts 是模型行右侧的两列：上下文窗口与标价，表头同一套宽度。
+func pickerFacts(window, price string) string {
+	return padLeft(window, 6) + padLeft(price, 26)
 }

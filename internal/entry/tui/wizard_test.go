@@ -4,262 +4,390 @@ import (
 	"context"
 	"errors"
 	"os"
+	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/voocel/ainovel-cli/internal/app/binding"
+	domainmodel "github.com/voocel/ainovel-cli/internal/domain/model"
 	appconfig "github.com/voocel/ainovel-cli/internal/infra/config"
 )
 
-func TestWizardPresetMouseAndKeyboard(t *testing.T) {
-	deps, _ := newTestDeps(t, false)
-	m := newModel(context.Background(), deps)
-	next, _ := m.Update(tea.MouseClickMsg{X: 10, Y: 8, Button: tea.MouseLeft})
-	m = next.(model)
-	if m.wizard.choosing || m.wizard.inputs[0].Value() != "deepseek" || m.wizard.step != 1 {
-		t.Fatal("provider click did not open model field")
-	}
-	m = typeText(t, m, "my-model")
-	m, _ = press(t, m, tea.KeyTab)
-	m = typeText(t, m, "private-key")
-	m, _ = pressKey(t, m, shiftTab)
-	if m.wizard.step != 1 || m.wizard.inputs[2].Value() != "private-key" {
-		t.Fatal("navigation lost field values")
-	}
-	for _, size := range [][2]int{{150, 40}, {180, 50}} {
-		m.width, m.height = size[0], size[1]
-		view := m.screen()
-		if lipgloss.Width(view) > size[0] || lipgloss.Height(view) != size[1] || !strings.Contains(view, "保存并开始") || strings.Contains(view, "private-key") {
-			t.Fatalf("bad layout at %v: %s", size, view)
+// listedModels 是不联网的模型列表：任何连接都列出这些模型。
+func listedModels(ids ...string) func(context.Context, string, appconfig.ProviderConfig) ([]binding.ModelOption, error) {
+	return func(context.Context, string, appconfig.ProviderConfig) ([]binding.ModelOption, error) {
+		options := make([]binding.ModelOption, len(ids))
+		for i, id := range ids {
+			options[i] = binding.ModelOption{ID: id}
 		}
+		return options, nil
 	}
 }
 
-func TestWizardCancellationDiscardsLateSuccess(t *testing.T) {
+// listing 是一次列模型请求：记下它用的连接，返回给定的结果。
+type listing struct {
+	name    string
+	pc      appconfig.ProviderConfig
+	options []binding.ModelOption
+	err     error
+}
+
+func (l *listing) list(_ context.Context, name string, pc appconfig.ProviderConfig) ([]binding.ModelOption, error) {
+	l.name, l.pc = name, pc
+	return l.options, l.err
+}
+
+func paste(t *testing.T, m model, text string) model {
+	t.Helper()
+	next, _ := m.Update(tea.PasteMsg{Content: text})
+	return next.(model)
+}
+
+// deliver 把命令产生的列模型结果送回界面。
+func deliver(t *testing.T, m model, cmd tea.Cmd) model {
+	t.Helper()
+	next, _ := m.Update(findMsg[wizardListedMsg](t, cmd))
+	return next.(model)
+}
+
+// 首次配置：选服务商、粘贴密钥回车，服务商列出模型，筛选后回车即绑定、落盘并进首页。
+func TestFirstRunPicksAListedModel(t *testing.T) {
 	deps, _ := newTestDeps(t, false)
-	var cancelled bool
-	deps.Verify = func(ctx context.Context, _ appconfig.Config) error { cancelled = ctx.Err() != nil; return nil }
+	lister := &listing{options: []binding.ModelOption{{ID: "deepseek-v4"}, {ID: "deepseek-v4-flash"}}}
+	deps.ListModels = lister.list
 	m := newModel(context.Background(), deps)
-	m.wizard = newWizardState(appconfig.Config{Provider: "ollama", Model: "local-model"}, "", false)
-	next, cmd := m.submitWizard()
-	m = next.(model)
-	m, _ = press(t, m, tea.KeyEsc)
-	next, _ = m.Update(cmd())
-	m = next.(model)
-	if !cancelled || m.page != pageWizard || m.wizard.verifying {
-		t.Fatal("cancelled result was accepted")
+	if m.page != pageWizard || m.wizard.step != wizardProviders {
+		t.Fatalf("first run must start from providers: page=%v step=%v", m.page, m.wizard.step)
+	}
+	m, _ = press(t, m, tea.KeyEnter)
+	if m.wizard.step != wizardConnection || m.wizard.row != rowKey {
+		t.Fatalf("DeepSeek must ask for the key first: step=%v row=%v", m.wizard.step, m.wizard.row)
+	}
+	m = paste(t, m, "sk-secret")
+	m, cmd := press(t, m, tea.KeyEnter)
+	if m.wizard.step != wizardModels || !m.wizard.listing {
+		t.Fatal("submitting the key must list models")
+	}
+	m = deliver(t, m, cmd)
+	if lister.name != "deepseek" || lister.pc.APIKey != "sk-secret" || lister.pc.Type != "deepseek" {
+		t.Fatalf("listed with %q %+v", lister.name, lister.pc)
+	}
+	requireContains(t, ansi.Strip(m.screen()), "deepseek-v4", "deepseek-v4-flash")
+	m = typeText(t, m, "flash")
+	if rows := m.wizard.pickerRows(); len(rows) != 2 || rows[0].id != "deepseek-v4-flash" || rows[1].option != nil {
+		t.Fatalf("filter rows = %+v", rows)
+	}
+	m, _ = press(t, m, tea.KeyEnter)
+	if m.page != pageHome {
+		t.Fatalf("page = %v (err %q), want home after the first model", m.page, m.wizard.err)
+	}
+	saved := savedConfig(t, m)
+	if saved.Provider != "deepseek" || saved.Model != "deepseek-v4-flash" || saved.Providers["deepseek"].APIKey != "sk-secret" {
+		t.Fatalf("saved = %+v", saved)
+	}
+}
+
+// 密钥被拒回到表单、焦点在密钥上，报错里的密钥被隐去，配置不落盘。
+func TestRefusedKeyReturnsToTheKeyWithoutSaving(t *testing.T) {
+	deps, _ := newTestDeps(t, false)
+	deps.ListModels = (&listing{err: &domainmodel.Failure{Code: domainmodel.FailureModelRefused, Err: errors.New("401 invalid key sk-secret")}}).list
+	m := newModel(context.Background(), deps)
+	m, _ = press(t, m, tea.KeyEnter)
+	m = paste(t, m, "sk-secret")
+	m, cmd := press(t, m, tea.KeyEnter)
+	m = deliver(t, m, cmd)
+	if m.wizard.step != wizardConnection || m.wizard.row != rowKey || !strings.Contains(m.wizard.err, "拒绝") {
+		t.Fatalf("step=%v row=%v err=%q", m.wizard.step, m.wizard.row, m.wizard.err)
+	}
+	if strings.Contains(m.screen(), "sk-secret") || !strings.Contains(m.wizard.err, "[已隐藏]") {
+		t.Fatal("provider error leaked the key")
 	}
 	if _, err := os.Stat(appconfig.ConfigPath(deps.ConfigDir)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatal("cancelled verification saved config")
-	}
-	next, cmd = m.submitWizard()
-	m = next.(model)
-	next, _ = m.Update(cmd())
-	if next.(model).page != pageWizard || next.(model).wizard.notice == "" {
-		t.Fatal("retry with blank local-model key failed")
+		t.Fatal("refused key saved config")
 	}
 }
 
-func TestWizardValidatesAddressAndRedactsProviderErrors(t *testing.T) {
+// 中转：名称按地址自动起、可选 Responses 接口；列不出模型时直接输入模型 ID。
+func TestRelayTakesTypedModelWhenItCannotList(t *testing.T) {
 	deps, _ := newTestDeps(t, false)
-	deps.Verify = func(context.Context, appconfig.Config) error { return errors.New("rejected key secret-value") }
+	lister := &listing{err: errors.New("404 page not found")}
+	deps.ListModels = lister.list
 	m := newModel(context.Background(), deps)
-	m.wizard = newWizardState(appconfig.Config{}.WithProvider("openai", "custom", appconfig.ProviderConfig{APIKey: "secret-value", BaseURL: "bad-address"}), "", false)
-	next, cmd := m.submitWizard()
-	m = next.(model)
-	if cmd == nil || m.wizard.verifying || m.wizard.step != 3 {
-		t.Fatal("invalid URL was submitted")
-	}
-	m.wizard.inputs[3].SetValue("https://example.com/v1")
-	next, cmd = m.submitWizard()
-	m = next.(model)
-	next, _ = m.Update(cmd())
-	m = next.(model)
-	if strings.Contains(m.screen(), "secret-value") || !strings.Contains(m.wizard.err, "[已隐藏]") {
-		t.Fatal("provider error leaked key")
-	}
-}
-
-func TestWizardResponsiveControlsAndCollapsedAddress(t *testing.T) {
-	deps, _ := newTestDeps(t, false)
-	m := newModel(context.Background(), deps)
-	for _, size := range [][2]int{{150, 40}, {180, 50}} {
-		m.width, m.height = size[0], size[1]
-		m.wizard = newWizardState(appconfig.Config{}.WithProvider("custom", "my-model", appconfig.ProviderConfig{Type: "openai", BaseURL: "https://example.com/v1"}), "", false)
-		m.wizard.custom = true
-		view := m.screen()
-		if lipgloss.Width(view) > m.width || lipgloss.Height(view) != m.height || !strings.Contains(view, "保存并开始") {
-			t.Fatalf("controls clipped at %v", size)
-		}
-		for _, hit := range m.wizardLayout().hits {
-			if hit.action == 4 {
-				continue
-			}
-			if hit.y >= m.height-3 {
-				t.Fatalf("offscreen control at %v", size)
-			}
-			updated, _ := m.Update(tea.MouseClickMsg{X: hit.x, Y: hit.y, Button: tea.MouseLeft})
-			next := updated.(model)
-			if hit.action < 4 && next.wizard.step != hit.action {
-				t.Fatalf("mouse focus mismatch at %v", size)
-			}
-		}
-	}
-	m.wizard = newWizardState(appconfig.Config{Provider: "openai", Model: "my-model"}, "", false)
-	next, _ := m.focusWizard(2)
-	m = next.(model)
-	m, _ = press(t, m, tea.KeyTab)
-	if m.wizard.step != 5 {
-		t.Fatal("missing address toggle")
-	}
-	m, _ = press(t, m, tea.KeyTab)
-	if m.wizard.step != 8 {
-		t.Fatal("collapsed address traps focus")
-	}
-	m, _ = pressKey(t, m, shiftTab)
+	m.wizard.cursor = relayPreset
 	m, _ = press(t, m, tea.KeyEnter)
+	if m.wizard.row != rowAddress {
+		t.Fatalf("relay must start at the address, got row %v", m.wizard.row)
+	}
+	m = typeText(t, m, "https://api.wool.dev/v1")
+	if name, _ := m.wizard.draft(); name != "wool" {
+		t.Fatalf("suggested name = %q", name)
+	}
 	m, _ = press(t, m, tea.KeyTab)
-	if !m.wizard.advanced || m.wizard.step != 3 {
-		t.Fatal("expanded address inaccessible")
+	m = paste(t, m, "relay-key")
+	m, _ = press(t, m, tea.KeyTab)
+	m, _ = press(t, m, tea.KeyRight)
+	m, cmd := press(t, m, tea.KeyEnter)
+	m = deliver(t, m, cmd)
+	if lister.pc.API != "responses" || lister.pc.BaseURL != "https://api.wool.dev/v1" || lister.pc.Type != "openai" {
+		t.Fatalf("listed with %+v", lister.pc)
+	}
+	if m.wizard.step != wizardModels || !strings.Contains(m.wizard.unlisted, "404") {
+		t.Fatalf("unlisted relay must fall back to typing: step=%v unlisted=%q", m.wizard.step, m.wizard.unlisted)
+	}
+	m = typeText(t, m, "my-model")
+	requireContains(t, ansi.Strip(m.screen()), "没能列出模型", "直接使用「my-model」")
+	m, _ = press(t, m, tea.KeyEnter)
+	saved := savedConfig(t, m)
+	pc := saved.Providers["wool"]
+	if m.page != pageHome || saved.Provider != "wool" || saved.Model != "my-model" || pc.Type != "openai" || pc.API != "responses" || pc.APIKey != "relay-key" {
+		t.Fatalf("page=%v saved=%+v", m.page, saved)
 	}
 }
 
-func TestWizardCustomConnectionPreservesSavedConnections(t *testing.T) {
-	deps, _ := newTestDeps(t, false)
-	initial := appconfig.Config{Provider: "existing", Model: "old", Providers: map[string]appconfig.ProviderConfig{"existing": {Type: "openai", APIKey: "keep-me", Models: []string{"old"}}}}
+// 新连接不能顶掉同名的已保存连接；内置服务商的连接名就是服务商名，已有时带出原密钥接着改。
+func TestNewConnectionNamesStayUnique(t *testing.T) {
+	deps, _ := newTestDeps(t, true)
 	m := newModel(context.Background(), deps)
-	m.wizard = newWizardState(initial, "", true)
-	m.wizard.provider = 5
-	next, _ := m.chooseWizardProvider()
-	m = next.(model)
-	if m.wizard.step != 7 || !m.wizard.advanced {
-		t.Fatal("proxy setup must ask for name and expose address")
+	config := m.api.Models.Config().WithConnection("wool", appconfig.ProviderConfig{Type: "openai", APIKey: "old", BaseURL: "https://api.wool.dev/v1"})
+	if err := m.api.Models.Switch(config); err != nil {
+		t.Fatal(err)
 	}
-	m.wizard.name.SetValue("我的代理")
-	m.wizard.inputs[1].SetValue("custom-model")
-	m.wizard.inputs[2].SetValue("new-key")
-	m.wizard.inputs[3].SetValue("https://example.com/v1")
-	m.wizard.endpoint = "responses"
-	next, cmd := m.submitWizard()
+	next, _ := m.activate(focusConfig)
 	m = next.(model)
-	msg := cmd().(wizardVerifiedMsg)
-	pc, err := msg.config.ActiveProvider()
-	if err != nil || msg.config.Provider != "我的代理" || pc.Type != "openai" || pc.API != "responses" || msg.config.Providers["existing"].APIKey != "keep-me" {
-		t.Fatal("connection identity or credentials lost")
+	next, _ = m.newConnection(relayPreset)
+	m = next.(model)
+	m = typeText(t, m, "https://api.wool.dev/v1")
+	if name, _ := m.wizard.draft(); name != "wool-2" {
+		t.Fatalf("suggested name = %q, want wool-2", name)
+	}
+	m.wizard.inputs[inputName].SetValue("wool")
+	m, cmd := press(t, m, tea.KeyEnter)
+	if cmd != nil && m.wizard.listing || !strings.Contains(m.wizard.err, "已有名为") || m.wizard.row != rowName {
+		t.Fatalf("duplicate name accepted: err=%q row=%v", m.wizard.err, m.wizard.row)
+	}
+	next, _ = m.newConnection(0)
+	m = next.(model)
+	if m.wizard.original != "deepseek" || m.wizard.inputs[inputKey].Value() != "test" || slices.Contains(m.wizard.formRows(), rowName) {
+		t.Fatalf("DeepSeek again must continue the saved connection: %+v", m.wizard)
+	}
+}
+
+func overviewFixture(t *testing.T) model {
+	t.Helper()
+	deps, _ := newTestDeps(t, true)
+	m := newModel(context.Background(), deps)
+	config := m.api.Models.Config().WithConnection("wool", appconfig.ProviderConfig{Type: "openai", APIKey: "wool-key", BaseURL: "https://api.wool.dev/v1", Models: []string{"grok-4.7"}})
+	if err := m.api.Models.Switch(config); err != nil {
+		t.Fatal(err)
+	}
+	next, _ := m.activate(focusConfig)
+	return next.(model)
+}
+
+func cursorAt(t *testing.T, m model, kind int, connection, model string) model {
+	t.Helper()
+	m.wizard.cursor = slices.IndexFunc(m.overviewItems(), func(item overviewItem) bool {
+		return item.kind == kind && item.connection == connection && item.model == model
+	})
+	if m.wizard.cursor < 0 {
+		t.Fatalf("no overview row %d %s %s", kind, connection, model)
+	}
+	return m
+}
+
+// 总览：思考强度左右即改，模型回车即换用，编辑连接验证后只改连接、不换默认模型。
+func TestOverviewSwitchesAndEditsInPlace(t *testing.T) {
+	m := overviewFixture(t)
+	if m.wizard.step != wizardOverview {
+		t.Fatalf("configured settings must open the overview, got %v", m.wizard.step)
+	}
+	requireContains(t, ansi.Strip(m.screen()), "deepseek / deepseek-v4-flash", "OpenAI 格式 · api.wool.dev", "grok-4.7", "+ 添加连接")
+	m, _ = press(t, m, tea.KeyRight)
+	if m.api.Models.Config().Thinking == "" || !strings.Contains(m.wizard.notice, "思考强度") {
+		t.Fatalf("right on thinking must change it: %q", m.api.Models.Config().Thinking)
+	}
+	m = cursorAt(t, m, itemModel, "wool", "grok-4.7")
+	m, _ = press(t, m, tea.KeyEnter)
+	if current := m.api.Models.Current(""); current.Connection != "wool" || current.Model != "grok-4.7" || m.page != pageWizard {
+		t.Fatalf("model row did not switch in place: %+v", current)
+	}
+	lister := &listing{}
+	m.deps.ListModels = lister.list
+	m = cursorAt(t, m, itemConnection, "deepseek", "")
+	m, _ = press(t, m, tea.KeyEnter)
+	if m.wizard.step != wizardConnection || m.wizard.mode != editConnection {
+		t.Fatal("connection row must open its form")
+	}
+	m.wizard.inputs[inputKey].SetValue("new-key")
+	m, cmd := press(t, m, tea.KeyEnter)
+	m = deliver(t, m, cmd)
+	saved := savedConfig(t, m)
+	if m.wizard.step != wizardOverview || saved.Providers["deepseek"].APIKey != "new-key" || saved.Provider != "wool" || !strings.Contains(m.wizard.notice, "已更新") {
+		t.Fatalf("edit: step=%v notice=%q saved=%+v", m.wizard.step, m.wizard.notice, saved)
 	}
 	m, _ = press(t, m, tea.KeyEsc)
-	m.wizard.name.SetValue("existing")
-	next, _ = m.submitWizard()
-	m = next.(model)
-	if m.wizard.verifying || !strings.Contains(m.wizard.err, "已存在") {
-		t.Fatal("existing connection silently overwritten")
-	}
-	// Choosing a saved connection restores its own credentials and protocol.
-	for i, c := range m.wizardChoices() {
-		if c.saved && c.name == "existing" {
-			m.wizard.provider = i
-		}
-	}
-	next, _ = m.chooseWizardProvider()
-	m = next.(model)
-	if m.wizard.inputs[2].Value() != "keep-me" || m.wizard.name.Value() != "existing" {
-		t.Fatal("saved selection lost credentials")
+	if m.page != pageHome {
+		t.Fatal("Esc on the overview must return home")
 	}
 }
 
-func TestWizardWideColumnsStayAligned(t *testing.T) {
+// 添加模型：用已保存的凭据列出模型，已有的打勾，选中的并入连接并用上。
+func TestAddModelMarksSavedAndUsesThePick(t *testing.T) {
+	m := overviewFixture(t)
+	lister := &listing{options: []binding.ModelOption{{ID: "grok-4.7"}, {ID: "qwen3.8-27b", ContextWindow: 128000, Input: 0.2, Output: 0.6}}}
+	m.deps.ListModels = lister.list
+	m = cursorAt(t, m, itemAddModel, "wool", "")
+	m, cmd := press(t, m, tea.KeyEnter)
+	m = deliver(t, m, cmd)
+	if lister.pc.APIKey != "wool-key" || m.wizard.step != wizardModels {
+		t.Fatalf("add model must list with saved credentials: %+v", lister.pc)
+	}
+	requireContains(t, ansi.Strip(m.screen()), "✓ grok-4.7", "qwen3.8-27b", "128K", "$0.20 / $0.60")
+	m, _ = press(t, m, tea.KeyDown)
+	m, _ = press(t, m, tea.KeyEnter)
+	saved := savedConfig(t, m)
+	if m.wizard.step != wizardOverview || saved.Provider != "wool" || saved.Model != "qwen3.8-27b" || !slices.Equal(saved.Providers["wool"].Models, []string{"grok-4.7", "qwen3.8-27b"}) {
+		t.Fatalf("saved = %+v", saved)
+	}
+}
+
+// 内置服务商没填密钥不去列模型；取消的列模型请求，迟到的结果被丢弃。
+func TestCancelledListingIsDiscarded(t *testing.T) {
 	deps, _ := newTestDeps(t, false)
+	cancelled := false
+	deps.ListModels = func(ctx context.Context, _ string, _ appconfig.ProviderConfig) ([]binding.ModelOption, error) {
+		cancelled = ctx.Err() != nil
+		return []binding.ModelOption{{ID: "late"}}, nil
+	}
 	m := newModel(context.Background(), deps)
-	for _, width := range []int{150, 160, 200, 240} {
-		m.width, m.height = width, 40
-		for _, choosing := range []bool{true, false} {
-			m.wizard = newWizardState(appconfig.Config{Provider: "openai", Model: "custom-model"}, "", false)
-			m.wizard.choosing = choosing
-			lines := strings.Split(m.screen(), "\n")
-			for row := 3; row < 12; row++ {
-				prefix, _, ok := strings.Cut(lines[row], "│")
-				if !ok || lipgloss.Width(prefix) != max(76, width/2) {
-					t.Fatalf("width=%d choosing=%v row=%d: divider at %d, want %d", width, choosing, row, lipgloss.Width(prefix), max(76, width/2))
+	m, _ = press(t, m, tea.KeyEnter)
+	m, _ = press(t, m, tea.KeyEnter)
+	if m.wizard.listing || !strings.Contains(m.wizard.err, "API Key") {
+		t.Fatal("an official provider must not list without a key")
+	}
+	m = paste(t, m, "sk-test")
+	m, cmd := press(t, m, tea.KeyEnter)
+	m, _ = press(t, m, tea.KeyEsc)
+	m = deliver(t, m, cmd)
+	if !cancelled || m.wizard.step != wizardConnection || m.wizard.listing || len(m.wizard.options) != 0 {
+		t.Fatalf("late result accepted: step=%v options=%v", m.wizard.step, m.wizard.options)
+	}
+}
+
+// 鼠标：服务商点了进下一步，格式点选即换，模型单击选中、双击用上。
+func TestWizardMouse(t *testing.T) {
+	deps, _ := newTestDeps(t, false)
+	deps.ListModels = listedModels("a-model", "b-model")
+	m := newModel(context.Background(), deps)
+	click := func(match func(pageHit) bool) model {
+		t.Helper()
+		for _, hit := range m.wizardFrame().hits {
+			if match(hit) {
+				next, cmd := m.Update(tea.MouseClickMsg{X: hit.x, Y: hit.y, Button: tea.MouseLeft})
+				if msg, ok := findListed(cmd); ok {
+					next, _ = next.(model).Update(msg)
+				}
+				return next.(model)
+			}
+		}
+		t.Fatal("control not visible")
+		return m
+	}
+	m = click(func(hit pageHit) bool { return hit.row == relayPreset })
+	if m.wizard.step != wizardConnection || m.wizard.preset != relayPreset {
+		t.Fatal("provider click did not open the form")
+	}
+	m = click(func(hit pageHit) bool { return hit.focus == int(rowFormat) && hit.option == 2 })
+	if m.wizard.kind() != "gemini" || slices.Contains(m.wizard.formRows(), rowEndpoint) {
+		t.Fatal("format click did not select Gemini")
+	}
+	m.wizard.inputs[inputAddress].SetValue("https://gemini.example.com")
+	m.wizard.inputs[inputKey].SetValue("gemini-key")
+	m = click(func(hit pageHit) bool { return hit.focus == int(rowSubmit) })
+	if m.wizard.step != wizardModels || len(m.wizard.options) != 2 {
+		t.Fatalf("submit click did not list models: step=%v err=%q", m.wizard.step, m.wizard.err)
+	}
+	m = click(func(hit pageHit) bool { return hit.row == 1 })
+	if m.page != pageWizard || m.wizard.cursor != 1 {
+		t.Fatal("single click must only select the model")
+	}
+	m.wizard.clicked.at = time.Now().Add(-2 * doubleClick)
+	m = click(func(hit pageHit) bool { return hit.row == 1 })
+	if m.page != pageWizard {
+		t.Fatal("slow second click must not use the model")
+	}
+	m = click(func(hit pageHit) bool { return hit.row == 1 })
+	if m.page != pageHome || m.api.Models.Current("").Model != "b-model" {
+		t.Fatalf("double click did not use the model: page=%v err=%q", m.page, m.wizard.err)
+	}
+}
+
+func findListed(cmd tea.Cmd) (wizardListedMsg, bool) {
+	if cmd == nil {
+		return wizardListedMsg{}, false
+	}
+	switch msg := cmd().(type) {
+	case wizardListedMsg:
+		return msg, true
+	case tea.BatchMsg:
+		for _, inner := range msg {
+			if found, ok := findListed(inner); ok {
+				return found, true
+			}
+		}
+	}
+	return wizardListedMsg{}, false
+}
+
+// 各页在各尺寸与深浅主题下恰好铺满一屏，热区都在屏内，长列表开窗而不溢出。
+func TestWizardFramesFitAndHitsStayOnScreen(t *testing.T) {
+	dark := darkBackground
+	t.Cleanup(func() { darkBackground = dark })
+	many := make([]string, 100)
+	for i := range many {
+		many[i] = strings.Repeat("m", i%40+1)
+	}
+	steps := map[string]func(m model) model{
+		"overview": func(m model) model { return m },
+		"providers": func(m model) model {
+			m.wizard.step = wizardProviders
+			return m
+		},
+		"relay": func(m model) model {
+			next, _ := m.newConnection(relayPreset)
+			return next.(model)
+		},
+		"models": func(m model) model {
+			next, _ := m.newConnection(0)
+			m = next.(model)
+			next, cmd := m.submitConnection()
+			m = deliver(t, next.(model), cmd)
+			m.wizard.cursor = 99
+			return m
+		},
+	}
+	for _, isDark := range []bool{false, true} {
+		darkBackground = isDark
+		for _, size := range [][2]int{{120, 36}, {150, 40}, {240, 60}} {
+			for name, step := range steps {
+				m := overviewFixture(t)
+				m.deps.ListModels = listedModels(many...)
+				next, _ := m.Update(tea.WindowSizeMsg{Width: size[0], Height: size[1]})
+				m = step(next.(model))
+				frame := m.wizardFrame()
+				if lipgloss.Width(frame.text) > size[0] || lipgloss.Height(frame.text) != size[1] {
+					t.Fatalf("frame overflow %v %s", size, name)
+				}
+				for _, hit := range frame.hits {
+					if hit.y < pageHeader || hit.y >= size[1]-pageFooter || hit.x < 0 || hit.x+hit.width > size[0] {
+						t.Fatalf("invalid hit %v %s %+v", size, name, hit)
+					}
 				}
 			}
-		}
-	}
-}
-
-func TestWizardProtocolIsSelectionOnly(t *testing.T) {
-	deps, _ := newTestDeps(t, false)
-	m := newModel(context.Background(), deps)
-	m.wizard.provider = 6
-	next, _ := m.chooseWizardProvider()
-	m = next.(model)
-	next, _ = m.focusWizard(0)
-	m = next.(model)
-	m = typeText(t, m, "arbitrary-protocol")
-	if m.wizard.inputs[0].Value() != "openai" {
-		t.Fatal("protocol accepted free text")
-	}
-	m, _ = press(t, m, tea.KeyRight)
-	if m.wizard.inputs[0].Value() != "anthropic" {
-		t.Fatal("right did not select anthropic")
-	}
-	m.width = 160
-	for _, hit := range m.wizardLayout().hits {
-		if hit.action == 22 {
-			next, _ = m.Update(tea.MouseClickMsg{X: hit.x, Y: hit.y, Button: tea.MouseLeft})
-			m = next.(model)
-			break
-		}
-	}
-	if m.wizard.inputs[0].Value() != "gemini" {
-		t.Fatal("mouse did not select gemini")
-	}
-	for _, control := range m.wizardControls() {
-		if control == 8 {
-			t.Fatal("non-OpenAI endpoint visible")
-		}
-	}
-	// 窄窗口里协议选项折行，每个选项都完整可见、可点。
-	m.width = 40
-	options := 0
-	for _, hit := range m.wizardLayout().hits {
-		if hit.action >= 20 && hit.action < 20+len(wizardProtocols) {
-			options++
-			if hit.x+hit.width > m.width-2 {
-				t.Fatalf("protocol option %d overflows a %d-column wizard: %+v", hit.action-20, m.width, hit)
-			}
-		}
-	}
-	if options != len(wizardProtocols) {
-		t.Fatalf("protocol options = %d, want %d", options, len(wizardProtocols))
-	}
-}
-
-func TestWizardSaveDoesNotRequireConnectionTest(t *testing.T) {
-	for _, testFirst := range []bool{false, true} {
-		deps, _ := newTestDeps(t, false)
-		calls := 0
-		deps.Verify = func(context.Context, appconfig.Config) error { calls++; return errors.New("offline") }
-		m := newModel(context.Background(), deps)
-		m.wizard = newWizardState(appconfig.Config{}.WithProvider("openai", "custom", appconfig.ProviderConfig{APIKey: "key"}), "", false)
-		if testFirst {
-			next, cmd := m.submitWizard()
-			m = next.(model)
-			next, _ = m.Update(cmd())
-			m = next.(model)
-			if m.wizard.err == "" {
-				t.Fatal("failed test hidden")
-			}
-		}
-		before := calls
-		next, _ := m.activateWizard(4)
-		m = next.(model)
-		if m.page != pageHome || calls != before {
-			t.Fatal("save required a successful network test")
-		}
-		saved, err := appconfig.LoadConfig(deps.ConfigDir)
-		if err != nil || saved.Provider != "openai" {
-			t.Fatal("configuration not saved")
 		}
 	}
 }

@@ -58,8 +58,8 @@ type homeState struct {
 	importing   bool
 	library     []libraryEntry
 	cursor      int
-	// clicked 是上一次单击的作品：同一部在 doubleClick 内再点一次即打开。
-	clicked libraryClick
+	// clicked 是上一次单击的作品：同一部再点一次即打开。
+	clicked listClick
 	loaded  bool
 	// lastOpened 是上次打开的作品：作品库加载后预选它，回车即恢复落点。
 	lastOpened string
@@ -79,12 +79,17 @@ type libraryEntry struct {
 	updated time.Time
 }
 
-type libraryClick struct {
+// listClick 是列表上一次单击的行与时刻：同一行在 doubleClick 内再点一次算双击。
+type listClick struct {
 	row int
 	at  time.Time
 }
 
 const doubleClick = 500 * time.Millisecond
+
+func (c listClick) again(row int, now time.Time) bool {
+	return c.row == row && now.Sub(c.at) <= doubleClick
+}
 
 type libraryLoadedMsg struct {
 	entries []libraryEntry

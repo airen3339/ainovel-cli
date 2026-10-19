@@ -96,6 +96,14 @@ func (c Config) WithProvider(name, model string, pc ProviderConfig) Config {
 	return c
 }
 
+// WithConnection 写入或更新一个连接，不改默认绑定与角色。
+func (c Config) WithConnection(name string, pc ProviderConfig) Config {
+	providers := c.copyProviders()
+	providers[name] = pc
+	c.Providers = providers
+	return c
+}
+
 // WithRole 让角色改用指定连接的模型（模型并入该连接的已保存列表）；连接必须已存在。
 func (c Config) WithRole(role, connection, model, thinking string) Config {
 	providers := c.copyProviders()

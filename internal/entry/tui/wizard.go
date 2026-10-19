@@ -3,424 +3,810 @@ package tui
 import (
 	"context"
 	"errors"
-	"sort"
+	"fmt"
+	"net"
+	"net/url"
+	"slices"
 	"strings"
+	"time"
 
 	"charm.land/bubbles/v2/textinput"
 	tea "charm.land/bubbletea/v2"
+	"github.com/voocel/ainovel-cli/internal/app/binding"
+	domainmodel "github.com/voocel/ainovel-cli/internal/domain/model"
 	appconfig "github.com/voocel/ainovel-cli/internal/infra/config"
 )
 
-// 配置向导（workbench §4）：未配置模型时的启动落点，完成后进入首页。
-// 保存仅做本地校验与装配；连接测试独立、可选，不写入配置。
-type wizardState struct {
-	inputs    []textinput.Model
-	name      textinput.Model
-	source    appconfig.Config
-	original  string
-	endpoint  string
-	step      int
-	verifying bool
-	fromHome  bool
-	err       string
-	notice    string
-	choosing  bool
-	provider  int
-	custom    bool
-	advanced  bool
-	cancel    context.CancelFunc
-	request   *struct{ token byte }
+// 模型设置（workbench §4）：未配置模型时是启动落点，配好即进首页；从首页进入时先看总览——
+// 当前模型与思考强度、各连接和它们的模型，切换、编辑、添加都在这一页。添加连接走「服务商 →
+// 连接 → 模型」三步：填好密钥回车，就向服务商列出这组凭据能用的模型（顺带验证密钥），挑一个
+// 或直接输入模型 ID。绑定成功才落盘。
+
+type wizardStep int
+
+const (
+	wizardOverview   wizardStep = iota // 总览：当前模型、思考强度、连接与模型
+	wizardProviders                    // 选择服务商
+	wizardConnection                   // 连接：密钥、地址、名称
+	wizardModels                       // 选择模型：服务商列出的模型，可筛选或直接输入
+)
+
+type wizardMode int
+
+const (
+	addConnection  wizardMode = iota // 新连接：服务商 → 连接 → 模型
+	editConnection                   // 改已保存连接的密钥与地址：验证后保存，不换模型
+	addModel                         // 给已保存连接添一个模型并用上它
+)
+
+// 连接表单的行；哪些行出现由连接的格式与用途决定（formRows）。
+type formRow int
+
+const (
+	rowFormat formRow = iota
+	rowAddress
+	rowKey
+	rowEndpoint
+	rowName
+	rowSubmit
+)
+
+// 连接表单里的文本输入。
+const (
+	inputAddress = iota
+	inputKey
+	inputName
+	inputCount
+)
+
+// 总览的行。
+const (
+	itemThinking = iota
+	itemConnection
+	itemModel
+	itemAddModel
+	itemAddConnection
+)
+
+type overviewItem struct {
+	kind              int
+	connection, model string
 }
 
-type wizardVerifiedMsg struct {
-	config  appconfig.Config
+type wizardState struct {
+	step     wizardStep
+	mode     wizardMode
+	fromHome bool // 从首页进入：总览能回首页；首次配置没有可返回的页面
+	cursor   int  // 总览、服务商与模型列表的选中行
+	err      string
+	notice   string
+
+	// 连接草稿：preset 是服务商（wizardPresets 下标），format 是中转的格式（wizardFormats
+	// 下标），original 是编辑或添加模型的已保存连接，models 是它原有的模型。
+	preset   int
+	format   int
+	endpoint string
+	original string
+	models   []string
+	inputs   [inputCount]textinput.Model
+	row      formRow
+	named    bool // 用户改过名称：地址变化不再替它起名
+
+	// 列模型：request 标识在途请求，取消或过期的结果丢弃。
+	listing  bool
+	request  *struct{ token byte }
+	cancel   context.CancelFunc
+	options  []binding.ModelOption
+	unlisted string // 列不出模型的原因：只能直接输入模型 ID
+	filter   textinput.Model
+	clicked  listClick
+}
+
+type wizardListedMsg struct {
 	request *struct{ token byte }
+	options []binding.ModelOption
 	err     error
 }
 
-var wizardFields = []struct {
-	label       string
-	placeholder string
-	secret      bool
-	optional    bool
-}{
-	{label: "Provider", placeholder: "openai / anthropic / deepseek / gemini / glm ...", secret: false},
-	{label: "模型", placeholder: "例如 deepseek-chat", secret: false},
-	{label: "API Key", placeholder: "粘贴密钥；使用环境凭据可留空", secret: true, optional: true},
-	{label: "Base URL（可选）", placeholder: "默认官方地址；中转服务请填写", optional: true},
+// wizardPresets 是可选的服务商；kind 为空的是「中转 / 自定义」，格式由用户选。预设只定
+// 协议，模型由服务商列出、用户挑选，不替用户钉死模型。
+var wizardPresets = []struct{ label, kind, note string }{
+	{"DeepSeek", "deepseek", ""},
+	{"OpenAI", "openai", ""},
+	{"Anthropic", "anthropic", "Claude"},
+	{"Gemini", "gemini", ""},
+	{"Qwen", "qwen", "通义千问"},
+	{"GLM", "glm", "智谱"},
+	{"MiniMax", "minimax", ""},
+	{"MiMo", "mimo", "小米"},
+	{"Grok", "grok", "xAI"},
+	{"OpenRouter", "openrouter", "一个密钥用多家模型"},
+	{"Ollama", "ollama", "本机模型，无需密钥"},
+	{"中转 / 自定义", "", "OpenAI、Claude 或 Gemini 格式的任意地址"},
 }
 
-func newWizardState(initial appconfig.Config, initialErr string, fromHome bool) wizardState {
-	state := wizardState{inputs: make([]textinput.Model, len(wizardFields)), err: initialErr, fromHome: fromHome}
-	state.source = initial
-	state.original = initial.Provider
-	state.name = newInput("例如 my-proxy / 公司网关")
-	state.name.SetValue(initial.Provider)
-	pc, err := initial.ActiveProvider()
-	if err != nil {
-		pc = initial.Providers[initial.Provider]
-		if pc.Type == "" {
-			pc.Type = initial.Provider
-		}
-	}
-	if initial.Provider != "" && err == nil {
-		state.source = initial.WithProvider(initial.Provider, initial.Model, pc)
-	}
-	state.endpoint = pc.API
-	state.custom = pc.Type != initial.Provider
-	if err != nil && initial.Provider != "" {
-		state.custom = true
-	}
-	values := []string{pc.Type, initial.Model, pc.APIKey, pc.BaseURL}
-	for i, field := range wizardFields {
-		input := newInput(field.placeholder)
-		input.SetValue(values[i])
-		if field.secret {
-			input.EchoMode = textinput.EchoPassword
-		}
-		state.inputs[i] = input
-	}
-	state.choosing = initial.Provider == ""
-	state.advanced = pc.BaseURL != ""
-	if !state.choosing {
-		state.step = 1
-	}
-	state.inputs[state.step].Focus()
-	return state
+var relayPreset = len(wizardPresets) - 1
+
+// wizardFormats 是中转与自定义连接可选的接口格式。官方地址与中转的差别由装配按地址推出
+// （models.adapter），不交给用户选。
+var wizardFormats = []struct{ kind, label string }{
+	{"openai", "OpenAI 格式"}, {"anthropic", "Claude 格式"}, {"gemini", "Gemini 格式"},
 }
 
-// Presets select the protocol only; model IDs remain user supplied so the UI
-// does not silently pin users to a model that their account may not support.
-var wizardProviders = []struct{ label, id string }{
-	{"OpenAI", "openai"}, {"Anthropic", "anthropic"},
-	{"DeepSeek", "deepseek"}, {"Gemini", "gemini"},
-	{"OpenRouter", "openrouter"}, {"OpenAI 兼容 / 中转服务", "openai"},
-	{"自定义连接", ""}, {"Ollama · 本地模型", "ollama"},
-	{"Qwen", "qwen"}, {"GLM", "glm"}, {"Grok", "grok"},
-	{"MiniMax", "minimax"}, {"MiMo", "mimo"},
+// wizardEndpoints 是 OpenAI 格式的接口；空是 Chat Completions。
+var wizardEndpoints = []struct{ api, label string }{{"", "Chat Completions"}, {"responses", "Responses"}}
+
+// renamable 报告这种格式的连接能否自取名字：其余内置服务商的连接名就是服务商名（配置约束）。
+func renamable(kind string) bool { return kind == "openai" || kind == "anthropic" || kind == "gemini" }
+
+func newWizardState(config appconfig.Config, problem string, fromHome bool) wizardState {
+	w := wizardState{fromHome: fromHome, err: problem, filter: newInput("输入筛选，或直接输入模型 ID")}
+	for i := range w.inputs {
+		w.inputs[i] = newInput("")
+		w.inputs[i].Prompt = ""
+	}
+	w.inputs[inputKey].EchoMode, w.inputs[inputKey].EchoCharacter = textinput.EchoPassword, '•'
+	if len(config.Providers) == 0 {
+		w.step = wizardProviders
+	}
+	return w
 }
 
-func (w *wizardState) focus(step int) tea.Cmd {
+func (w *wizardState) kind() string {
+	if w.preset == relayPreset {
+		return wizardFormats[w.format].kind
+	}
+	return wizardPresets[w.preset].kind
+}
+
+// draft 是表单此刻的连接：名称与连接配置（保留原有模型）。
+func (w *wizardState) draft() (string, appconfig.ProviderConfig) {
+	kind := w.kind()
+	pc := appconfig.ProviderConfig{
+		Type: kind, APIKey: strings.TrimSpace(w.inputs[inputKey].Value()),
+		BaseURL: strings.TrimSpace(w.inputs[inputAddress].Value()), Models: w.models,
+	}
+	if kind == "openai" {
+		pc.API = w.endpoint
+	}
+	name := w.original
+	switch {
+	case name != "":
+	case renamable(kind):
+		name = strings.TrimSpace(w.inputs[inputName].Value())
+	default:
+		name = kind
+	}
+	return name, pc
+}
+
+// keyOptional 报告连接能否不带密钥：本机 Ollama，以及按通用 Chat Completions 说话的
+// 中转与自部署服务（它们未必要求密钥）；其余服务商的适配器都要求密钥。
+func (w *wizardState) keyOptional() bool {
+	return w.kind() == "ollama" || w.preset == relayPreset && w.kind() == "openai"
+}
+
+// formRows 是表单可见的行：中转先问格式与地址，内置服务商先问密钥；新连接且能自取名字
+// 时才问名称。
+func (w *wizardState) formRows() []formRow {
+	var rows []formRow
+	if w.preset == relayPreset {
+		rows = append(rows, rowFormat, rowAddress, rowKey)
+	} else {
+		rows = append(rows, rowKey, rowAddress)
+	}
+	if w.kind() == "openai" {
+		rows = append(rows, rowEndpoint)
+	}
+	if w.mode == addConnection && w.original == "" && renamable(w.kind()) {
+		rows = append(rows, rowName)
+	}
+	return append(rows, rowSubmit)
+}
+
+// firstInput 是表单打开时的焦点：第一个要填的文本行（格式有默认，不先停在它上面）。
+func (w *wizardState) firstInput() formRow {
+	if w.preset == relayPreset {
+		return rowAddress
+	}
+	return rowKey
+}
+
+func (w *wizardState) focusRow(row formRow) tea.Cmd {
 	for i := range w.inputs {
 		w.inputs[i].Blur()
 	}
-	w.name.Blur()
-	w.step = step
-	if step == 7 {
-		return w.name.Focus()
-	}
-	if step > 0 && step < len(w.inputs) {
-		return w.inputs[step].Focus()
+	w.row = row
+	switch row {
+	case rowAddress:
+		return w.inputs[inputAddress].Focus()
+	case rowKey:
+		return w.inputs[inputKey].Focus()
+	case rowName:
+		return w.inputs[inputName].Focus()
 	}
 	return nil
 }
 
-func (m model) focusWizard(step int) (tea.Model, tea.Cmd) {
-	if step == 0 {
-		m.wizard.custom = true
-	}
-	if step == 3 {
-		m.wizard.advanced = true
-	}
-	cmd := m.wizard.focus(step)
-	return m, cmd
-}
-
-func (m model) chooseWizardProvider() (tea.Model, tea.Cmd) {
-	choice := m.wizardChoices()[m.wizard.provider]
-	if choice.saved {
-		initial := m.wizard.source
-		initial.Provider = choice.name
-		if pc, ok := initial.Providers[choice.name]; ok && choice.name != m.wizard.source.Provider {
-			initial.Model = ""
-			if len(pc.Models) > 0 {
-				initial.Model = pc.Models[0]
-			}
-		}
-		m.wizard = newWizardState(initial, "", m.wizard.fromHome)
-		return m.focusWizard(1)
-	}
-	for i := range m.wizard.inputs {
-		m.wizard.inputs[i].SetValue("")
-	}
-	protocol := choice.id
-	if protocol == "" {
-		protocol = "openai"
-	}
-	m.wizard.inputs[0].SetValue(protocol)
-	m.wizard.name.SetValue(choice.id)
-	m.wizard.original = ""
-	m.wizard.endpoint = ""
-	m.wizard.choosing = false
-	m.wizard.custom = choice.id == "" || m.wizard.provider == 5
-	m.wizard.advanced = m.wizard.provider == 5
-	if m.wizard.custom {
-		m.wizard.name.SetValue("")
-		return m.focusWizard(7)
-	}
-	return m.focusWizard(1)
-}
-
-type wizardChoice struct {
-	label, id, name string
-	saved           bool
-}
-
-func (m model) wizardChoices() []wizardChoice {
-	choices := make([]wizardChoice, 0, len(wizardProviders)+len(m.wizard.source.Providers))
-	for _, p := range wizardProviders {
-		choices = append(choices, wizardChoice{label: p.label, id: p.id})
-	}
-	names := make([]string, 0, len(m.wizard.source.Providers))
-	for name := range m.wizard.source.Providers {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	for _, name := range names {
-		choices = append(choices, wizardChoice{label: "已保存 · " + name, name: name, saved: true})
-	}
-	return choices
-}
-
 func (m model) updateWizard(message tea.Msg) (tea.Model, tea.Cmd) {
-	if verified, ok := message.(wizardVerifiedMsg); ok {
-		if !m.wizard.verifying || verified.request != m.wizard.request {
+	switch message := message.(type) {
+	case wizardListedMsg:
+		return m.wizardListed(message)
+	case tea.MouseMsg:
+		return m.wizardMouse(message)
+	case tea.PasteMsg:
+		return m.wizardInput(message)
+	case tea.KeyPressMsg:
+		if message.String() != "esc" && m.wizard.listing && m.wizard.mode == editConnection {
 			return m, nil
 		}
-		return m.finishWizard(verified)
-	}
-	if m.wizard.verifying {
-		if key, ok := message.(tea.KeyPressMsg); ok && key.String() == "esc" {
-			m.wizard.cancel()
-			m.wizard.verifying = false
-			m.wizard.request = nil
-			m.wizard.err = "已取消验证，配置尚未保存"
+		m.wizard.err, m.wizard.notice = "", ""
+		switch m.wizard.step {
+		case wizardOverview:
+			return m.overviewKey(message)
+		case wizardProviders:
+			return m.providersKey(message)
+		case wizardConnection:
+			return m.connectionKey(message)
+		default:
+			return m.modelsKey(message)
 		}
-		return m, nil
-	}
-	if msg, ok := message.(tea.MouseMsg); ok {
-		if !leftClick(msg) {
-			return m, nil
-		}
-		mouse := msg.Mouse()
-		layout := m.wizardLayout()
-		for _, hit := range layout.hits {
-			if mouse.Y != hit.y || mouse.X < hit.x || mouse.X >= hit.x+hit.width {
-				continue
-			}
-			if m.wizard.choosing {
-				m.wizard.provider = hit.action
-				return m.chooseWizardProvider()
-			}
-			if hit.action >= 20 && hit.action < 20+len(wizardProtocols) {
-				m.wizard.inputs[0].SetValue(wizardProtocols[hit.action-20].id)
-				m.wizard.endpoint = ""
-				return m.focusWizard(0)
-			}
-			return m.activateWizard(hit.action)
-		}
-		return m, nil
-	}
-	if key, ok := message.(tea.KeyPressMsg); ok {
-		m.wizard.notice = ""
-		if m.wizard.choosing {
-			switch key.String() {
-			case "up", "shift+tab":
-				m.wizard.provider = (m.wizard.provider + len(m.wizardChoices()) - 1) % len(m.wizardChoices())
-			case "down", "tab":
-				m.wizard.provider = (m.wizard.provider + 1) % len(m.wizardChoices())
-			case "enter":
-				return m.chooseWizardProvider()
-			case "esc":
-				// 首次配置没有可返回的页面：退出走 Ctrl+C。
-				if m.wizard.fromHome {
-					m.page = pageHome
-					return m, m.loadLibraryCmd()
-				}
-			}
-			return m, nil
-		}
-		if m.wizard.step == 0 && (key.String() == "left" || key.String() == "right") {
-			delta := 1
-			if key.String() == "left" {
-				delta = -1
-			}
-			next := 0
-			for i, p := range wizardProtocols {
-				if p.id == m.wizard.inputs[0].Value() {
-					next = (i + delta + len(wizardProtocols)) % len(wizardProtocols)
-					break
-				}
-			}
-			m.wizard.inputs[0].SetValue(wizardProtocols[next].id)
-			m.wizard.endpoint = ""
-			return m, nil
-		}
-		switch key.String() {
-		case "esc":
-			m.wizard.choosing = true
-			return m, nil
-		case "tab", "down":
-			return m.moveWizardFocus(1)
-		case "shift+tab", "up":
-			return m.moveWizardFocus(-1)
-		case "enter":
-			if m.wizard.step >= 4 && m.wizard.step != 7 {
-				return m.activateWizard(m.wizard.step)
-			}
-			return m.moveWizardFocus(1)
-		}
-	}
-	if m.wizard.step == 7 {
-		var cmd tea.Cmd
-		m.wizard.name, cmd = m.wizard.name.Update(message)
-		return m, cmd
-	}
-	if m.wizard.step > 0 && m.wizard.step < len(m.wizard.inputs) {
-		var cmd tea.Cmd
-		m.wizard.inputs[m.wizard.step], cmd = m.wizard.inputs[m.wizard.step].Update(message)
-		return m, cmd
 	}
 	return m, nil
 }
 
-func (m model) submitWizard() (tea.Model, tea.Cmd) { return m.runWizardAction(true) }
+// wizardInput 把按键与粘贴交给正在输入的那一栏：表单的文本行或模型筛选。
+func (m model) wizardInput(message tea.Msg) (tea.Model, tea.Cmd) {
+	w := &m.wizard
+	var cmd tea.Cmd
+	switch {
+	case w.step == wizardModels && !w.listing:
+		before := w.filter.Value()
+		w.filter, cmd = w.filter.Update(message)
+		if w.filter.Value() != before {
+			w.cursor = 0
+		}
+	case w.step == wizardConnection:
+		index := map[formRow]int{rowAddress: inputAddress, rowKey: inputKey, rowName: inputName}
+		input, ok := index[w.row]
+		if !ok {
+			return m, nil
+		}
+		before := w.inputs[input].Value()
+		w.inputs[input], cmd = w.inputs[input].Update(message)
+		changed := w.inputs[input].Value() != before
+		if changed && input == inputName {
+			w.named = true
+		}
+		if changed && input == inputAddress && !w.named && slices.Contains(w.formRows(), rowName) {
+			w.inputs[inputName].SetValue(m.suggestName(w.inputs[inputAddress].Value(), w.kind()))
+		}
+	}
+	return m, cmd
+}
 
-func (m model) runWizardAction(test bool) (tea.Model, tea.Cmd) {
-	for i, field := range wizardFields {
-		if !field.optional && strings.TrimSpace(m.wizard.inputs[i].Value()) == "" {
-			m.wizard.err = "请填写" + field.label
-			return m.focusWizard(i)
+// suggestName 给新连接起名：中转取地址的主域名（api.wool.dev → wool），否则用格式名；
+// 重名时加序号。
+func (m model) suggestName(address, kind string) string {
+	base := kind
+	if u, err := url.Parse(strings.TrimSpace(address)); err == nil && u.Hostname() != "" && net.ParseIP(u.Hostname()) == nil {
+		labels := strings.Split(u.Hostname(), ".")
+		base = labels[max(0, len(labels)-2)]
+	}
+	saved := m.api.Models.Config().Providers
+	name := base
+	for i := 2; ; i++ {
+		if _, taken := saved[name]; !taken {
+			return name
 		}
-	}
-	name := strings.TrimSpace(m.wizard.name.Value())
-	if name == "" {
-		m.wizard.err = "请填写连接名称"
-		return m.focusWizard(7)
-	}
-	if _, exists := m.wizard.source.Providers[name]; exists && name != m.wizard.original {
-		m.wizard.err = "连接名称已存在，请从已保存连接中选择编辑"
-		return m.focusWizard(7)
-	}
-	pc := appconfig.ProviderConfig{
-		Type:    strings.ToLower(strings.TrimSpace(m.wizard.inputs[0].Value())),
-		APIKey:  strings.TrimSpace(m.wizard.inputs[2].Value()),
-		BaseURL: strings.TrimSpace(m.wizard.inputs[3].Value()),
-	}
-	if pc.Type == "openai" {
-		pc.API = m.wizard.endpoint
-	}
-	if previous, ok := m.wizard.source.Providers[m.wizard.original]; ok {
-		pc.Models = previous.Models
-	}
-	config := m.wizard.source.WithProvider(name, strings.TrimSpace(m.wizard.inputs[1].Value()), pc)
-	if err := config.Validate(); err != nil {
-		m.wizard.err = err.Error()
-		if errors.Is(err, appconfig.ErrBaseURL) {
-			return m.focusWizard(3)
-		}
-		return m, nil
-	}
-	m.wizard.err = ""
-	m.wizard.notice = ""
-	if !test {
-		return m.saveWizard(config)
-	}
-	m.wizard.verifying = true
-	ctx, cancel := context.WithCancel(m.ctx)
-	m.wizard.cancel = cancel
-	m.wizard.request = &struct{ token byte }{}
-	request, verify := m.wizard.request, m.deps.Verify
-	return m, func() tea.Msg {
-		defer cancel()
-		return wizardVerifiedMsg{config: config, request: request, err: verify(ctx, config)}
+		name = fmt.Sprintf("%s-%d", base, i)
 	}
 }
 
-// Test completion stays in the form and never persists configuration.
-func (m model) finishWizard(verified wizardVerifiedMsg) (tea.Model, tea.Cmd) {
-	m.wizard.verifying = false
-	if verified.err != nil {
-		m.wizard.err = "连不上模型：" + wizardError(verified.err, verified.config)
-		return m, nil
+// --- 总览 ---
+
+// overviewItems 是总览的行：思考强度；每个连接、它的模型与「添加模型」；最后是「添加连接」。
+func (m model) overviewItems() []overviewItem {
+	items := []overviewItem{{kind: itemThinking}}
+	for _, name := range m.api.Models.Connections() {
+		items = append(items, overviewItem{kind: itemConnection, connection: name})
+		for _, model := range m.api.Models.Models(name) {
+			items = append(items, overviewItem{kind: itemModel, connection: name, model: model})
+		}
+		items = append(items, overviewItem{kind: itemAddModel, connection: name})
 	}
-	m.wizard.notice = "连接测试通过 · 尚未保存"
-	return m.focusWizard(4)
+	return append(items, overviewItem{kind: itemAddConnection})
 }
 
-func (m model) saveWizard(config appconfig.Config) (tea.Model, tea.Cmd) {
-	// 绑定成功才落盘；Runtime 常驻，重绑不重建应用，队列任务下次尝试即用新模型。
-	if err := m.api.Models.Switch(config); err != nil {
-		m.wizard.err = wizardError(err, config)
-		return m, nil
+func (m model) overviewKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	w := &m.wizard
+	items := m.overviewItems()
+	switch key.String() {
+	case "up", "shift+tab":
+		w.cursor = max(0, w.cursor-1)
+	case "down", "tab":
+		w.cursor = min(len(items)-1, w.cursor+1)
+	case "home":
+		w.cursor = 0
+	case "end":
+		w.cursor = len(items) - 1
+	case "left", "right":
+		if items[w.cursor].kind == itemThinking {
+			delta := 1
+			if key.String() == "left" {
+				delta = -1
+			}
+			return m.cycleThinking(delta)
+		}
+	case "enter":
+		return m.activateOverview(items[w.cursor])
+	case "esc":
+		if w.fromHome {
+			return m.leaveWizard()
+		}
 	}
+	return m, nil
+}
+
+func (m model) leaveWizard() (tea.Model, tea.Cmd) {
 	m.page = pageHome
-	m.home = newHomeState(m.width)
 	return m, m.loadLibraryCmd()
 }
 
-// Provider errors can echo request credentials. Never render the configured key.
-func wizardError(err error, config appconfig.Config) string {
-	text := err.Error()
-	pc, _ := config.ActiveProvider()
-	if pc.APIKey != "" {
-		text = strings.ReplaceAll(text, pc.APIKey, "[已隐藏]")
-	}
-	return text
+// enterHome 是首次配置完成：进一个新的首页。
+func (m model) enterHome() (tea.Model, tea.Cmd) {
+	m.home = newHomeState(m.width)
+	return m.leaveWizard()
 }
 
-// Focus order follows visible controls; collapsed fields never trap keyboard focus.
-func (m model) wizardControls() []int {
-	controls := []int{6, 7}
-	if m.wizard.custom {
-		controls = append(controls, 0)
-	}
-	controls = append(controls, 1, 2, 5)
-	if m.wizard.advanced {
-		controls = append(controls, 3)
-	}
-	if m.wizard.inputs[0].Value() == "openai" {
-		controls = append(controls, 8)
-	}
-	return append(controls, 4, 9)
-}
-
-func (m model) moveWizardFocus(delta int) (tea.Model, tea.Cmd) {
-	controls := m.wizardControls()
-	for i, control := range controls {
-		if control == m.wizard.step {
-			return m.focusWizard(controls[(i+delta+len(controls))%len(controls)])
+func (m model) activateOverview(item overviewItem) (tea.Model, tea.Cmd) {
+	switch item.kind {
+	case itemModel:
+		if err := m.api.Models.Use("", item.connection, item.model); err != nil {
+			m.wizard.err = m.redact(err, item.connection)
+			return m, nil
 		}
+		if !m.wizard.fromHome {
+			return m.enterHome()
+		}
+		m.wizard.notice = "已换用 " + item.connection + " / " + item.model
+	case itemConnection:
+		return m.openSaved(item.connection, editConnection)
+	case itemAddModel:
+		next, _ := m.openSaved(item.connection, addModel)
+		if m = next.(model); m.wizard.step != wizardConnection {
+			return m, nil
+		}
+		return m.listModels()
+	case itemAddConnection:
+		m.wizard.step, m.wizard.cursor = wizardProviders, 0
 	}
-	return m.focusWizard(controls[0])
+	return m, nil
 }
 
-func (m model) activateWizard(action int) (tea.Model, tea.Cmd) {
-	switch action {
-	case 8:
-		if m.wizard.endpoint == "responses" {
-			m.wizard.endpoint = "chat"
-		} else {
-			m.wizard.endpoint = "responses"
-		}
-		return m.focusWizard(8)
-	case 4:
-		return m.runWizardAction(false)
-	case 9:
-		return m.submitWizard()
-	case 5:
-		m.wizard.advanced = !m.wizard.advanced
-		return m.focusWizard(5)
-	case 6:
-		m.wizard.choosing = true
+// thinkingLevels 是当前模型可选的思考强度与当前设置所在的位置（不在其中时为 -1）。
+func (m model) thinkingLevels() ([]string, int) {
+	current := m.api.Models.Current("")
+	levels := m.api.Models.Levels(current.Connection, current.Model)
+	return levels, slices.Index(levels, m.api.Models.Config().Thinking)
+}
+
+func (m model) cycleThinking(delta int) (tea.Model, tea.Cmd) {
+	levels, index := m.thinkingLevels()
+	return m.setThinking(levels[(max(0, index)+delta+len(levels))%len(levels)])
+}
+
+func (m model) setThinking(level string) (tea.Model, tea.Cmd) {
+	if err := m.api.Models.SetThinking("", level); err != nil {
+		m.wizard.err = err.Error()
 		return m, nil
-	default:
-		return m.focusWizard(action)
 	}
+	m.wizard.notice = "思考强度：" + thinkingLabel(level)
+	return m, nil
 }
 
-// wizardProtocols 是自定义连接可选的接口格式，界面显示 label、配置保存 id。官方地址与
-// 中转的差别由装配按地址推出（models.adapter），不交给用户选。
-var wizardProtocols = []struct{ id, label string }{
-	{"openai", "OpenAI 格式"}, {"anthropic", "Claude 格式"}, {"gemini", "Gemini 格式"},
+// --- 服务商 ---
+
+func (m model) providersKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	w := &m.wizard
+	switch key.String() {
+	case "up", "shift+tab":
+		w.cursor = (w.cursor + len(wizardPresets) - 1) % len(wizardPresets)
+	case "down", "tab":
+		w.cursor = (w.cursor + 1) % len(wizardPresets)
+	case "enter":
+		return m.newConnection(w.cursor)
+	case "esc":
+		// 首次配置没有可返回的页面：退出走 Ctrl+C。
+		if len(m.api.Models.Connections()) > 0 {
+			w.step, w.cursor = wizardOverview, 0
+		}
+	}
+	return m, nil
+}
+
+// newConnection 从服务商开始一个新连接。内置服务商的连接名就是服务商名，已有这个连接时
+// 带出它的密钥与地址，继续下去就是更新它。
+func (m model) newConnection(preset int) (tea.Model, tea.Cmd) {
+	kind := wizardPresets[preset].kind
+	if _, saved := m.api.Models.Config().Providers[kind]; saved && kind != "" && !renamable(kind) {
+		next, cmd := m.openSaved(kind, addConnection)
+		return next, cmd
+	}
+	w := &m.wizard
+	w.step, w.mode, w.preset, w.format, w.endpoint = wizardConnection, addConnection, preset, 0, ""
+	w.original, w.models, w.named = "", nil, false
+	for i := range w.inputs {
+		w.inputs[i].SetValue("")
+	}
+	if renamable(kind) || kind == "" {
+		w.inputs[inputName].SetValue(m.suggestName("", w.kind()))
+	}
+	m.placeholders()
+	return m, w.focusRow(w.firstInput())
+}
+
+// openSaved 打开一个已保存的连接：带出它的格式、地址、密钥与模型。
+func (m model) openSaved(name string, mode wizardMode) (tea.Model, tea.Cmd) {
+	pc, err := m.api.Models.Config().Connection(name)
+	if err != nil {
+		m.wizard.err = err.Error()
+		return m, nil
+	}
+	preset, format := relayPreset, slices.IndexFunc(wizardFormats, func(f struct{ kind, label string }) bool { return f.kind == pc.Type })
+	if !renamable(pc.Type) || name == pc.Type && pc.BaseURL == "" {
+		preset = slices.IndexFunc(wizardPresets, func(p struct{ label, kind, note string }) bool { return p.kind == pc.Type })
+	}
+	if preset < 0 {
+		m.wizard.err = "连接「" + name + "」的格式（" + pc.Type + "）在这里改不了，请直接编辑配置文件"
+		return m, nil
+	}
+	w := &m.wizard
+	w.step, w.mode, w.original, w.models, w.endpoint, w.named = wizardConnection, mode, name, pc.Models, pc.API, true
+	w.preset, w.format = preset, max(0, format)
+	w.inputs[inputAddress].SetValue(pc.BaseURL)
+	w.inputs[inputKey].SetValue(pc.APIKey)
+	w.inputs[inputName].SetValue(name)
+	m.placeholders()
+	return m, w.focusRow(w.firstInput())
+}
+
+// placeholders 按服务商写输入框的占位提示。
+func (m *model) placeholders() {
+	w := &m.wizard
+	address, key := "留空使用官方地址", "粘贴服务商给的 API Key"
+	switch w.kind() {
+	case "ollama":
+		address, key = "留空使用本机默认地址", "本机模型通常不需要"
+	}
+	if w.preset == relayPreset {
+		address = "https://"
+	}
+	if w.preset == relayPreset && w.keyOptional() {
+		key = "粘贴密钥；服务不要求时留空"
+	}
+	w.inputs[inputAddress].Placeholder = address
+	w.inputs[inputKey].Placeholder = key
+	w.inputs[inputName].Placeholder = "用来区分多个连接"
+}
+
+// --- 连接 ---
+
+func (m model) connectionKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	w := &m.wizard
+	rows := w.formRows()
+	at := max(0, slices.Index(rows, w.row))
+	switch key.String() {
+	case "esc":
+		return m.backFromConnection()
+	case "tab", "down":
+		return m, w.focusRow(rows[(at+1)%len(rows)])
+	case "shift+tab", "up":
+		return m, w.focusRow(rows[(at+len(rows)-1)%len(rows)])
+	case "enter":
+		return m.submitConnection()
+	case "left", "right":
+		delta := 1
+		if key.String() == "left" {
+			delta = -1
+		}
+		switch w.row {
+		case rowFormat:
+			w.format = (w.format + delta + len(wizardFormats)) % len(wizardFormats)
+			m.refreshName()
+			return m, nil
+		case rowEndpoint:
+			index := slices.IndexFunc(wizardEndpoints, func(e struct{ api, label string }) bool { return e.api == w.endpoint })
+			w.endpoint = wizardEndpoints[(index+delta+len(wizardEndpoints))%len(wizardEndpoints)].api
+			return m, nil
+		}
+	}
+	return m.wizardInput(key)
+}
+
+// refreshName 换了格式后，没改过的名称跟着换。
+func (m *model) refreshName() {
+	w := &m.wizard
+	if !w.named && w.original == "" {
+		w.inputs[inputName].SetValue(m.suggestName(w.inputs[inputAddress].Value(), w.kind()))
+	}
+	m.placeholders()
+}
+
+func (m model) backFromConnection() (tea.Model, tea.Cmd) {
+	w := &m.wizard
+	if w.listing {
+		w.cancel()
+		w.listing, w.request, w.cancel = false, nil, nil
+		return m, nil
+	}
+	if w.mode == addConnection && w.original == "" {
+		w.step, w.cursor = wizardProviders, w.preset
+		return m, nil
+	}
+	w.step = wizardOverview
+	return m, nil
+}
+
+// submitConnection 先在本地查必填与重名，再向服务商列模型：新连接与添加模型接着选模型，
+// 编辑连接验证后直接保存。
+func (m model) submitConnection() (tea.Model, tea.Cmd) {
+	w := &m.wizard
+	name, pc := w.draft()
+	_, taken := m.api.Models.Config().Providers[name]
+	switch {
+	case w.preset == relayPreset && pc.BaseURL == "":
+		w.err = "填写中转或自部署服务的地址"
+		return m, w.focusRow(rowAddress)
+	case pc.APIKey == "" && !w.keyOptional():
+		w.err = "粘贴服务商给的 API Key"
+		return m, w.focusRow(rowKey)
+	case name == "":
+		w.err = "给连接起个名字"
+		return m, w.focusRow(rowName)
+	case taken && w.original == "":
+		w.err = "已有名为「" + name + "」的连接：换个名字，或回到总览编辑它"
+		return m, w.focusRow(rowName)
+	}
+	return m.listModels()
+}
+
+// listModels 用表单里的连接向服务商列模型；除了编辑连接，都先进模型页等结果。
+func (m model) listModels() (tea.Model, tea.Cmd) {
+	w := &m.wizard
+	name, pc := w.draft()
+	ctx, cancel := context.WithCancel(m.ctx)
+	request := &struct{ token byte }{}
+	w.listing, w.request, w.cancel = true, request, cancel
+	if w.mode != editConnection {
+		w.step, w.cursor, w.options, w.unlisted = wizardModels, 0, nil, ""
+		w.filter.SetValue("")
+	}
+	list := m.deps.ListModels
+	return m, tea.Batch(w.filter.Focus(), func() tea.Msg {
+		defer cancel()
+		options, err := list(ctx, name, pc)
+		return wizardListedMsg{request: request, options: options, err: err}
+	})
+}
+
+// wizardListed 收下模型列表。密钥被拒、地址不合法回到表单；其余失败（网络、中转不支持
+// 列模型）不拦路：选模型改为直接输入，编辑连接照样保存并说明没能验证。
+func (m model) wizardListed(msg wizardListedMsg) (tea.Model, tea.Cmd) {
+	w := &m.wizard
+	if !w.listing || msg.request != w.request {
+		return m, nil
+	}
+	w.listing, w.request, w.cancel = false, nil, nil
+	name, _ := w.draft()
+	if msg.err != nil {
+		text := m.redactDraft(msg.err)
+		var failure *domainmodel.Failure
+		switch {
+		case errors.Is(msg.err, appconfig.ErrBaseURL):
+			w.step, w.err = wizardConnection, text
+			return m, w.focusRow(rowAddress)
+		case errors.As(msg.err, &failure) && failure.Code == domainmodel.FailureModelRefused:
+			w.step, w.err = wizardConnection, "服务商拒绝了这组凭据："+text
+			return m, w.focusRow(rowKey)
+		case w.mode == editConnection:
+			return m.saveConnection("已保存连接 " + name + " · 没能连上服务商验证：" + text)
+		}
+		w.unlisted = text
+		return m, nil
+	}
+	if w.mode == editConnection {
+		return m.saveConnection("已更新连接 " + name)
+	}
+	w.options = msg.options
+	if len(w.options) == 0 {
+		w.unlisted = "服务商没有列出可用的模型"
+	}
+	if current := m.api.Models.Current(""); current.Connection == name {
+		w.cursor = max(0, slices.IndexFunc(w.options, func(o binding.ModelOption) bool { return o.ID == current.Model }))
+	}
+	return m, nil
+}
+
+// --- 模型 ---
+
+// pickerRow 是模型列表的一行；option 为空的是「直接使用」输入的模型 ID。
+type pickerRow struct {
+	id     string
+	option *binding.ModelOption
+}
+
+// pickerRows 是筛选后的模型；输入的文字不是列表里的某个模型时，末尾多一行直接使用它。
+func (w *wizardState) pickerRows() []pickerRow {
+	query := strings.TrimSpace(w.filter.Value())
+	lower := strings.ToLower(query)
+	var rows []pickerRow
+	exact := false
+	for i := range w.options {
+		option := &w.options[i]
+		if strings.Contains(strings.ToLower(option.ID+" "+option.Name), lower) {
+			rows = append(rows, pickerRow{id: option.ID, option: option})
+			exact = exact || option.ID == query
+		}
+	}
+	if query != "" && !exact {
+		rows = append(rows, pickerRow{id: query})
+	}
+	return rows
+}
+
+func (m model) modelsKey(key tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	w := &m.wizard
+	if w.listing {
+		if key.String() == "esc" {
+			return m.backFromModels()
+		}
+		return m, nil
+	}
+	rows := w.pickerRows()
+	switch key.String() {
+	case "esc":
+		return m.backFromModels()
+	case "up":
+		w.cursor = max(0, w.cursor-1)
+	case "down":
+		w.cursor = min(max(0, len(rows)-1), w.cursor+1)
+	case "pgup":
+		w.cursor = max(0, w.cursor-m.wizardFrame().capacity)
+	case "pgdown":
+		w.cursor = min(max(0, len(rows)-1), w.cursor+m.wizardFrame().capacity)
+	case "enter":
+		if w.cursor < len(rows) {
+			return m.useModel(rows[w.cursor].id)
+		}
+	default:
+		return m.wizardInput(key)
+	}
+	return m, nil
+}
+
+func (m model) backFromModels() (tea.Model, tea.Cmd) {
+	w := &m.wizard
+	if w.listing {
+		w.cancel()
+		w.listing, w.request, w.cancel = false, nil, nil
+	}
+	if w.mode == addModel {
+		w.step = wizardOverview
+		return m, nil
+	}
+	w.step = wizardConnection
+	return m, w.focusRow(w.row)
+}
+
+// useModel 用上所选模型：连接（新建或更新）连同模型写进配置并设为默认。
+func (m model) useModel(id string) (tea.Model, tea.Cmd) {
+	name, pc := m.wizard.draft()
+	return m.applyWizard(m.api.Models.Config().WithProvider(name, id, pc), "已换用 "+name+" / "+id)
+}
+
+// saveConnection 只保存连接本身，默认绑定不变。
+func (m model) saveConnection(notice string) (tea.Model, tea.Cmd) {
+	name, pc := m.wizard.draft()
+	return m.applyWizard(m.api.Models.Config().WithConnection(name, pc), notice)
+}
+
+// applyWizard 绑定并落盘：成功后首次配置进首页，从首页来的回到总览；失败留在原页。
+func (m model) applyWizard(config appconfig.Config, notice string) (tea.Model, tea.Cmd) {
+	if err := m.api.Models.Switch(config); err != nil {
+		m.wizard.err = m.redactDraft(err)
+		return m, nil
+	}
+	if !m.wizard.fromHome {
+		return m.enterHome()
+	}
+	m.wizard = newWizardState(config, "", true)
+	m.wizard.notice = notice
+	m.wizard.cursor = max(0, slices.IndexFunc(m.overviewItems(), func(item overviewItem) bool {
+		return item.kind == itemModel && item.connection == config.Provider && item.model == config.Model
+	}))
+	return m, nil
+}
+
+// 服务商的报错可能带回请求里的凭据，界面上一律不出现密钥。
+func (m model) redactDraft(err error) string {
+	_, pc := m.wizard.draft()
+	return redactKey(err.Error(), pc.APIKey)
+}
+
+func (m model) redact(err error, connection string) string {
+	return redactKey(err.Error(), m.api.Models.Config().Providers[connection].APIKey)
+}
+
+func redactKey(text, key string) string {
+	if key == "" {
+		return text
+	}
+	return strings.ReplaceAll(text, key, "[已隐藏]")
+}
+
+// wizardMouse：总览的行点了即生效（换用模型、编辑连接、添加），思考强度点选；服务商点了
+// 进下一步；表单点行聚焦、点选项即选；模型单击选中、双击用上。滚轮移动列表的选中行。
+func (m model) wizardMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	w := &m.wizard
+	mouse := msg.Mouse()
+	frame := m.wizardFrame()
+	if mouse.Button == tea.MouseWheelUp || mouse.Button == tea.MouseWheelDown {
+		if !frame.list.contains(mouse.X, mouse.Y) {
+			return m, nil
+		}
+		key := tea.KeyPressMsg{Code: tea.KeyDown}
+		if mouse.Button == tea.MouseWheelUp {
+			key = tea.KeyPressMsg{Code: tea.KeyUp}
+		}
+		return m.updateWizard(key)
+	}
+	if !leftClick(msg) || w.listing {
+		return m, nil
+	}
+	last := w.clicked
+	w.clicked = listClick{}
+	for _, hit := range frame.hits {
+		if mouse.Y != hit.y || mouse.X < hit.x || mouse.X >= hit.x+hit.width {
+			continue
+		}
+		w.err, w.notice = "", ""
+		switch w.step {
+		case wizardOverview:
+			items := m.overviewItems()
+			w.cursor = hit.row
+			if items[hit.row].kind == itemThinking {
+				if hit.option < 0 {
+					return m, nil
+				}
+				levels, _ := m.thinkingLevels()
+				return m.setThinking(levels[hit.option])
+			}
+			return m.activateOverview(items[hit.row])
+		case wizardProviders:
+			w.cursor = hit.row
+			return m.newConnection(hit.row)
+		case wizardConnection:
+			row := formRow(hit.focus)
+			switch {
+			case row == rowSubmit:
+				return m.submitConnection()
+			case row == rowFormat && hit.option >= 0:
+				w.format = hit.option
+				m.refreshName()
+			case row == rowEndpoint && hit.option >= 0:
+				w.endpoint = wizardEndpoints[hit.option].api
+			}
+			return m, w.focusRow(row)
+		case wizardModels:
+			w.cursor = hit.row
+			now := time.Now()
+			if last.again(hit.row, now) {
+				return m.useModel(w.pickerRows()[hit.row].id)
+			}
+			w.clicked = listClick{row: hit.row, at: now}
+		}
+		return m, nil
+	}
+	return m, nil
 }

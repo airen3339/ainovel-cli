@@ -1,6 +1,10 @@
 package tui
 
-import "strings"
+import (
+	"strings"
+
+	"charm.land/lipgloss/v2"
+)
 
 // 首页与它的表单页（更多设定、导入作品）共用工作台的外框：顶栏两行（品牌与右侧信息、分隔线），
 // 底栏两行（嵌着反馈的分隔线、按键），进出工作台时外框不跳。
@@ -43,4 +47,82 @@ func (m model) entryPage(title string, content []string, problem, hint string) s
 	}
 	lines = append(lines, m.pageBottom(problemFeedback(problem), hint, "", w)...)
 	return strings.Join(fitBlock(strings.Join(lines, "\n"), w, h), "\n")
+}
+
+// pageGutter 是内容栏两侧的留白：焦点竖线落在左侧，选中行的底色带铺过两侧。
+const pageGutter = 2
+
+// pageHit 是一块可点的区域：focus 是它对应的控件，row 是列表下标、option 是选项下标，
+// 不是列表行或选项时为 -1。
+type pageHit struct {
+	x, y, width, focus int
+	row, option        int
+}
+
+// pageColumn 是内容栏的行缓冲：每行连同两侧留白，热区按内容左缘记录，拼页时再平移。
+type pageColumn struct {
+	width int
+	lines []string
+	hits  []pageHit
+}
+
+func (c *pageColumn) add(text string) { c.mark(false, text) }
+
+// mark 加一行；focused 时左侧留白画强调色竖线，标出焦点所在的控件。
+func (c *pageColumn) mark(focused bool, text string) {
+	gutter := strings.Repeat(" ", pageGutter)
+	if focused {
+		gutter = benchTheme.Accent.Render("▎") + " "
+	}
+	c.lines = append(c.lines, gutter+padLine(text, c.width)+strings.Repeat(" ", pageGutter))
+}
+
+// hit 登记下一行（即将加入的那一行）上的热区。
+func (c *pageColumn) hit(x, width, focus, row, option int) {
+	c.hits = append(c.hits, pageHit{x: x, y: len(c.lines), width: width, focus: focus, row: row, option: option})
+}
+
+// item 加一行列表项并登记整行（连同两侧留白）为热区。
+func (c *pageColumn) item(row string, focus, index int) {
+	c.hit(-pageGutter, c.width+2*pageGutter, focus, index, -1)
+	c.lines = append(c.lines, row)
+}
+
+type styled struct {
+	text  string
+	style lipgloss.Style
+}
+
+// listRow 是列表的一行（连同两侧留白）：left 靠左、right 靠右。选中时整行铺选中底色、
+// 左侧竖线，片段各自的颜色让位给底色。
+func listRow(left, right []styled, width int, selected bool) string {
+	var plainLeft, plainRight, styledLeft, styledRight strings.Builder
+	for _, cell := range left {
+		plainLeft.WriteString(cell.text)
+		styledLeft.WriteString(cell.style.Render(cell.text))
+	}
+	for _, cell := range right {
+		plainRight.WriteString(cell.text)
+		styledRight.WriteString(cell.style.Render(cell.text))
+	}
+	room := width - lipgloss.Width(plainRight.String())
+	gutter := strings.Repeat(" ", pageGutter)
+	if selected {
+		return benchTheme.Selected.Render("▎ " + padLine(plainLeft.String(), room) + plainRight.String() + gutter)
+	}
+	return gutter + padLine(styledLeft.String(), room) + styledRight.String() + gutter
+}
+
+// listWindow 是列表的可见区间：装不下时让选中项留在窗口中部。
+func listWindow(count, selected, capacity int) (int, int) {
+	start := min(max(0, selected-capacity/2), max(0, count-capacity))
+	return start, min(count, start+capacity)
+}
+
+// sectionHead 是分区标题行：标题后一道细线伸到靠右的控件前。
+func sectionHead(title, controls string, width int) string {
+	if controls != "" {
+		controls = "  " + controls
+	}
+	return title + " " + benchRule(width-lipgloss.Width(title)-1-lipgloss.Width(controls)) + controls
 }

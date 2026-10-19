@@ -99,8 +99,7 @@ func assemble(tb testing.TB, executor *testExecutor, chiefModels chief.Models) (
 			tb.Fatalf("bind test model: %v", err)
 		}
 	}
-	verify := func(context.Context, appconfig.Config) error { return nil }
-	return Deps{API: api, ConfigDir: configDir, UserID: "tester", Verify: verify}, api
+	return Deps{API: api, ConfigDir: configDir, UserID: "tester", ListModels: listedModels("deepseek-v4-flash", "deepseek-v4")}, api
 }
 
 func testConfig() appconfig.Config {
@@ -168,73 +167,6 @@ func pressTimes(t *testing.T, m model, key rune, times int) model {
 		m, _ = press(t, m, key)
 	}
 	return m
-}
-
-func TestWizardVerifiesThenSavesConfigAndEntersHome(t *testing.T) {
-	deps, _ := newTestDeps(t, false)
-	verified := false
-	deps.Verify = func(context.Context, appconfig.Config) error { verified = true; return nil }
-	m := newModel(context.Background(), deps)
-	if m.page != pageWizard {
-		t.Fatalf("page = %v, want wizard when unconfigured", m.page)
-	}
-	m.wizard.provider = 6
-	m, _ = press(t, m, tea.KeyEnter)
-	m = typeText(t, m, "my-connection")
-	m, _ = press(t, m, tea.KeyEnter)
-	m, _ = press(t, m, tea.KeyRight)
-	m, _ = press(t, m, tea.KeyEnter)
-	for _, value := range []string{"deepseek-chat", "sk-test"} {
-		m = typeText(t, m, value)
-		m, _ = press(t, m, tea.KeyEnter)
-	}
-	m, _ = press(t, m, tea.KeyTab) // 跳过折叠的自定义地址
-	m, _ = press(t, m, tea.KeyTab) // 可选测试按钮
-	m, cmd := press(t, m, tea.KeyEnter)
-	if !m.wizard.verifying || cmd == nil {
-		t.Fatalf("wizard not verifying: %#v", m.wizard)
-	}
-	updated, _ := m.Update(findMsg[wizardVerifiedMsg](t, cmd))
-	m = updated.(model)
-	if m.page != pageWizard {
-		t.Fatal("test unexpectedly left wizard")
-	}
-	m, _ = press(t, m, tea.KeyEnter) // 保存不再测试
-	if !verified || m.page != pageHome {
-		t.Fatalf("page = %v verified=%v (err %q), want home after verify", m.page, verified, m.wizard.err)
-	}
-	saved, err := appconfig.LoadConfig(deps.ConfigDir)
-	if err != nil || saved.Provider != "my-connection" || saved.Model != "deepseek-chat" {
-		t.Fatalf("saved config = %#v, %v", saved, err)
-	}
-}
-
-func TestWizardVerifyFailureLeavesConfigUnsaved(t *testing.T) {
-	// 先验证再落盘（Codex 复审 #2）：连不上的配置绝不写进文件，不会锁死下次启动。
-	deps, _ := newTestDeps(t, false)
-	deps.Verify = func(context.Context, appconfig.Config) error { return errors.New("api key invalid") }
-	m := newModel(context.Background(), deps)
-	m.wizard.provider = 6
-	m, _ = press(t, m, tea.KeyEnter)
-	m = typeText(t, m, "my-connection")
-	m, _ = press(t, m, tea.KeyEnter)
-	m, _ = press(t, m, tea.KeyRight)
-	m, _ = press(t, m, tea.KeyEnter)
-	for _, value := range []string{"bad-model", "sk-test"} {
-		m = typeText(t, m, value)
-		m, _ = press(t, m, tea.KeyEnter)
-	}
-	m, _ = press(t, m, tea.KeyTab)
-	m, _ = press(t, m, tea.KeyTab)
-	m, cmd := press(t, m, tea.KeyEnter)
-	updated, _ := m.Update(findMsg[wizardVerifiedMsg](t, cmd))
-	m = updated.(model)
-	if m.page != pageWizard || !strings.Contains(m.wizard.err, "连不上模型") {
-		t.Fatalf("page=%v err=%q, want wizard with connectivity error", m.page, m.wizard.err)
-	}
-	if _, err := os.Stat(appconfig.ConfigPath(deps.ConfigDir)); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("config file exists after failed verify: %v", err)
-	}
 }
 
 func TestHomeRequiresPremiseBeforeCreating(t *testing.T) {

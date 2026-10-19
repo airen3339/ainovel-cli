@@ -2,6 +2,9 @@ package binding
 
 import (
 	"context"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -138,7 +141,7 @@ func TestRoleOverridesFollowDefaultUntilSet(t *testing.T) {
 	}
 }
 
-func TestVerifyAndUnassembledRuntime(t *testing.T) {
+func TestUnassembledRuntimeAndConnectionLookup(t *testing.T) {
 	service := New(t.TempDir(), nil)
 	if err := service.Apply(testConfig()); err == nil || !strings.Contains(err.Error(), "not assembled") {
 		t.Fatalf("Apply without runtime = %v", err)
@@ -174,5 +177,42 @@ func TestBindingsCarryPricesFromTheModelList(t *testing.T) {
 	}
 	if err := service.RefreshFacts(context.Background()); err != nil || binder.calls != 1 {
 		t.Fatalf("a fresh list must not download or rebind: err=%v calls=%d", err, binder.calls)
+	}
+}
+
+// 列模型：清单认识的对话模型排前（附上下文窗口与每百万 token 标价），其余新发布的在前；
+// 密钥被拒原样报出（归类由 models.Classify 负责），地址不合法不发请求。
+func TestListModelsRanksKnownFirstAndClassifiesRefusal(t *testing.T) {
+	dir := t.TempDir()
+	list := `{"gpt-known": {"mode": "chat", "litellm_provider": "openai", "max_input_tokens": 400000,
+		"input_cost_per_token": 1.25e-6, "output_cost_per_token": 1e-5}}`
+	if err := os.WriteFile(filepath.Join(dir, "models.json"), []byte(list), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/models" || r.Header.Get("Authorization") != "Bearer good" {
+			w.WriteHeader(http.StatusUnauthorized)
+			w.Write([]byte(`{"error":{"message":"invalid api key"}}`))
+			return
+		}
+		w.Write([]byte(`{"data":[{"id":"zz-old","created":100},{"id":"aa-new","created":200},{"id":"gpt-known","created":50}]}`))
+	}))
+	defer server.Close()
+	service := New(dir, &fakeBinder{})
+	relay := appconfig.ProviderConfig{Type: "openai", APIKey: "good", BaseURL: server.URL}
+	options, err := service.ListModels(context.Background(), "relay", relay)
+	if err != nil || len(options) != 3 || options[0].ID != "gpt-known" || options[1].ID != "aa-new" || options[2].ID != "zz-old" {
+		t.Fatalf("options = %+v, %v", options, err)
+	}
+	if known := options[0]; known.ContextWindow != 400000 || known.Input != 1.25 || known.Output != 10 {
+		t.Fatalf("known facts = %+v", known)
+	}
+	relay.APIKey = "bad"
+	if _, err := service.ListModels(context.Background(), "relay", relay); err == nil || !strings.Contains(err.Error(), "invalid api key") || errors.Is(err, appconfig.ErrBaseURL) {
+		t.Fatalf("refused key = %v", err)
+	}
+	relay.BaseURL = "ftp://relay.test"
+	if _, err := service.ListModels(context.Background(), "relay", relay); !errors.Is(err, appconfig.ErrBaseURL) {
+		t.Fatalf("bad address = %v", err)
 	}
 }

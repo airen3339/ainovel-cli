@@ -265,15 +265,64 @@ func (s *Service) Choices() []Choice {
 	return choices
 }
 
-// Verify 用最小请求验证配置可真实连通：配置向导先验证再落盘，避免把坏配置写进文件。
-func Verify(ctx context.Context, config appconfig.Config) error {
-	modelConfig, err := modelConfigFor(config, config.Provider, config.Model, config.Thinking)
-	if err != nil {
-		return err
+// ModelOption 是服务商列出的一个模型，附模型清单查得到的上下文窗口与标价（每百万 token
+// 美元，查不到为 0）。
+type ModelOption struct {
+	ID, Name      string
+	ContextWindow int
+	Input, Output float64
+}
+
+// ListModels 列出连接这组凭据能用的模型，顺带验证密钥（被拒绝时是 FailureModelRefused）。
+// 模型清单认识的对话模型排前，同组内新发布的在前，其余保持厂商顺序。
+func (s *Service) ListModels(ctx context.Context, name string, pc appconfig.ProviderConfig) ([]ModelOption, error) {
+	draft := appconfig.Config{Providers: map[string]appconfig.ProviderConfig{name: pc}}
+	if _, err := draft.Connection(name); err != nil {
+		return nil, err
 	}
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	return models.Verify(ctx, modelConfig)
+	listed, err := models.List(ctx, models.Config{Provider: pc.Type, API: pc.API, APIKey: pc.APIKey, BaseURL: pc.BaseURL})
+	if err != nil {
+		return nil, models.Classify(err)
+	}
+	type ranked struct {
+		option  ModelOption
+		known   bool
+		created time.Time
+	}
+	items := make([]ranked, 0, len(listed))
+	for _, info := range listed {
+		option := ModelOption{ID: info.ID, Name: info.Name, ContextWindow: s.facts.ContextWindow(pc.Type, info.ID)}
+		pricing := s.facts.Pricing(pc.Type, info.ID)
+		if pricing != nil {
+			option.Input, option.Output = pricing.Input*1e6, pricing.Output*1e6
+		}
+		items = append(items, ranked{option: option, known: option.ContextWindow > 0 || pricing != nil, created: info.Created})
+	}
+	slices.SortStableFunc(items, func(a, b ranked) int {
+		if a.known != b.known {
+			if a.known {
+				return -1
+			}
+			return 1
+		}
+		return b.created.Compare(a.created)
+	})
+	options := make([]ModelOption, len(items))
+	for i, item := range items {
+		options[i] = item.option
+	}
+	return options, nil
+}
+
+// ContextWindow 是某连接上模型的上下文窗口（token），模型清单查不到为 0。
+func (s *Service) ContextWindow(connection, model string) int {
+	s.mu.Lock()
+	pc, err := s.config.Connection(connection)
+	s.mu.Unlock()
+	if err != nil {
+		return 0
+	}
+	return s.facts.ContextWindow(pc.Type, model)
 }
 
 // build 按配置构建整套绑定：默认一套，角色覆盖各一套；同一「连接 / 模型 / 强度」复用实例。

@@ -195,19 +195,23 @@ func thinking(level string) *litellm.Thinking {
 	return &litellm.Thinking{Effort: level}
 }
 
-// Verify 用最小请求验证配置可真实连通：配置向导先验证再落盘，
-// 避免把坏配置写进文件导致启动锁死。
-func Verify(ctx context.Context, config Config) error {
-	chat, err := New(config)
+// ErrUnlisted 是连接的适配器列不出模型：界面改为直接输入模型 ID。
+var ErrUnlisted = errors.New("this connection cannot list its models")
+
+// List 列出这组凭据能用的模型（厂商给的顺序），顺带验证密钥：被拒绝时是认证错误。
+// 不需要 Model。
+func List(ctx context.Context, config Config) ([]litellm.ModelInfo, error) {
+	p, err := provider.New(adapter(config), provider.Config{APIKey: config.APIKey, BaseURL: config.BaseURL, API: config.API})
 	if err != nil {
-		return err
+		return nil, err
 	}
-	request := chat.Request
-	request.Messages = []litellm.Message{litellm.UserText("ping")}
-	// 只验连通：8 个 token 容不下思考预算。
-	request.MaxTokens, request.Thinking = new(8), nil
-	_, err = chat.Client.Chat(ctx, request)
-	return err
+	lister, ok := p.(litellm.ModelLister)
+	if !ok {
+		return nil, ErrUnlisted
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	return lister.ListModels(ctx)
 }
 
 func (config Config) Digest() (string, error) {

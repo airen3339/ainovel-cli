@@ -13,6 +13,7 @@ import (
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/voocel/ainovel-cli/internal/app/binding"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	domainmodel "github.com/voocel/ainovel-cli/internal/domain/model"
 	appconfig "github.com/voocel/ainovel-cli/internal/infra/config"
@@ -25,10 +26,10 @@ type Deps struct {
 	UserID    string
 	// ConfigError 是启动时的配置/绑定失败原因：交互模式降级进向导修复而不是退出。
 	ConfigError string
-	// Verify 供可选的连接测试使用；保存不调用它。
-	Verify func(context.Context, appconfig.Config) error
-	Input  io.Reader
-	Output io.Writer
+	// ListModels 向服务商列出一个连接能用的模型（顺带验证密钥），模型设置据此给出可选模型。
+	ListModels func(context.Context, string, appconfig.ProviderConfig) ([]binding.ModelOption, error)
+	Input      io.Reader
+	Output     io.Writer
 }
 
 // quitWindow 是确认退出的时限：Ctrl+C 第一次只把底栏提示换成退出确认，时限内再按一次

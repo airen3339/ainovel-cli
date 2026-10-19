@@ -10,7 +10,6 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/voocel/ainovel-cli/internal/app/binding"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/entry/headless"
 	"github.com/voocel/ainovel-cli/internal/entry/tui"
@@ -131,7 +130,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 			ConfigDir:   configDir,
 			UserID:      appconfig.DefaultUserID(),
 			ConfigError: configError,
-			Verify:      binding.Verify,
+			ListModels:  api.Models.ListModels,
 			Input:       os.Stdin,
 			Output:      stdout,
 		})

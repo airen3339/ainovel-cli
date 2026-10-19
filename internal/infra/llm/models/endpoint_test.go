@@ -7,13 +7,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
-	"strings"
 	"testing"
 
 	"github.com/voocel/litellm"
 )
 
-func TestVerifyUsesSelectedOpenAIEndpoint(t *testing.T) {
+func TestNewUsesSelectedOpenAIEndpoint(t *testing.T) {
 	for _, endpoint := range []string{"chat", "responses"} {
 		t.Run(endpoint, func(t *testing.T) {
 			path := ""
@@ -22,16 +21,18 @@ func TestVerifyUsesSelectedOpenAIEndpoint(t *testing.T) {
 				if r.Header.Get("Authorization") != "Bearer test-key" {
 					t.Error("key not forwarded")
 				}
-				// 8 个 token 的探测容不下思考：绑定的思考强度不能带上。
-				if body, _ := io.ReadAll(r.Body); strings.Contains(string(body), "reasoning") {
-					t.Errorf("verify request carries thinking: %s", body)
-				}
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusUnauthorized)
 				_, _ = w.Write([]byte(`{"error":{"message":"test rejection","type":"authentication_error"}}`))
 			}))
 			defer server.Close()
-			err := Verify(context.Background(), Config{Provider: "openai", Model: "custom", API: endpoint, APIKey: "test-key", BaseURL: server.URL + "/v1", Thinking: "high"})
+			chat, err := New(Config{Provider: "openai", Model: "custom", API: endpoint, APIKey: "test-key", BaseURL: server.URL + "/v1"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			request := chat.Request
+			request.Messages = []litellm.Message{litellm.UserText("ping")}
+			_, err = chat.Client.Chat(context.Background(), request)
 			expected := "/v1/chat/completions"
 			if endpoint == "responses" {
 				expected = "/v1/responses"
